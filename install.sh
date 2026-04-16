@@ -118,6 +118,7 @@ Terminal=false
 Categories=Game;Utility;
 Keywords=GTNH;Minecraft;Server;Manager;
 StartupWMClass=Crucible
+Icon=$APP_HOME/crucible/assets/crucible.png
 EOF
 
 ok "Added to app launcher  (search 'Crucible' in KDE)"
