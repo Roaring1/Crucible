@@ -252,6 +252,11 @@ def cmd_send(manager: InstanceManager, tmux: TmuxManager, args) -> None:
 
 def cmd_scan(manager: InstanceManager, args) -> None:
     from pathlib import Path
+    from PyQt6.QtGui import QIcon
+
+    _icon_path = Path(__file__).resolve().parent / "assets" / "crucible.png"
+    if _icon_path.exists():
+        app.setWindowIcon(QIcon(str(_icon_path)))
     search = Path(args.path).expanduser()
     info(f"Scanning {search} for GTNH server directories…")
 
