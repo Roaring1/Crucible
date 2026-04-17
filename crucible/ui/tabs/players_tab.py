@@ -3,25 +3,23 @@ crucible/ui/tabs/players_tab.py
 
 Player management tab.
 
-Top:    Online Now  — live from LogWatcher signals, with 16×16 player-head
-        avatars fetched asynchronously from minotar.net.
+Top:    Online Now  — live from LogWatcher signals, with 20×20 player-head
+        avatars (cached to disk at ~/.local/share/crucible-backups/avatars/).
 Bottom: Sub-tabs    — Whitelist | Ops | Banned
-        Each reads the server's JSON file and lets you add/remove entries.
 
-NOTE on "Add by name":
-  We generate a placeholder UUID here. The server replaces it with the
-  real UUID on the player's next login (for online-mode=false servers
-  this is fine; for online-mode=true the server must be running and the
-  whitelist command should be used via the console instead).
+Avatar cache: fetched from minotar.net on first join, stored as PNG.
+Re-fetched if older than 7 days.  Network failures silently fall back
+to stale cache, or show no icon if no cache exists.
 """
 
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QObject, QSize, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
@@ -35,30 +33,59 @@ from ...data.instance_model import ServerInstance
 from ...process.log_watcher import LogWatcher
 from .. import theme
 
+_AVATAR_CACHE_DIR = Path.home() / ".local" / "share" / "crucible-backups" / "avatars"
+_AVATAR_MAX_AGE_S = 7 * 24 * 3600
+
 
 # ── Avatar fetcher ─────────────────────────────────────────────────────────────
 
 class _AvatarFetcher(QObject):
-    """Fetches a player-head PNG from minotar.net in a worker thread."""
-    fetched = pyqtSignal(str, QPixmap)   # (player_name, pixmap)
+    """
+    Loads a player-head PNG.  Checks disk cache first; only hits minotar.net
+    if the cached file is missing or older than 7 days.
+    """
+    fetched = pyqtSignal(str, QPixmap)
 
     def __init__(self, name: str, parent=None):
         super().__init__(parent)
         self._name = name
 
+    def _cache_path(self) -> Path:
+        _AVATAR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        return _AVATAR_CACHE_DIR / f"{self._name}.png"
+
     def run(self) -> None:
+        cache = self._cache_path()
+
+        # Fresh disk cache — no network needed
+        if cache.exists():
+            age = time.time() - cache.stat().st_mtime
+            if age < _AVATAR_MAX_AGE_S:
+                pix = QPixmap(str(cache))
+                if not pix.isNull():
+                    self.fetched.emit(self._name, pix)
+                    return
+
+        # Fetch from network
         try:
             import urllib.request
             url = f"https://minotar.net/avatar/{self._name}/20"
-            with urllib.request.urlopen(url, timeout=6) as resp:
+            with urllib.request.urlopen(url, timeout=8) as resp:
                 data = resp.read()
+            cache.write_bytes(data)
             pix = QPixmap()
             pix.loadFromData(data)
             if not pix.isNull():
                 self.fetched.emit(self._name, pix)
         except Exception:
-            pass   # Avatar fetch is best-effort — silently skip on any error
+            # Offline / minotar down — try stale cache
+            if cache.exists():
+                pix = QPixmap(str(cache))
+                if not pix.isNull():
+                    self.fetched.emit(self._name, pix)
 
+
+# ── Main tab ───────────────────────────────────────────────────────────────────
 
 class PlayersTab(QWidget):
     """Online players + whitelist/ops/banned management."""
@@ -68,10 +95,8 @@ class PlayersTab(QWidget):
         self._instance: ServerInstance | None = None
         self._watcher:  LogWatcher | None     = None
         self._online:   set[str]              = set()
-        # Cache fetched avatars so we don't re-fetch on every refresh
         self._avatars:  dict[str, QPixmap]    = {}
-        # Keep thread refs alive until done
-        self._avatar_threads: list[QThread]   = []
+        self._avatar_threads:  list[QThread]        = []
         self._avatar_fetchers: list[_AvatarFetcher] = []
         self._build_ui()
 
@@ -82,7 +107,6 @@ class PlayersTab(QWidget):
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(8)
 
-        # ── Online Now section ──
         hdr = QLabel("ONLINE NOW")
         hdr.setStyleSheet(
             f"color: {theme.SUBTEXT}; font-size: 11px; "
@@ -91,25 +115,21 @@ class PlayersTab(QWidget):
         layout.addWidget(hdr)
 
         self._online_list = QListWidget()
-        self._online_list.setFixedHeight(100)
-        self._online_list.setIconSize(__import__('PyQt6.QtCore', fromlist=['QSize']).QSize(20, 20))
+        self._online_list.setFixedHeight(110)
+        self._online_list.setIconSize(QSize(20, 20))
         self._online_list.setStyleSheet(
             f"background: {theme.SURFACE0}; border-radius: 4px;"
         )
         layout.addWidget(self._online_list)
 
-        # ── JSON list sub-tabs ──
         sub = QTabWidget()
         sub.setDocumentMode(True)
-
         self._whitelist_w = _PlayerListWidget("whitelist.json",      allow_add=True)
         self._ops_w       = _PlayerListWidget("ops.json",            allow_add=True)
         self._banned_w    = _PlayerListWidget("banned-players.json", allow_add=False)
-
         sub.addTab(self._whitelist_w, "Whitelist")
         sub.addTab(self._ops_w,       "Ops")
         sub.addTab(self._banned_w,    "Banned")
-
         layout.addWidget(sub, stretch=1)
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -118,10 +138,9 @@ class PlayersTab(QWidget):
         self._instance = instance
         self._online.clear()
         self._refresh_online_list()
-        path = instance.path
-        self._whitelist_w.load(path, "whitelist.json")
-        self._ops_w.load(path,       "ops.json")
-        self._banned_w.load(path,    "banned-players.json")
+        self._whitelist_w.load(instance.path, "whitelist.json")
+        self._ops_w.load(instance.path,       "ops.json")
+        self._banned_w.load(instance.path,    "banned-players.json")
 
     def attach_watcher(self, watcher: LogWatcher) -> None:
         self.detach_watcher()
@@ -155,18 +174,19 @@ class PlayersTab(QWidget):
     # ── Avatar fetching ───────────────────────────────────────────────────────
 
     def _fetch_avatar(self, name: str) -> None:
-        """Kick off a background fetch for one player's head sprite."""
-        thread   = QThread()
-        fetcher  = _AvatarFetcher(name)
+        thread  = QThread()
+        fetcher = _AvatarFetcher(name)
         fetcher.moveToThread(thread)
         thread.started.connect(fetcher.run)
         fetcher.fetched.connect(self._on_avatar_fetched)
         fetcher.fetched.connect(thread.quit)
+
         def _cleanup():
             if thread in self._avatar_threads:
                 self._avatar_threads.remove(thread)
             if fetcher in self._avatar_fetchers:
                 self._avatar_fetchers.remove(fetcher)
+
         thread.finished.connect(_cleanup)
         self._avatar_threads.append(thread)
         self._avatar_fetchers.append(fetcher)
@@ -197,22 +217,17 @@ class PlayersTab(QWidget):
             self._online_list.addItem(item)
 
 
-class _PlayerListWidget(QWidget):
-    """
-    Reusable widget showing/editing one of Minecraft's player JSON files.
+# ── Per-file list widget ───────────────────────────────────────────────────────
 
-    Handles:
-      whitelist.json      → [{"uuid": "...", "name": "..."}]
-      ops.json            → [{"uuid": "...", "name": "...", "level": 4, ...}]
-      banned-players.json → [{"uuid": "...", "name": "...", "reason": "...", ...}]
-    """
+class _PlayerListWidget(QWidget):
+    """Reusable editor for whitelist / ops / banned JSON files."""
 
     def __init__(self, filename: str, allow_add: bool, parent=None):
         super().__init__(parent)
         self._filename  = filename
         self._allow_add = allow_add
-        self._path:  Path | None  = None
-        self._data:  list[dict]   = []
+        self._path: Path | None = None
+        self._data: list[dict]  = []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -232,7 +247,7 @@ class _PlayerListWidget(QWidget):
             add_row.addWidget(self._add_btn)
             layout.addLayout(add_row)
 
-        self._table = QTableWidget(0, 3)   # Name | UUID | [Remove]
+        self._table = QTableWidget(0, 3)
         self._table.setHorizontalHeaderLabels(["Name", "UUID", ""])
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -286,7 +301,8 @@ class _PlayerListWidget(QWidget):
         if not name:
             return
         if any(e.get("name", "").lower() == name.lower() for e in self._data):
-            QMessageBox.information(self, "Already Listed", f"{name} is already in this list.")
+            QMessageBox.information(self, "Already Listed",
+                                    f"{name} is already in this list.")
             return
         self._data.append({"uuid": str(uuid.uuid4()), "name": name})
         self._save()
@@ -309,8 +325,5 @@ class _PlayerListWidget(QWidget):
     def _save(self) -> None:
         if self._path:
             tmp = self._path.with_suffix(".tmp")
-            tmp.write_text(
-                json.dumps(self._data, indent=2), encoding="utf-8"
-            )
+            tmp.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
             tmp.replace(self._path)
-

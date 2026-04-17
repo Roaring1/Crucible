@@ -45,6 +45,7 @@ STATUS_COLORS = {
     "stopped":      SURFACE2,
     "tmux_missing": YELLOW,
     "starting":     ORANGE,
+    "stopping":     YELLOW,
     "unknown":      SURFACE2,
 }
 
