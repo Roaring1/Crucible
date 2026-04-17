@@ -67,6 +67,10 @@ class MainWindow(QMainWindow):
         self._sidebar = Sidebar()
         self._sidebar.instance_selected.connect(self._on_instance_selected)
         self._sidebar.add_requested.connect(self._on_add_requested)
+        self._sidebar.start_requested.connect(self._panel._do_start_for)
+        self._sidebar.stop_requested.connect(self._panel._do_stop_for)
+        self._sidebar.restart_requested.connect(self._panel._do_restart_for)
+        self._sidebar.remove_requested.connect(self._on_remove_requested)
         splitter.addWidget(self._sidebar)
 
         # Right: instance panel
@@ -147,6 +151,20 @@ class MainWindow(QMainWindow):
 
     def _on_status_changed(self, instance_id: str, status: str) -> None:
         self._sidebar.update_status(instance_id, status)
+
+    def _on_remove_requested(self, instance) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self,
+            "Remove Instance",
+            f"Remove \"{instance.name}\" from Crucible?\n\n"
+            f"The server files on disk are NOT deleted.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._manager.remove_instance(instance.id)
+            self._sidebar.remove_instance(instance.id)
+            self._update_status_bar()
 
     # ── Close ─────────────────────────────────────────────────────────────────
 

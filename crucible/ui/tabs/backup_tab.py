@@ -77,6 +77,14 @@ class BackupTab(QWidget):
         info_row.addWidget(self._backup_btn)
         layout.addLayout(info_row)
 
+        # ── Backup storage path label ──
+        self._path_label = QLabel("")
+        self._path_label.setStyleSheet(
+            f"color: {theme.SURFACE2}; font-size: 11px; font-family: monospace;"
+        )
+        self._path_label.setWordWrap(True)
+        layout.addWidget(self._path_label)
+
         # ── Progress (hidden normally) ──
         self._progress_lbl = QLabel("Creating backup…")
         self._progress_lbl.setStyleSheet(
@@ -145,6 +153,9 @@ class BackupTab(QWidget):
         total_bytes = self._manager.total_size_bytes()
         self._size_label.setText(
             f"Backups: {len(backups)}  ({_human_size(total_bytes)})"
+        )
+        self._path_label.setText(
+            f"Stored in: {self._manager.backup_dir()}"
         )
 
         self._table.setRowCount(len(backups))

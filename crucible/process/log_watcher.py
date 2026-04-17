@@ -42,9 +42,10 @@ from ..data.instance_model import ServerInstance
 # Matches:  [14:23:01] [Server thread/INFO] [Server]: Done (67.412s)!
 _RE_DONE        = re.compile(r"Done \((\d+\.\d+)s\)!")
 _RE_STOPPING    = re.compile(r"Stopping the server")
-# "UUID of player Roaring was" or "Roaring joined the game"
-_RE_JOIN        = re.compile(r"(?:UUID of player (\w+)|(\w+) joined the game)")
-_RE_LEAVE       = re.compile(r"(\w+) (?:lost connection|left the game)")
+# "PlayerName joined the game"
+_RE_JOIN        = re.compile(r"(\S+) joined the game")
+# "PlayerName left the game" or "PlayerName lost connection: ..."
+_RE_LEAVE       = re.compile(r"(\S+) (?:lost connection|left the game)")
 # /forge tps output: "Overall: Mean tick time: 50.123 ms; Mean TPS: 19.975"
 _RE_TPS         = re.compile(r"Mean TPS:\s*([\d.]+)")
 # "[Server thread/WARN]" etc.
@@ -201,7 +202,7 @@ class LogWatcher(QObject):
             return
 
         if m := _RE_JOIN.search(line):
-            name = m.group(1) or m.group(2)
+            name = m.group(1)
             if name:
                 self.player_joined.emit(name)
             return

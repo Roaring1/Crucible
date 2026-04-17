@@ -10,7 +10,7 @@ from PyQt6.QtCore import Qt, QSize, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QFont
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QLabel, QHBoxLayout,
+    QPushButton, QLabel, QHBoxLayout, QMenu,
 )
 
 from ..data.instance_model import ServerInstance
@@ -36,8 +36,8 @@ class InstanceItem(QListWidgetItem):
 
     def _refresh(self) -> None:
         color = self.DOT_COLORS.get(self._status, theme.SURFACE2)
-        # Build display text: colored dot + name
-        self.setText(f"  {self.instance.name}")
+        # Four leading spaces give the dot enough room (dot is drawn at left+14, ~10px wide)
+        self.setText(f"    {self.instance.name}")
         self.setToolTip(
             f"{self.instance.name}\n"
             f"Path: {self.instance.path}\n"
@@ -93,6 +93,11 @@ class Sidebar(QWidget):
 
     instance_selected = pyqtSignal(object)  # ServerInstance
     add_requested     = pyqtSignal()
+    # Context menu actions
+    start_requested   = pyqtSignal(object)  # ServerInstance
+    stop_requested    = pyqtSignal(object)  # ServerInstance
+    restart_requested = pyqtSignal(object)  # ServerInstance
+    remove_requested  = pyqtSignal(object)  # ServerInstance
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -117,6 +122,8 @@ class Sidebar(QWidget):
         # ── Instance list ──
         self._list = SidebarList()
         self._list.currentItemChanged.connect(self._on_selection_changed)
+        self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._list.customContextMenuRequested.connect(self._on_context_menu)
         layout.addWidget(self._list, stretch=1)
 
         # ── Add button ──
@@ -192,3 +199,43 @@ class Sidebar(QWidget):
     ) -> None:
         if isinstance(current, InstanceItem):
             self.instance_selected.emit(current.instance)
+
+    def _on_context_menu(self, pos) -> None:
+        item = self._list.itemAt(pos)
+        if not isinstance(item, InstanceItem):
+            return
+        inst   = item.instance
+        status = item.data(Qt.ItemDataRole.UserRole + 1)
+
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu {{ background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; "
+            f"border-radius: 6px; padding: 4px; }}"
+            f"QMenu::item {{ padding: 6px 20px 6px 12px; border-radius: 4px; }}"
+            f"QMenu::item:selected {{ background: #313244; }}"
+            f"QMenu::separator {{ height: 1px; background: #45475a; margin: 3px 8px; }}"
+        )
+
+        title_act = menu.addAction(f"  {inst.name}")
+        title_act.setEnabled(False)
+        menu.addSeparator()
+
+        start_act   = menu.addAction("▶  Start")
+        stop_act    = menu.addAction("■  Stop")
+        restart_act = menu.addAction("↺  Restart")
+        menu.addSeparator()
+        remove_act  = menu.addAction("🗑  Remove from Crucible…")
+
+        running = (status == "running")
+        start_act.setEnabled(not running)
+        stop_act.setEnabled(running)
+
+        chosen = menu.exec(self._list.mapToGlobal(pos))
+        if chosen == start_act:
+            self.start_requested.emit(inst)
+        elif chosen == stop_act:
+            self.stop_requested.emit(inst)
+        elif chosen == restart_act:
+            self.restart_requested.emit(inst)
+        elif chosen == remove_act:
+            self.remove_requested.emit(inst)

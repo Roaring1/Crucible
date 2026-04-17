@@ -107,6 +107,17 @@ fi
 step "5 / 5  App launcher entry"
 mkdir -p "$APPS_DIR"
 
+# Install icon into the XDG icon theme dirs so KDE's icon-only task manager
+# and app search can find it regardless of where the app itself is installed.
+ICON_SRC="$APP_HOME/crucible/assets/crucible.png"
+ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
+mkdir -p "$ICON_DIR"
+cp "$ICON_SRC" "$ICON_DIR/crucible.png"
+# Refresh icon cache if gtk-update-icon-cache is available (KDE also reads this)
+if command -v gtk-update-icon-cache &>/dev/null; then
+    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+fi
+
 cat > "$APPS_DIR/crucible.desktop" <<EOF
 [Desktop Entry]
 Type=Application
@@ -117,8 +128,12 @@ Exec=$LOCAL_BIN/crucible gui
 Terminal=false
 Categories=Game;Utility;
 Keywords=GTNH;Minecraft;Server;Manager;
-StartupWMClass=Crucible
-Icon=$APP_HOME/crucible/assets/crucible.png
+# StartupWMClass must match app.setDesktopFileName() value in __main__.py
+StartupWMClass=crucible
+StartupNotify=true
+# Use icon name (installed above) rather than absolute path —
+# this is what KDE's task manager and app search index
+Icon=crucible
 EOF
 
 ok "Added to app launcher  (search 'Crucible' in KDE)"

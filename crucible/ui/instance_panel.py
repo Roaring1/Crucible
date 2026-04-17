@@ -25,15 +25,27 @@ from . import theme
 from .tabs import ConsoleTab, ModsTab, NotesTab, InfoTab, ConfigTab, BackupTab, PlayersTab
 
 
-class _TmuxWorker(object):
+class _TmuxWorker(QObject):
     """
-    Thin wrapper to run a TmuxManager call in a QThread
-    and report success/failure back to the main thread.
+    Runs a blocking TmuxManager call on a worker thread and emits
+    finished(ok, message) back on the main thread.
 
     Usage:
-        self._run_tmux(lambda: tmux.start(instance), self._on_start_done)
+        self._run_tmux(lambda: self._tmux.stop(inst, graceful=True), cb)
     """
-    pass
+
+    finished = pyqtSignal(bool, str)
+
+    def __init__(self, fn, parent=None):
+        super().__init__(parent)
+        self._fn = fn
+
+    def run(self) -> None:
+        try:
+            ok, msg = self._fn()
+        except Exception as exc:
+            ok, msg = False, str(exc)
+        self.finished.emit(ok, msg)
 
 
 class InstancePanel(QWidget):
@@ -60,6 +72,24 @@ class InstancePanel(QWidget):
 
         self._build_ui()
         self._show_empty()
+        self._worker_threads: list[QThread] = []  # keep refs alive until done
+
+    # ── Off-thread helper ─────────────────────────────────────────────────────
+
+    def _run_tmux(self, fn, callback) -> None:
+        """Run fn() (a blocking TmuxManager call) in a worker QThread,
+        then call callback(ok: bool, msg: str) on the main thread."""
+        thread = QThread()
+        worker = _TmuxWorker(fn)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(callback)
+        worker.finished.connect(thread.quit)
+        # Clean up thread once done
+        thread.finished.connect(lambda: self._worker_threads.remove(thread)
+                                if thread in self._worker_threads else None)
+        self._worker_threads.append(thread)
+        thread.start()
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -81,7 +111,8 @@ class InstancePanel(QWidget):
 
         # Status dot
         self._dot = QLabel("●")
-        self._dot.setFixedWidth(16)
+        self._dot.setFixedWidth(22)
+        self._dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._dot.setStyleSheet(f"color: {theme.SURFACE2}; font-size: 18px;")
         h_layout.addWidget(self._dot)
 
@@ -99,6 +130,8 @@ class InstancePanel(QWidget):
         # Status label
         self._status_label = QLabel("")
         self._status_label.setObjectName("StatusLabel")
+        self._status_label.setMinimumWidth(140)
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._status_label.setStyleSheet(
             f"color: {theme.SURFACE2}; font-size: 12px;"
         )
@@ -153,6 +186,7 @@ class InstancePanel(QWidget):
         self._name_label.setText("No server selected")
         self._ver_label.setText("")
         self._status_label.setText("")
+        self._dot.setStyleSheet(f"color: {theme.SURFACE2}; font-size: 18px;")
         self._set_buttons_enabled(False)
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -194,6 +228,24 @@ class InstancePanel(QWidget):
         self._update_status_display(status)
         if self._instance:
             self._info.load(self._instance, status)
+
+    # ── Sidebar context-menu proxies ──────────────────────────────────────────
+
+    def _do_start_for(self, instance: ServerInstance) -> None:
+        """Start button action triggered from sidebar RMB — switch to instance first."""
+        if self._instance is None or self._instance.id != instance.id:
+            self.load(instance)
+        self._do_start()
+
+    def _do_stop_for(self, instance: ServerInstance) -> None:
+        if self._instance is None or self._instance.id != instance.id:
+            self.load(instance)
+        self._do_stop()
+
+    def _do_restart_for(self, instance: ServerInstance) -> None:
+        if self._instance is None or self._instance.id != instance.id:
+            self.load(instance)
+        self._do_restart()
 
     # ── Watchdog lifecycle ────────────────────────────────────────────────────
 
@@ -256,7 +308,14 @@ class InstancePanel(QWidget):
         self._current_status = status
         color = theme.STATUS_COLORS.get(status, theme.SURFACE2)
         self._dot.setStyleSheet(f"color: {color}; font-size: 18px;")
-        self._status_label.setText(status.upper())
+
+        # Use unambiguous labels so it's obvious at a glance
+        label_text = {
+            "running":      "● SERVER ONLINE",
+            "stopped":      "○ SERVER OFFLINE",
+            "tmux_missing": "⚠ TMUX MISSING",
+        }.get(status, status.upper())
+        self._status_label.setText(label_text)
         self._status_label.setStyleSheet(
             f"color: {color}; font-size: 12px; font-weight: 600;"
         )
@@ -279,19 +338,21 @@ class InstancePanel(QWidget):
             return
         self._btn_start.setEnabled(False)
         self._btn_start.setText("Starting…")
+        inst = self._instance
 
-        success, msg = self._tmux.start(self._instance)
-        if success:
-            self._manager.update_instance(self._instance)
-            self._update_status_display("running")
-            self.status_changed.emit(self._instance.id, "running")
-            if self._watchdog:
-                self._watchdog.watch(self._instance, self._instance.auto_restart)
-        else:
-            QMessageBox.critical(self, "Start Failed", msg)
-            self._btn_start.setEnabled(True)
+        def _on_done(ok: bool, msg: str) -> None:
+            if ok:
+                self._manager.update_instance(inst)
+                self._update_status_display("running")
+                self.status_changed.emit(inst.id, "running")
+                if self._watchdog:
+                    self._watchdog.watch(inst, inst.auto_restart)
+            else:
+                QMessageBox.critical(self, "Start Failed", msg)
+                self._btn_start.setEnabled(True)
+            self._btn_start.setText("▶  Start")
 
-        self._btn_start.setText("▶  Start")
+        self._run_tmux(lambda: self._tmux.start(inst), _on_done)
 
     def _do_stop(self) -> None:
         if not self._instance:
@@ -302,51 +363,70 @@ class InstancePanel(QWidget):
             self._watchdog.unwatch(self._instance.id)
         self._btn_stop.setEnabled(False)
         self._btn_stop.setText("Stopping…")
+        inst = self._instance
 
-        success, msg = self._tmux.stop(self._instance, graceful=True, timeout_s=90)
-        if success:
-            self._update_status_display("stopped")
-            self.status_changed.emit(self._instance.id, "stopped")
-        else:
-            reply = QMessageBox.question(
-                self,
-                "Stop Failed",
-                f"{msg}\n\nForce-kill? (no world save)",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                ok, _ = self._tmux.stop(self._instance, graceful=False)
-                if ok:
-                    self._update_status_display("stopped")
-                    self.status_changed.emit(self._instance.id, "stopped")
+        def _on_done(ok: bool, msg: str) -> None:
+            if ok:
+                self._update_status_display("stopped")
+                self.status_changed.emit(inst.id, "stopped")
+                self._btn_stop.setText("■  Stop")
+                self._btn_stop.setEnabled(False)
+            else:
+                reply = QMessageBox.question(
+                    self,
+                    "Stop Failed",
+                    f"{msg}\n\nForce-kill? (no world save)",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    def _on_kill(ok2: bool, _msg2: str) -> None:
+                        if ok2:
+                            self._update_status_display("stopped")
+                            self.status_changed.emit(inst.id, "stopped")
+                        self._btn_stop.setText("■  Stop")
+                        self._btn_stop.setEnabled(self._current_status == "running")
+                    self._run_tmux(lambda: self._tmux.stop(inst, graceful=False), _on_kill)
+                else:
+                    self._btn_stop.setText("■  Stop")
+                    self._btn_stop.setEnabled(self._current_status == "running")
 
-        self._btn_stop.setText("■  Stop")
-        self._btn_stop.setEnabled(self._current_status == "running")
+        self._run_tmux(lambda: self._tmux.stop(inst, graceful=True, timeout_s=90), _on_done)
 
     def _do_restart(self) -> None:
         if not self._instance:
             return
         self._btn_restart.setEnabled(False)
         self._btn_restart.setText("Restarting…")
+        inst = self._instance
 
-        if self._tmux.is_running(self._instance):
-            ok, _ = self._tmux.stop(self._instance, graceful=True, timeout_s=90)
-            if not ok:
-                QMessageBox.warning(self, "Restart", "Server did not stop cleanly.")
+        def _do_start_phase() -> None:
+            def _on_start_done(ok: bool, msg: str) -> None:
+                if ok:
+                    self._manager.update_instance(inst)
+                    self._update_status_display("running")
+                    self.status_changed.emit(inst.id, "running")
+                else:
+                    QMessageBox.critical(self, "Start Failed", msg)
                 self._btn_restart.setText("↺  Restart")
                 self._btn_restart.setEnabled(True)
-                return
+            self._run_tmux(lambda: self._tmux.start(inst), _on_start_done)
 
-        ok, msg = self._tmux.start(self._instance)
-        if ok:
-            self._manager.update_instance(self._instance)
-            self._update_status_display("running")
-            self.status_changed.emit(self._instance.id, "running")
+        if self._tmux.is_running(inst):
+            # Unwatch so watchdog doesn't see this as a crash
+            if self._watchdog:
+                self._watchdog.unwatch(inst.id)
+
+            def _on_stop_done(ok: bool, _msg: str) -> None:
+                if not ok:
+                    QMessageBox.warning(self, "Restart", "Server did not stop cleanly.")
+                    self._btn_restart.setText("↺  Restart")
+                    self._btn_restart.setEnabled(True)
+                    return
+                _do_start_phase()
+
+            self._run_tmux(lambda: self._tmux.stop(inst, graceful=True, timeout_s=90), _on_stop_done)
         else:
-            QMessageBox.critical(self, "Start Failed", msg)
-
-        self._btn_restart.setText("↺  Restart")
-        self._btn_restart.setEnabled(True)
+            _do_start_phase()
 
     def _do_attach(self) -> None:
         if not self._instance:

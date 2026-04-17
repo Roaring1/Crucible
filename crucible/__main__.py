@@ -252,11 +252,6 @@ def cmd_send(manager: InstanceManager, tmux: TmuxManager, args) -> None:
 
 def cmd_scan(manager: InstanceManager, args) -> None:
     from pathlib import Path
-    from PyQt6.QtGui import QIcon
-
-    _icon_path = Path(__file__).resolve().parent / "assets" / "crucible.png"
-    if _icon_path.exists():
-        app.setWindowIcon(QIcon(str(_icon_path)))
     search = Path(args.path).expanduser()
     info(f"Scanning {search} for GTNH server directories…")
 
@@ -393,19 +388,30 @@ def cmd_gui(manager: InstanceManager) -> None:
     try:
         from PyQt6.QtWidgets import QApplication
         from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QIcon
     except ImportError:
         err("PyQt6 is not installed.")
         dim("Install with:  pip install PyQt6")
         sys.exit(1)
 
     import sys as _sys
+    from pathlib import Path
     from .ui.theme import STYLESHEET
     from .ui.main_window import MainWindow
 
     app = QApplication(_sys.argv)
     app.setApplicationName("Crucible")
     app.setApplicationDisplayName("Crucible — GTNH Server Manager")
+    # Required for KDE/Wayland task manager and icon-only task manager to pick up
+    # the icon.  The string must match the base name of the .desktop file
+    # (crucible.desktop) and the Icon= entry inside it.
+    app.setDesktopFileName("crucible")
     app.setStyleSheet(STYLESHEET)
+
+    # Set window icon (shows on X11 task bar and as fallback on Wayland)
+    _icon_path = Path(__file__).resolve().parent / "assets" / "crucible.png"
+    if _icon_path.exists():
+        app.setWindowIcon(QIcon(str(_icon_path)))
 
     win = MainWindow(manager)
     win.show()

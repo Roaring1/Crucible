@@ -44,6 +44,30 @@ _IMPORTANT: dict[str, list[str]] = {
                     "entity-activation-range", "chunk-gc-period-in-ticks"],
 }
 
+# Keys where an ill-timed edit can corrupt a world or break a running server.
+# Maps key → short danger note shown as a ⚠ tooltip on the key cell.
+_DANGEROUS_KEYS: dict[str, str] = {
+    "level-name": (
+        "⚠ Changing this makes the server create/load a DIFFERENT world folder.\n"
+        "Your existing world data is NOT deleted — you'd need to rename the folder\n"
+        "on disk to match the new name before restarting.\n"
+        "Safe to change between sessions when you know what you're doing."
+    ),
+    "level-seed": (
+        "⚠ Seed only affects world generation for NEW chunks.\n"
+        "Changing it mid-world will cause visible terrain seams at unexplored borders."
+    ),
+    "online-mode": (
+        "⚠ Switching online-mode changes how player UUIDs are computed.\n"
+        "Existing player data files (UUID-named .dat files) will become orphaned.\n"
+        "Restart required."
+    ),
+    "white-list": (
+        "Enables/disables the whitelist.\n"
+        "Changing this takes effect after 'whitelist reload' or a server restart."
+    ),
+}
+
 # Flat set of all important key names
 _IMPORTANT_SET: set[str] = {k for keys in _IMPORTANT.values() for k in keys}
 
@@ -197,11 +221,16 @@ class ConfigTab(QWidget):
             key_item = QTableWidgetItem(key)
             key_item.setFlags(key_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             key_item.setForeground(QColor(theme.ACCENT if important else theme.SUBTEXT))
-            # Tooltip: show which group this key belongs to
+            # Tooltip: show which group this key belongs to, and danger warning if applicable
             group = next(
                 (g for g, ks in _IMPORTANT.items() if key in ks), None
             )
-            if group:
+            danger_note = _DANGEROUS_KEYS.get(key)
+            if danger_note:
+                key_item.setText(f"⚠ {key}")
+                key_item.setToolTip(danger_note)
+                key_item.setForeground(QColor(theme.YELLOW))
+            elif group:
                 key_item.setToolTip(f"Group: {group}")
             self._table.setItem(row, 0, key_item)
 
@@ -245,7 +274,26 @@ class ConfigTab(QWidget):
             key_item = self._table.item(row, 0)
             val_item = self._table.item(row, 1)
             if key_item and val_item:
-                edited[key_item.text()] = val_item.text()
+                # Strip the "⚠ " prefix we added to dangerous key display names
+                raw_key = key_item.text().lstrip("⚠ ").strip()
+                edited[raw_key] = val_item.text()
+
+        # Warn if any dangerous keys changed
+        changed_dangerous = [
+            k for k in _DANGEROUS_KEYS
+            if k in edited and edited[k] != self._data.get(k, "")
+        ]
+        if changed_dangerous:
+            names = ", ".join(changed_dangerous)
+            reply = QMessageBox.warning(
+                self, "Confirm Save",
+                f"You've changed: {names}\n\n"
+                + "\n\n".join(_DANGEROUS_KEYS[k] for k in changed_dangerous)
+                + "\n\nSave anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
         # Read the original file to preserve comments and ordering
         try:
