@@ -3,7 +3,8 @@ crucible/ui/tabs/players_tab.py
 
 Player management tab.
 
-Top:    Online Now  — live from LogWatcher signals
+Top:    Online Now  — live from LogWatcher signals, with 16×16 player-head
+        avatars fetched asynchronously from minotar.net.
 Bottom: Sub-tabs    — Whitelist | Ops | Banned
         Each reads the server's JSON file and lets you add/remove entries.
 
@@ -20,8 +21,8 @@ import json
 import uuid
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSlot
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QColor, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem,
@@ -35,6 +36,30 @@ from ...process.log_watcher import LogWatcher
 from .. import theme
 
 
+# ── Avatar fetcher ─────────────────────────────────────────────────────────────
+
+class _AvatarFetcher(QObject):
+    """Fetches a player-head PNG from minotar.net in a worker thread."""
+    fetched = pyqtSignal(str, QPixmap)   # (player_name, pixmap)
+
+    def __init__(self, name: str, parent=None):
+        super().__init__(parent)
+        self._name = name
+
+    def run(self) -> None:
+        try:
+            import urllib.request
+            url = f"https://minotar.net/avatar/{self._name}/20"
+            with urllib.request.urlopen(url, timeout=6) as resp:
+                data = resp.read()
+            pix = QPixmap()
+            pix.loadFromData(data)
+            if not pix.isNull():
+                self.fetched.emit(self._name, pix)
+        except Exception:
+            pass   # Avatar fetch is best-effort — silently skip on any error
+
+
 class PlayersTab(QWidget):
     """Online players + whitelist/ops/banned management."""
 
@@ -43,6 +68,11 @@ class PlayersTab(QWidget):
         self._instance: ServerInstance | None = None
         self._watcher:  LogWatcher | None     = None
         self._online:   set[str]              = set()
+        # Cache fetched avatars so we don't re-fetch on every refresh
+        self._avatars:  dict[str, QPixmap]    = {}
+        # Keep thread refs alive until done
+        self._avatar_threads: list[QThread]   = []
+        self._avatar_fetchers: list[_AvatarFetcher] = []
         self._build_ui()
 
     # ── UI ────────────────────────────────────────────────────────────────────
@@ -61,14 +91,11 @@ class PlayersTab(QWidget):
         layout.addWidget(hdr)
 
         self._online_list = QListWidget()
-        self._online_list.setFixedHeight(90)
+        self._online_list.setFixedHeight(100)
+        self._online_list.setIconSize(__import__('PyQt6.QtCore', fromlist=['QSize']).QSize(20, 20))
         self._online_list.setStyleSheet(
             f"background: {theme.SURFACE0}; border-radius: 4px;"
         )
-        self._empty_label = QListWidgetItem("  No players online")
-        self._empty_label.setForeground(QColor(theme.SURFACE2))
-        self._empty_label.setFlags(Qt.ItemFlag.NoItemFlags)
-        self._online_list.addItem(self._empty_label)
         layout.addWidget(self._online_list)
 
         # ── JSON list sub-tabs ──
@@ -117,11 +144,41 @@ class PlayersTab(QWidget):
     def _on_joined(self, name: str) -> None:
         self._online.add(name)
         self._refresh_online_list()
+        if name not in self._avatars:
+            self._fetch_avatar(name)
 
     @pyqtSlot(str)
     def _on_left(self, name: str) -> None:
         self._online.discard(name)
         self._refresh_online_list()
+
+    # ── Avatar fetching ───────────────────────────────────────────────────────
+
+    def _fetch_avatar(self, name: str) -> None:
+        """Kick off a background fetch for one player's head sprite."""
+        thread   = QThread()
+        fetcher  = _AvatarFetcher(name)
+        fetcher.moveToThread(thread)
+        thread.started.connect(fetcher.run)
+        fetcher.fetched.connect(self._on_avatar_fetched)
+        fetcher.fetched.connect(thread.quit)
+        def _cleanup():
+            if thread in self._avatar_threads:
+                self._avatar_threads.remove(thread)
+            if fetcher in self._avatar_fetchers:
+                self._avatar_fetchers.remove(fetcher)
+        thread.finished.connect(_cleanup)
+        self._avatar_threads.append(thread)
+        self._avatar_fetchers.append(fetcher)
+        thread.start()
+
+    @pyqtSlot(str, QPixmap)
+    def _on_avatar_fetched(self, name: str, pix: QPixmap) -> None:
+        self._avatars[name] = pix
+        if name in self._online:
+            self._refresh_online_list()
+
+    # ── List rendering ────────────────────────────────────────────────────────
 
     def _refresh_online_list(self) -> None:
         self._online_list.clear()
@@ -132,8 +189,11 @@ class PlayersTab(QWidget):
             self._online_list.addItem(item)
             return
         for name in sorted(self._online):
-            item = QListWidgetItem(f"  ●  {name}")
+            item = QListWidgetItem(f"  {name}")
             item.setForeground(QColor(theme.GREEN))
+            pix = self._avatars.get(name)
+            if pix and not pix.isNull():
+                item.setIcon(QIcon(pix))
             self._online_list.addItem(item)
 
 
@@ -253,3 +313,4 @@ class _PlayerListWidget(QWidget):
                 json.dumps(self._data, indent=2), encoding="utf-8"
             )
             tmp.replace(self._path)
+

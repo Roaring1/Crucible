@@ -102,8 +102,8 @@ class Sidebar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("Sidebar")
-        self.setMinimumWidth(220)
-        self.setMaximumWidth(300)
+        self.setMinimumWidth(160)
+        # No setMaximumWidth — let the splitter handle sizing freely
 
         self._items: dict[str, InstanceItem] = {}  # id → item
 
@@ -134,7 +134,7 @@ class Sidebar(QWidget):
         layout.addWidget(add_btn)
 
         # Small version footer
-        footer = QLabel("Crucible v0.3.2")
+        footer = QLabel("Crucible v0.3.4")
         footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         footer.setStyleSheet(f"color: {theme.SURFACE2}; font-size: 10px; padding: 4px;")
         layout.addWidget(footer)

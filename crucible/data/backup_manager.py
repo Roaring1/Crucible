@@ -22,7 +22,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from .instance_model import ServerInstance
 
-BASE_DIR = Path.home() / ".local" / "share" / "crucible" / "backups"
+BASE_DIR = Path.home() / ".local" / "share" / "crucible-backups"
 
 
 @dataclass

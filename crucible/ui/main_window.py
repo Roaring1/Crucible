@@ -59,30 +59,31 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         # ── Central widget: splitter ──
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        self.setCentralWidget(splitter)
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setChildrenCollapsible(True)
+        self._splitter.setHandleWidth(5)
+        self.setCentralWidget(self._splitter)
 
         # Left: sidebar
         self._sidebar = Sidebar()
         self._sidebar.instance_selected.connect(self._on_instance_selected)
         self._sidebar.add_requested.connect(self._on_add_requested)
         self._sidebar.remove_requested.connect(self._on_remove_requested)
-        splitter.addWidget(self._sidebar)
+        self._splitter.addWidget(self._sidebar)
 
         # Right: instance panel (must be created before wiring sidebar RMB signals)
         self._panel = InstancePanel(self._manager)
         self._panel.status_changed.connect(self._on_status_changed)
-        splitter.addWidget(self._panel)
+        self._splitter.addWidget(self._panel)
 
         # Wire sidebar context-menu actions now that _panel exists
         self._sidebar.start_requested.connect(self._panel._do_start_for)
         self._sidebar.stop_requested.connect(self._panel._do_stop_for)
         self._sidebar.restart_requested.connect(self._panel._do_restart_for)
 
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([240, 960])
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.setSizes([240, 960])
 
         # ── Status bar ──
         sb = QStatusBar()

@@ -72,7 +72,8 @@ class InstancePanel(QWidget):
 
         self._build_ui()
         self._show_empty()
-        self._worker_threads: list[QThread] = []  # keep refs alive until done
+        self._worker_threads: list[QThread] = []   # keep refs alive until done
+        self._workers: list[_TmuxWorker]    = []   # CRITICAL: prevent GC before thread runs
 
     # ── Off-thread helper ─────────────────────────────────────────────────────
 
@@ -85,10 +86,15 @@ class InstancePanel(QWidget):
         thread.started.connect(worker.run)
         worker.finished.connect(callback)
         worker.finished.connect(thread.quit)
-        # Clean up thread once done
-        thread.finished.connect(lambda: self._worker_threads.remove(thread)
-                                if thread in self._worker_threads else None)
+        # Clean up both thread and worker refs once done
+        def _cleanup():
+            if thread in self._worker_threads:
+                self._worker_threads.remove(thread)
+            if worker in self._workers:
+                self._workers.remove(worker)
+        thread.finished.connect(_cleanup)
         self._worker_threads.append(thread)
+        self._workers.append(worker)   # MUST keep ref — PyQt6 won't
         thread.start()
 
     # ── UI construction ───────────────────────────────────────────────────────

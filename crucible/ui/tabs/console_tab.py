@@ -229,7 +229,7 @@ class ConsoleTab(QWidget):
         watcher.log_missing.connect(self._on_log_missing)
 
         self._append_system(f"── Attached to {instance.name} ──")
-        self._append_system("  Press  ▶ Start  to launch the server.")
+        self._set_state("⏳ Waiting for server log…", theme.ORANGE)
 
     def detach(self) -> None:
         """Disconnect the current watcher."""
@@ -306,7 +306,7 @@ class ConsoleTab(QWidget):
 
     @pyqtSlot()
     def _on_log_missing(self) -> None:
-        self._set_state("No log file — server not started?", theme.SURFACE2)
+        self._set_state("○ No log — press ▶ Start to launch", theme.SURFACE2)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 

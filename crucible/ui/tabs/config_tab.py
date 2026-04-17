@@ -20,7 +20,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QLabel, QPushButton, QLineEdit,
+    QLabel, QPushButton, QLineEdit, QComboBox,
     QMessageBox, QAbstractItemView,
 )
 
@@ -87,8 +87,8 @@ class ConfigTab(QWidget):
         super().__init__(parent)
         self._instance:   ServerInstance | None = None
         self._props_path: Path | None           = None
-        # Ordered map key → value (string, preserving original format)
         self._data: OrderedDict[str, str]       = OrderedDict()
+        self._bool_rows: dict[int, "QComboBox"] = {}  # row → combo for boolean values
 
         self._build_ui()
 
@@ -209,6 +209,8 @@ class ConfigTab(QWidget):
     def _populate_table(self) -> None:
         self._table.setSortingEnabled(False)
         self._table.setRowCount(0)
+        # Track which rows use a combo so _save can read them
+        self._bool_rows: dict[int, QComboBox] = {}
 
         sorted_keys = sorted(self._data.keys(), key=_sort_key)
         self._table.setRowCount(len(sorted_keys))
@@ -221,7 +223,6 @@ class ConfigTab(QWidget):
             key_item = QTableWidgetItem(key)
             key_item.setFlags(key_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             key_item.setForeground(QColor(theme.ACCENT if important else theme.SUBTEXT))
-            # Tooltip: show which group this key belongs to, and danger warning if applicable
             group = next(
                 (g for g, ks in _IMPORTANT.items() if key in ks), None
             )
@@ -234,21 +235,45 @@ class ConfigTab(QWidget):
                 key_item.setToolTip(f"Group: {group}")
             self._table.setItem(row, 0, key_item)
 
-            # ── Value cell (editable) ──
-            val_item = QTableWidgetItem(val)
-            if val.lower() == "true":
-                val_item.setForeground(QColor(theme.GREEN))
-            elif val.lower() == "false":
-                val_item.setForeground(QColor(theme.RED))
-            elif important:
-                val_item.setForeground(QColor(theme.TEXT))
+            # ── Value cell: QComboBox for booleans, QTableWidgetItem otherwise ──
+            if val.lower() in ("true", "false"):
+                combo = QComboBox()
+                combo.addItem("true")
+                combo.addItem("false")
+                combo.setCurrentText(val.lower())
+                combo.setStyleSheet(
+                    f"QComboBox {{ color: {theme.GREEN if val.lower() == 'true' else theme.RED}; "
+                    f"background: {theme.SURFACE0}; border: none; padding: 2px 6px; }}"
+                    f"QComboBox::drop-down {{ border: none; }}"
+                    f"QComboBox QAbstractItemView {{ color: {theme.TEXT}; "
+                    f"background: {theme.SURFACE0}; selection-background-color: {theme.SURFACE1}; }}"
+                )
+                # Update text colour when the value changes
+                def _make_color_updater(cb):
+                    def _update(text):
+                        color = theme.GREEN if text == "true" else theme.RED
+                        cb.setStyleSheet(
+                            f"QComboBox {{ color: {color}; "
+                            f"background: {theme.SURFACE0}; border: none; padding: 2px 6px; }}"
+                            f"QComboBox::drop-down {{ border: none; }}"
+                            f"QComboBox QAbstractItemView {{ color: {theme.TEXT}; "
+                            f"background: {theme.SURFACE0}; selection-background-color: {theme.SURFACE1}; }}"
+                        )
+                    return _update
+                combo.currentTextChanged.connect(_make_color_updater(combo))
+                self._table.setCellWidget(row, 1, combo)
+                self._bool_rows[row] = combo
             else:
-                val_item.setForeground(QColor(theme.SUBTEXT))
-            self._table.setItem(row, 1, val_item)
+                val_item = QTableWidgetItem(val)
+                if important:
+                    val_item.setForeground(QColor(theme.TEXT))
+                else:
+                    val_item.setForeground(QColor(theme.SUBTEXT))
+                self._table.setItem(row, 1, val_item)
+
             self._table.setRowHeight(row, 30)
 
         self._table.setSortingEnabled(True)
-        # Re-apply any active filter
         self._apply_filter(self._filter_edit.text())
 
     def _apply_filter(self, text: str) -> None:
@@ -268,15 +293,20 @@ class ConfigTab(QWidget):
             QMessageBox.warning(self, "No File", "server.properties not found.")
             return
 
-        # Collect all current table values
+        # Collect all current table values (text items + combo-box items)
         edited: dict[str, str] = {}
         for row in range(self._table.rowCount()):
             key_item = self._table.item(row, 0)
-            val_item = self._table.item(row, 1)
-            if key_item and val_item:
-                # Strip the "⚠ " prefix we added to dangerous key display names
-                raw_key = key_item.text().lstrip("⚠ ").strip()
-                edited[raw_key] = val_item.text()
+            if not key_item:
+                continue
+            raw_key = key_item.text().lstrip("⚠ ").strip()
+            # Boolean rows use a QComboBox widget
+            if row in self._bool_rows:
+                edited[raw_key] = self._bool_rows[row].currentText()
+            else:
+                val_item = self._table.item(row, 1)
+                if val_item:
+                    edited[raw_key] = val_item.text()
 
         # Warn if any dangerous keys changed
         changed_dangerous = [
