@@ -8,7 +8,7 @@ Body:   QTabWidget with Console, Mods, Notes, Info tabs.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,

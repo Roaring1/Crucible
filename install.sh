@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Crucible v0.3.2 — Install Script
+# Crucible v0.3.3 — Install Script
 # Target: Nobara 41–43 / Fedora (dnf) · Python 3.11+
 #
 # Works from ANYWHERE — Downloads, Desktop, /tmp, it doesn't matter.
@@ -34,7 +34,7 @@ APPS_DIR="$HOME/.local/share/applications"
 
 echo -e ""
 echo -e "${BOLD}${CYAN}  ╔════════════════════════════════════╗"
-echo -e "  ║   C R U C I B L E   v0.3.2        ║"
+echo -e "  ║   C R U C I B L E   v0.3.3        ║"
 echo -e "  ║   GTNH Server Manager              ║"
 echo -e "  ║   Nobara 41–43  ·  Python 3.11+    ║"
 echo -e "  ╚════════════════════════════════════╝${RESET}"
@@ -91,7 +91,7 @@ ok "Source copied to $APP_HOME"
 
 # Install for real — not editable, so the zip/extracted folder is now disposable
 "$PYTHON" -m pip install --user --quiet "$APP_HOME"
-ok "Crucible v0.3.2 installed"
+ok "Crucible v0.3.3 installed"
 
 # PATH guard
 if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
