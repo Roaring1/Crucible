@@ -1,0 +1,2 @@
+[console_scripts]
+crucible = crucible.__main__:main

@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: crucible
+Version: 0.3.4
+Summary: GTNH Server Manager
+Requires-Python: >=3.11
+Requires-Dist: PyQt6>=6.5

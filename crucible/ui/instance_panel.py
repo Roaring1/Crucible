@@ -334,6 +334,7 @@ class InstancePanel(QWidget):
         # Panel-level hooks (server state transitions)
         self._watcher.server_started.connect(self._on_log_server_started)
         self._watcher.server_stopping.connect(self._on_log_server_stopping)
+        self._watcher.log_rotated.connect(self._on_log_rotated)
         self._w_thread.started.connect(self._watcher.start)
         self._w_thread.start()
 
@@ -344,6 +345,7 @@ class InstancePanel(QWidget):
             try:
                 self._watcher.server_started.disconnect(self._on_log_server_started)
                 self._watcher.server_stopping.disconnect(self._on_log_server_stopping)
+                self._watcher.log_rotated.disconnect(self._on_log_rotated)
             except (RuntimeError, TypeError):
                 pass
             self._watcher.stop()
@@ -372,6 +374,20 @@ class InstancePanel(QWidget):
             self._update_status_display("stopping")
             self.status_changed.emit(self._instance.id, "stopping")
             self._tps_timer.stop()
+
+    @pyqtSlot()
+    def _on_log_rotated(self) -> None:
+        """Log file shrank — server restarted.  Break the stopping→running deadlock.
+
+        The health-check guard blocks 'stopping'→'running' transitions (intentionally,
+        so a graceful stop isn't overridden).  But after a restart the log file
+        rotates before 'Done!' fires, so we must transition to 'starting' here to
+        let the health check and server_started signal take over correctly.
+        """
+        if self._current_status in ("stopping", "stopped"):
+            self._update_status_display("starting")
+            if self._instance:
+                self.status_changed.emit(self._instance.id, "running")
 
     # ── Auto-TPS ──────────────────────────────────────────────────────────────
 
