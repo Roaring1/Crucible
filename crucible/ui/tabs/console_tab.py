@@ -256,6 +256,11 @@ class ConsoleTab(QWidget):
 
     @pyqtSlot(list)
     def _on_new_lines(self, lines: list[str]) -> None:
+        # If we were waiting and lines arrive, the server is clearly running —
+        # flip the state label so it doesn't stay stuck on "Waiting for log file…"
+        if "Waiting" in self._server_state_label.text():
+            self._set_state("● Online", theme.GREEN)
+
         cursor = self._view.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
 

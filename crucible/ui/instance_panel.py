@@ -20,7 +20,9 @@ flash "ONLINE" before the server is ready.  Only the log event does that.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal, pyqtSlot, QUrl
+from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
@@ -159,6 +161,20 @@ class InstancePanel(QWidget):
         self._status_label.setStyleSheet(f"color: {theme.SURFACE2}; font-size: 12px;")
         h_layout.addWidget(self._status_label)
 
+        # External IP copy button
+        self._btn_ip = QPushButton("⧉  Copy IP")
+        self._btn_ip.setFixedHeight(28)
+        self._btn_ip.setFixedWidth(90)
+        self._btn_ip.setToolTip("Copy external server IP to clipboard")
+        self._btn_ip.setStyleSheet(
+            f"QPushButton {{ background: {theme.SURFACE0}; color: {theme.SUBTEXT}; "
+            f"border: 1px solid {theme.SURFACE1}; border-radius: 4px; font-size: 11px; }}"
+            f"QPushButton:hover {{ background: {theme.SURFACE1}; color: {theme.TEXT}; }}"
+            f"QPushButton:pressed {{ background: {theme.SURFACE2}; }}"
+        )
+        self._btn_ip.clicked.connect(self._copy_external_ip)
+        h_layout.addWidget(self._btn_ip)
+
         # Buttons
         self._btn_start   = QPushButton("▶  Start")
         self._btn_stop    = QPushButton("■  Stop")
@@ -203,6 +219,51 @@ class InstancePanel(QWidget):
         layout.addWidget(self._tabs, stretch=1)
 
         self._set_buttons_enabled(False)
+
+    def _copy_external_ip(self) -> None:
+        """Fetch the external IP (using ipify) and copy it to clipboard."""
+        import urllib.request
+        self._btn_ip.setText("…")
+        self._btn_ip.setEnabled(False)
+        def _fetch():
+            try:
+                with urllib.request.urlopen("https://api.ipify.org", timeout=5) as r:
+                    return r.read().decode().strip()
+            except Exception:
+                return None
+        # Run in a thread so we don't block the UI
+        import threading
+        def _worker():
+            ip = _fetch()
+            from PyQt6.QtCore import QMetaObject, Q_ARG
+            QMetaObject.invokeMethod(self, "_on_ip_fetched",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, ip or ""))
+        threading.Thread(target=_worker, daemon=True).start()
+
+    @pyqtSlot(str)
+    def _on_ip_fetched(self, ip: str) -> None:
+        self._btn_ip.setEnabled(True)
+        if ip:
+            # Read server port from server.properties if available
+            port = "25565"
+            try:
+                sp = self._instance.path if isinstance(self._instance.path, str) else str(self._instance.path)
+                props = open(f"{sp}/server.properties").read()
+                for line in props.splitlines():
+                    if line.startswith("server-port="):
+                        port = line.split("=", 1)[1].strip()
+                        break
+            except Exception:
+                pass
+            addr = f"{ip}:{port}" if port != "25565" else ip
+            QApplication.clipboard().setText(addr)
+            self._btn_ip.setText("✓  Copied!")
+            # Reset label after 2s
+            QTimer.singleShot(2000, lambda: self._btn_ip.setText("⧉  Copy IP"))
+        else:
+            self._btn_ip.setText("✗  Failed")
+            QTimer.singleShot(2000, lambda: self._btn_ip.setText("⧉  Copy IP"))
 
     def _show_empty(self) -> None:
         self._name_label.setText("No server selected")
