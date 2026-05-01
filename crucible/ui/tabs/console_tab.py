@@ -226,6 +226,7 @@ class ConsoleTab(QWidget):
         watcher.player_left.connect(self._on_left)
         watcher.server_started.connect(self._on_server_started)
         watcher.server_stopping.connect(self._on_server_stopping)
+        watcher.log_rotated.connect(self._on_log_rotated)
         watcher.log_missing.connect(self._on_log_missing)
 
         self._append_system(f"── Attached to {instance.name} ──")
@@ -241,6 +242,7 @@ class ConsoleTab(QWidget):
                 self._watcher.player_left.disconnect(self._on_left)
                 self._watcher.server_started.disconnect(self._on_server_started)
                 self._watcher.server_stopping.disconnect(self._on_server_stopping)
+                self._watcher.log_rotated.disconnect(self._on_log_rotated)
                 self._watcher.log_missing.disconnect(self._on_log_missing)
             except (RuntimeError, TypeError):
                 pass
@@ -302,7 +304,18 @@ class ConsoleTab(QWidget):
 
     @pyqtSlot()
     def _on_server_stopping(self) -> None:
+        self._active_players.clear()
+        self._update_player_label()
         self._set_state("● Stopping…", theme.ORANGE)
+
+    @pyqtSlot()
+    def _on_log_rotated(self) -> None:
+        """Server restarted — wipe stale player list and state."""
+        self._active_players.clear()
+        self._update_player_label()
+        self._tps_label.setText("TPS: —")
+        self._tps_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
+        self._set_state("○ Restarting…", theme.YELLOW)
 
     @pyqtSlot()
     def _on_log_missing(self) -> None:

@@ -147,12 +147,16 @@ class PlayersTab(QWidget):
         self._watcher = watcher
         watcher.player_joined.connect(self._on_joined)
         watcher.player_left.connect(self._on_left)
+        watcher.server_stopping.connect(self._on_server_stopped)
+        watcher.log_rotated.connect(self._on_server_stopped)
 
     def detach_watcher(self) -> None:
         if self._watcher:
             try:
                 self._watcher.player_joined.disconnect(self._on_joined)
                 self._watcher.player_left.disconnect(self._on_left)
+                self._watcher.server_stopping.disconnect(self._on_server_stopped)
+                self._watcher.log_rotated.disconnect(self._on_server_stopped)
             except (RuntimeError, TypeError):
                 pass
             self._watcher = None
@@ -169,6 +173,12 @@ class PlayersTab(QWidget):
     @pyqtSlot(str)
     def _on_left(self, name: str) -> None:
         self._online.discard(name)
+        self._refresh_online_list()
+
+    @pyqtSlot()
+    def _on_server_stopped(self) -> None:
+        """Clear online list on server stop or log rotation (restart)."""
+        self._online.clear()
         self._refresh_online_list()
 
     # ── Avatar fetching ───────────────────────────────────────────────────────

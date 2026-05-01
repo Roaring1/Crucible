@@ -263,6 +263,8 @@ class InstancePanel(QWidget):
             # Session still alive, stop command issued — keep "stopping"
             return
 
+        if status == self._current_status:
+            return   # nothing changed — skip filesystem scan + widget rebuild
         # If the health check now says running but we were stopped,
         # the server was probably started externally — accept it.
         self._update_status_display(status)
@@ -325,16 +327,15 @@ class InstancePanel(QWidget):
         self._w_thread = QThread()
         self._watcher  = LogWatcher(instance)
         self._watcher.moveToThread(self._w_thread)
-        self._w_thread.started.connect(self._watcher.start)
-        self._w_thread.start()
-        # Attach UI tabs first, then wire panel-level events
+        # Connect signals BEFORE starting the thread so the initial read
+        # (fired immediately in start()) doesn't race with attach().
         self._console.attach(instance, self._watcher)
         self._players.attach_watcher(self._watcher)
-        # ── Panel-level log watcher hooks ──
-        # server_started: "Done (Xs)!" seen — promote starting → running
+        # Panel-level hooks (server state transitions)
         self._watcher.server_started.connect(self._on_log_server_started)
-        # server_stopping: "Stopping the server" seen
         self._watcher.server_stopping.connect(self._on_log_server_stopping)
+        self._w_thread.started.connect(self._watcher.start)
+        self._w_thread.start()
 
     def _stop_watcher(self) -> None:
         self._console.detach()

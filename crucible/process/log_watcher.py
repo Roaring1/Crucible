@@ -90,6 +90,7 @@ class LogWatcher(QObject):
     player_left     = pyqtSignal(str)    # player name
     server_started  = pyqtSignal(float)  # startup time in seconds
     server_stopping = pyqtSignal()
+    log_rotated     = pyqtSignal()       # emitted when log file shrinks (server restarted)
     log_missing     = pyqtSignal()       # emitted ONCE when log file goes missing
 
     def __init__(self, instance: ServerInstance, parent: QObject | None = None):
@@ -186,6 +187,7 @@ class LogWatcher(QObject):
         # Detect log rotation (new server start rewrites the file)
         if size < self._last_size:
             self._file_pos = 0
+            self.log_rotated.emit()   # tell UI to clear stale player/state data
         self._last_size = size
 
         if size == self._file_pos:
