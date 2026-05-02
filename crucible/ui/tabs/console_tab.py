@@ -340,15 +340,14 @@ class ConsoleTab(QWidget):
         with more specific text, but this ensures a crash or external stop is
         always reflected even if no log signal fires.
         """
-        from . import theme as _theme
         mapping = {
-            "running":  ("● Online",      _theme.GREEN),
-            "starting": ("⚡ Starting…",   _theme.YELLOW),
-            "stopping": ("◌ Stopping…",   _theme.ORANGE),
-            "stopped":  ("○ Offline",     _theme.SURFACE2),
-            "tmux_missing": ("⚠ tmux missing", _theme.RED),
+            "running":  ("● Online",      theme.GREEN),
+            "starting": ("⚡ Starting…",   theme.YELLOW),
+            "stopping": ("◌ Stopping…",   theme.ORANGE),
+            "stopped":  ("○ Offline",     theme.SURFACE2),
+            "tmux_missing": ("⚠ tmux missing", theme.RED),
         }
-        text, color = mapping.get(status, (status.capitalize(), _theme.SURFACE2))
+        text, color = mapping.get(status, (status.capitalize(), theme.SURFACE2))
         # Don't clobber a more-specific log-watcher message for running state —
         # e.g. "● Online  (started in 12.3s)" should survive a health-check ping.
         current = self._server_state_label.text()
