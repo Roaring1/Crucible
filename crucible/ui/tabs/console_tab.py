@@ -256,11 +256,6 @@ class ConsoleTab(QWidget):
 
     @pyqtSlot(list)
     def _on_new_lines(self, lines: list[str]) -> None:
-        # If we were waiting and lines arrive, the server is clearly running —
-        # flip the state label so it doesn't stay stuck on "Waiting for log file…"
-        if "Waiting" in self._server_state_label.text():
-            self._set_state("● Online", theme.GREEN)
-
         cursor = self._view.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
 
@@ -337,6 +332,29 @@ class ConsoleTab(QWidget):
             self._players_label.setText(f"Players: {name}")
         else:
             self._players_label.setText(f"Players: {n}")
+
+    def notify_status(self, status: str) -> None:
+        """Called by InstancePanel._update_status_display to keep header and
+        console state label in sync.  This is the authoritative path — log-watcher
+        signals (server_started, server_stopping, log_rotated) can still override
+        with more specific text, but this ensures a crash or external stop is
+        always reflected even if no log signal fires.
+        """
+        from . import theme as _theme
+        mapping = {
+            "running":  ("● Online",      _theme.GREEN),
+            "starting": ("⚡ Starting…",   _theme.YELLOW),
+            "stopping": ("◌ Stopping…",   _theme.ORANGE),
+            "stopped":  ("○ Offline",     _theme.SURFACE2),
+            "tmux_missing": ("⚠ tmux missing", _theme.RED),
+        }
+        text, color = mapping.get(status, (status.capitalize(), _theme.SURFACE2))
+        # Don't clobber a more-specific log-watcher message for running state —
+        # e.g. "● Online  (started in 12.3s)" should survive a health-check ping.
+        current = self._server_state_label.text()
+        if status == "running" and "Online" in current:
+            return
+        self._set_state(text, color)
 
     def _set_state(self, text: str, color: str) -> None:
         self._server_state_label.setText(text)

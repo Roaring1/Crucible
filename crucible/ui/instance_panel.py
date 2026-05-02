@@ -463,6 +463,8 @@ class InstancePanel(QWidget):
         self._current_status = status
         color = theme.STATUS_COLORS.get(status, theme.SURFACE2)
         self._dot.setStyleSheet(f"color: {color}; font-size: 18px;")
+        # Keep the console state label in sync with the panel — single source of truth
+        self._console.notify_status(status)
 
         label_text = {
             "running":      "● SERVER ONLINE",
