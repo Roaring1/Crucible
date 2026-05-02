@@ -103,12 +103,12 @@ class Watchdog(QObject):
         if not self._active or not self._watching:
             return
 
-        active_sessions = set(self._tmux.list_sessions())
-
         for iid, instance in list(self._instances.items()):
             if not self._watching.get(iid):
                 continue
-            if instance.tmux_session not in active_sessions:
+            # Use is_running() (tmux has-session) rather than list_sessions()
+            # so we match the session by exact name, independent of any prefix.
+            if not self._tmux.is_running(instance):
                 self._handle_crash(iid)
 
     def _handle_crash(self, iid: str) -> None:
