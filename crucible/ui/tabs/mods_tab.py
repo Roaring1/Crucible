@@ -37,6 +37,7 @@ class _InspectWorker(QObject):
         for row, mod in self._jobs:
             self._manager.inspect_jar(mod)
             self.done.emit(row, mod)
+        self.thread().quit()  # signal the QThread event loop to exit
 
 
 # ── Main tab ──────────────────────────────────────────────────────────────────
@@ -52,9 +53,10 @@ class ModsTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._manager: ModManager | None = None
-        self._mods:    list[ModEntry]    = []
-        self._thread:  QThread | None    = None
+        self._manager: ModManager | None  = None
+        self._mods:    list[ModEntry]     = []
+        self._thread:  QThread | None     = None
+        self._worker:  _InspectWorker | None = None
 
         self._build_ui()
         self.setAcceptDrops(True)
@@ -308,8 +310,16 @@ class ModsTab(QWidget):
         """Kick off background jar inspection to fill in mod names/versions."""
         if self._manager is None or not self._mods:
             return
-        if self._thread and self._thread.isRunning():
-            return  # Previous pass still running
+        # Quit any still-alive previous thread before starting a new one.
+        # Without this, _InspectWorker.run() finishing but thread.quit() not yet
+        # processed makes isRunning() return True and the guard below returns early,
+        # so mod names/versions are never populated after the first instance load.
+        if self._thread is not None:
+            if self._thread.isRunning():
+                self._thread.quit()
+                self._thread.wait(500)
+            self._thread = None
+            self._worker = None
 
         jobs = [
             (i, mod) for i, mod in enumerate(self._mods)
@@ -318,11 +328,17 @@ class ModsTab(QWidget):
         if not jobs:
             return
 
-        self._thread  = QThread()
-        self._worker  = _InspectWorker(self._manager, jobs)
+        self._thread = QThread()
+        self._worker = _InspectWorker(self._manager, jobs)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.done.connect(self._on_inspect_result)
+
+        def _cleanup():
+            self._thread = None
+            self._worker = None
+        self._thread.finished.connect(_cleanup)
+
         self._thread.start()
 
     def _on_inspect_result(self, row: int, mod: ModEntry) -> None:

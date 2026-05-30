@@ -249,7 +249,8 @@ class InstancePanel(QWidget):
             port = "25565"
             try:
                 sp = self._instance.path if isinstance(self._instance.path, str) else str(self._instance.path)
-                props = open(f"{sp}/server.properties").read()
+                with open(f"{sp}/server.properties", encoding="utf-8", errors="replace") as _f:
+                    props = _f.read()
                 for line in props.splitlines():
                     if line.startswith("server-port="):
                         port = line.split("=", 1)[1].strip()
@@ -572,24 +573,33 @@ class InstancePanel(QWidget):
                 self._btn_restart.setEnabled(True)
             self._run_tmux(lambda: self._tmux.start(inst), _on_start_done)
 
-        if self._tmux.is_running(inst):
-            if self._watchdog:
-                self._watchdog.unwatch(inst.id)
+        def _after_check(ok: bool, msg: str) -> None:
+            # msg is "running" or "stopped" — ok is always True
+            if msg == "running":
+                if self._watchdog:
+                    self._watchdog.unwatch(inst.id)
 
-            def _on_stop_done(ok: bool, _msg: str) -> None:
-                if not ok:
-                    QMessageBox.warning(self, "Restart", "Server did not stop cleanly.")
-                    self._btn_restart.setText("↺  Restart")
-                    self._btn_restart.setEnabled(True)
-                    return
+                def _on_stop_done(stop_ok: bool, _stop_msg: str) -> None:
+                    if not stop_ok:
+                        QMessageBox.warning(self, "Restart", "Server did not stop cleanly.")
+                        self._btn_restart.setText("↺  Restart")
+                        self._btn_restart.setEnabled(True)
+                        return
+                    _do_start_phase()
+
+                self._run_tmux(
+                    lambda: self._tmux.stop(inst, graceful=True, timeout_s=90),
+                    _on_stop_done,
+                )
+            else:
                 _do_start_phase()
 
-            self._run_tmux(
-                lambda: self._tmux.stop(inst, graceful=True, timeout_s=90),
-                _on_stop_done,
-            )
-        else:
-            _do_start_phase()
+        # Check is_running() off the main thread to avoid blocking the UI
+        # (tmux has-session is a subprocess call)
+        self._run_tmux(
+            lambda: (True, "running" if self._tmux.is_running(inst) else "stopped"),
+            _after_check,
+        )
 
     def _do_attach(self) -> None:
         if not self._instance:
@@ -604,4 +614,11 @@ class InstancePanel(QWidget):
         self._notes.flush()
         self._tps_timer.stop()
         self._stop_watcher()
+        if self._watchdog is not None:
+            self._watchdog.stop()
+            self._watchdog = None
+        if self._wd_thread is not None:
+            self._wd_thread.quit()
+            self._wd_thread.wait(1000)
+            self._wd_thread = None
         super().closeEvent(event)

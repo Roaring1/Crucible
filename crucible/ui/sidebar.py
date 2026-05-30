@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 
 from ..data.instance_model import ServerInstance
 from . import theme
+from crucible import __version__
 
 
 class InstanceItem(QListWidgetItem):
@@ -134,7 +135,7 @@ class Sidebar(QWidget):
         layout.addWidget(add_btn)
 
         # Small version footer
-        footer = QLabel("Crucible v0.3.4")
+        footer = QLabel(f"Crucible v{__version__}")
         footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         footer.setStyleSheet(f"color: {theme.SURFACE2}; font-size: 10px; padding: 4px;")
         layout.addWidget(footer)

@@ -203,8 +203,11 @@ class BackupTab(QWidget):
         self._progress_lbl.hide()
         self._progress.hide()
         self._backup_btn.setEnabled(True)
-        self._thread.quit()
-        self._thread.wait()
+        if self._thread:
+            self._thread.quit()
+            self._thread.wait()
+        self._thread = None
+        self._worker = None
         self._manager.prune_old(self._prune_spin.value())
         self._refresh()
 
@@ -214,6 +217,9 @@ class BackupTab(QWidget):
         self._backup_btn.setEnabled(True)
         if self._thread:
             self._thread.quit()
+            self._thread.wait()
+        self._thread = None
+        self._worker = None
         QMessageBox.critical(self, "Backup Failed", error)
 
     def _confirm_delete(self, entry: BackupEntry) -> None:

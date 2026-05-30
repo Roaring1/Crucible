@@ -131,6 +131,11 @@ class AddInstanceDialog(QDialog):
             self._name_edit.setText(Path(text).name)
 
     def _on_accept(self) -> None:
+        # Second OK click after warnings were shown: instance already registered, just close.
+        if self.result_instance is not None:
+            self.accept()
+            return
+
         path    = self._path_edit.text().strip()
         name    = self._name_edit.text().strip() or Path(path).name
         version = self._ver_edit.text().strip() or "2.8.4"
@@ -153,10 +158,9 @@ class AddInstanceDialog(QDialog):
                 "⚠  Registered with warnings:\n• " + "\n• ".join(problems)
             )
             self._warn_label.show()
-            # Let the user see them; clicking OK a second time closes
             self.result_instance = inst
-            # Don't call accept() yet — allow user to read warnings
-            # They can click OK again or Cancel
+            # Don't call accept() yet — allow user to read warnings.
+            # Clicking OK again will hit the early-return guard above and accept.
             return
 
         self.result_instance = inst

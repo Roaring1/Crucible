@@ -7,6 +7,8 @@ Keep this the single source of truth — the Qt UI will ignore these entirely.
 
 import sys
 
+from crucible import __version__
+
 # ── ANSI codes ─────────────────────────────────────────────────────────────────
 
 BOLD   = "\033[1m"
@@ -52,7 +54,7 @@ def banner() -> str:
         f"{BOLD}{CYAN}"
         f"  ╔═══════════════════════════════╗\n"
         f"  ║   C R U C I B L E             ║\n"
-        f"  ║   GTNH Server Manager  v0.1   ║\n"
+        f"  ║   GTNH Server Manager  v{__version__}   ║\n"
         f"  ╚═══════════════════════════════╝"
         f"{RESET}\n"
     )

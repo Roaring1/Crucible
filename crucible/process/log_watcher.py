@@ -199,6 +199,11 @@ class LogWatcher(QObject):
                 raw = fh.read()
                 self._file_pos = fh.tell()
         except OSError:
+            # File disappeared between stat() and open() (e.g. mid-rotation).
+            # Treat as missing so the console shows the right state.
+            if not self._log_was_missing:
+                self._log_was_missing = True
+                self.log_missing.emit()
             return
 
         if not raw:
