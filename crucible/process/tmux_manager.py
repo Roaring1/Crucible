@@ -285,15 +285,16 @@ class TmuxManager:
         self, instances: list[ServerInstance]
     ) -> dict[str, Literal["running", "stopped"]]:
         """
-        Return {instance.id: status} for all instances in one pass.
-        More efficient than calling is_running() N times separately because
-        we call list-sessions once and do set membership for the rest.
+        Return {instance.id: status} for all instances.
+
+        Uses is_running() (tmux has-session -t <name>) per instance rather than
+        list_sessions() + prefix filtering.  list_sessions() only returns sessions
+        whose name starts with SESSION_PREFIX ('gtnh-'), so a session named 'gtnh'
+        (no dash — the common manual-start convention) would always appear stopped.
         """
         if not self.tmux_available():
             return {i.id: "stopped" for i in instances}
-
-        active = set(self.list_sessions())
         return {
-            i.id: ("running" if i.tmux_session in active else "stopped")
+            i.id: ("running" if self.is_running(i) else "stopped")
             for i in instances
         }
