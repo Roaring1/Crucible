@@ -2,20 +2,19 @@
 crucible/ui/instance_panel.py
 
 Right-hand panel shown when an instance is selected.
-Header: name, version badge, Start/Stop/Restart/Attach buttons, status dot.
-Body:   QTabWidget with Console, Mods, Notes, Info tabs.
+Header: name, version badge, Start/Stop/Restart/Console buttons, status dot.
+Body: QTabWidget with Console, Mods, Notes, Info, Config, Backups, Players.
 
-Status state machine
-────────────────────
-  stopped  →  starting  (tmux.start() succeeds)
-  starting →  running   (log watcher sees "Done (Xs)!" line)
-  running  →  stopping  (log watcher sees "Stopping the server")
-  stopping →  stopped   (health check: tmux session gone)
-  * → stopped           (health check: tmux session gone at any time)
-  stopped → running     (health check: session found — server started externally)
+Status state machine:
+  stopped  -> starting  (tmux.start() succeeds)
+  starting -> running   (log watcher sees "Done (Xs)!" line)
+  running  -> stopping  (log watcher sees "Stopping the server")
+  stopping -> stopped   (health check: tmux session gone)
+  * -> stopped          (health check: tmux session gone at any time)
+  stopped -> running    (health check: session found -- started externally)
 
-The health check NEVER overrides "starting" → "running" so that we don't
-flash "ONLINE" before the server is ready.  Only the log event does that.
+The health check never overrides "starting" -> "running".
+Only the log event does that.
 """
 
 from __future__ import annotations
@@ -89,12 +88,12 @@ class InstancePanel(QWidget):
         self._worker_threads: list[QThread]    = []  # keep refs alive until done
         self._workers:        list[_TmuxWorker] = []  # CRITICAL: prevent GC before thread runs
 
-        # Auto-TPS timer — fires every 30s when server is running
+        # Auto-TPS timer -- fires every 30s when server is running
         self._tps_timer = QTimer(self)
         self._tps_timer.setInterval(_TPS_POLL_MS)
         self._tps_timer.timeout.connect(self._auto_tps)
 
-    # ── Off-thread helper ─────────────────────────────────────────────────────
+    # Off-thread helper
 
     def _run_tmux(self, fn, callback) -> None:
         """Run fn() (a blocking TmuxManager call) in a worker QThread,
@@ -117,14 +116,14 @@ class InstancePanel(QWidget):
         self._workers.append(worker)   # MUST hold ref — PyQt6 won't
         thread.start()
 
-    # ── UI construction ───────────────────────────────────────────────────────
+    # UI construction
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── Header ──
+        # Header
         header = QWidget()
         header.setStyleSheet(
             f"background-color: {theme.MANTLE}; "
@@ -175,18 +174,24 @@ class InstancePanel(QWidget):
         self._btn_ip.clicked.connect(self._copy_external_ip)
         h_layout.addWidget(self._btn_ip)
 
-        # Buttons
+        # Buttons -- Start/Stop are primary actions; Restart/Console are secondary.
+        # Heights differ intentionally: primary pair is 32px, secondary 28px.
         self._btn_start   = QPushButton("▶  Start")
         self._btn_stop    = QPushButton("■  Stop")
         self._btn_restart = QPushButton("↺  Restart")
-        self._btn_attach  = QPushButton("⎋  Console")
+        self._btn_attach  = QPushButton("Console")
 
         self._btn_start.setObjectName("PrimaryButton")
         self._btn_stop.setObjectName("DangerButton")
+        self._btn_restart.setObjectName("RestartButton")
+        self._btn_attach.setObjectName("AttachButton")
 
-        for btn in (self._btn_start, self._btn_stop,
-                    self._btn_restart, self._btn_attach):
+        for btn in (self._btn_start, self._btn_stop):
             btn.setFixedHeight(32)
+            h_layout.addWidget(btn)
+
+        for btn in (self._btn_restart, self._btn_attach):
+            btn.setFixedHeight(28)
             h_layout.addWidget(btn)
 
         self._btn_start.clicked.connect(self._do_start)
@@ -196,7 +201,7 @@ class InstancePanel(QWidget):
 
         layout.addWidget(header)
 
-        # ── Tabs ──
+        # Tabs
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
 
@@ -273,7 +278,7 @@ class InstancePanel(QWidget):
         self._dot.setStyleSheet(f"color: {theme.SURFACE2}; font-size: 18px;")
         self._set_buttons_enabled(False)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # Public API
 
     def load(self, instance: ServerInstance) -> None:
         """Switch the panel to display the given instance."""
@@ -319,21 +324,21 @@ class InstancePanel(QWidget):
             start detected → running) is applied immediately.
         """
         if self._current_status == "starting" and status == "running":
-            # Session still alive but server not ready yet — keep "starting"
+            # Session still alive but server not ready yet -- keep "starting"
             return
         if self._current_status == "stopping" and status == "running":
-            # Session still alive, stop command issued — keep "stopping"
+            # Session still alive, stop command issued -- keep "stopping"
             return
 
         if status == self._current_status:
             return   # nothing changed — skip filesystem scan + widget rebuild
         # If the health check now says running but we were stopped,
-        # the server was probably started externally — accept it.
+        # the server was probably started externally -- accept it.
         self._update_status_display(status)
         if self._instance:
             self._info.load(self._instance, status)
 
-    # ── Sidebar context-menu proxies ──────────────────────────────────────────
+    # Sidebar context-menu proxies
 
     def _do_start_for(self, instance: ServerInstance) -> None:
         if self._instance is None or self._instance.id != instance.id:
@@ -350,7 +355,7 @@ class InstancePanel(QWidget):
             self.load(instance)
         self._do_restart()
 
-    # ── Watchdog lifecycle ────────────────────────────────────────────────────
+    # Watchdog lifecycle
 
     def _ensure_watchdog(self) -> None:
         if self._watchdog is not None:
@@ -383,7 +388,7 @@ class InstancePanel(QWidget):
         if self._instance and self._instance.id == instance_id:
             self._console._append_system(f"✗  Auto-restart failed: {reason}")
 
-    # ── Log watcher lifecycle ─────────────────────────────────────────────────
+    # Log watcher lifecycle
 
     def _start_watcher(self, instance: ServerInstance) -> None:
         self._w_thread = QThread()
@@ -417,7 +422,7 @@ class InstancePanel(QWidget):
             self._w_thread.wait(2000)
             self._w_thread = None
 
-    # ── Log-event handlers (called from main thread via queued signal) ─────────
+    # Log-event handlers (called from main thread via queued signal)
 
     @pyqtSlot(float)
     def _on_log_server_started(self, secs: float) -> None:
@@ -451,20 +456,20 @@ class InstancePanel(QWidget):
             if self._instance:
                 self.status_changed.emit(self._instance.id, "running")
 
-    # ── Auto-TPS ──────────────────────────────────────────────────────────────
+    # Auto-TPS
 
     def _auto_tps(self) -> None:
         """Periodically ask the server for TPS data via /forge tps."""
         if self._instance and self._current_status == "running":
             self._tmux.send_command(self._instance, "/forge tps")
 
-    # ── Status display ────────────────────────────────────────────────────────
+    # Status display
 
     def _update_status_display(self, status: str) -> None:
         self._current_status = status
         color = theme.STATUS_COLORS.get(status, theme.SURFACE2)
         self._dot.setStyleSheet(f"color: {color}; font-size: 18px;")
-        # Keep the console state label in sync with the panel — single source of truth
+        # Keep the console state label in sync with the panel -- single source of truth
         self._console.notify_status(status)
 
         label_text = {
@@ -492,7 +497,7 @@ class InstancePanel(QWidget):
                     self._btn_restart, self._btn_attach):
             btn.setEnabled(enabled)
 
-    # ── Button actions ────────────────────────────────────────────────────────
+    # Button actions
 
     def _do_start(self) -> None:
         if not self._instance:
@@ -504,7 +509,7 @@ class InstancePanel(QWidget):
         def _on_done(ok: bool, msg: str) -> None:
             if ok:
                 self._manager.update_instance(inst)
-                # Session created — enter "starting" state.
+                # Session created -- enter "starting" state.
                 # Header will transition to "ONLINE" only when the log
                 # watcher sees "Done (Xs)!" via _on_log_server_started.
                 self._update_status_display("starting")
@@ -574,7 +579,7 @@ class InstancePanel(QWidget):
             self._run_tmux(lambda: self._tmux.start(inst), _on_start_done)
 
         def _after_check(ok: bool, msg: str) -> None:
-            # msg is "running" or "stopped" — ok is always True
+            # msg is "running" or "stopped" -- ok is always True
             if msg == "running":
                 if self._watchdog:
                     self._watchdog.unwatch(inst.id)
@@ -608,7 +613,7 @@ class InstancePanel(QWidget):
         if not ok:
             QMessageBox.warning(self, "Attach", msg)
 
-    # ── Cleanup ───────────────────────────────────────────────────────────────
+    # Cleanup
 
     def closeEvent(self, event) -> None:
         self._notes.flush()

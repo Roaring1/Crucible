@@ -28,7 +28,7 @@ from ...data.instance_model import ServerInstance
 from .. import theme
 
 
-# Keys we want to sort first and highlight — grouped for readability
+# Keys we want to sort first and highlight -- grouped for readability
 _IMPORTANT: dict[str, list[str]] = {
     "Network":     ["server-port", "online-mode", "server-ip",
                     "enable-rcon", "rcon.port", "rcon.password",
@@ -45,7 +45,7 @@ _IMPORTANT: dict[str, list[str]] = {
 }
 
 # Keys where an ill-timed edit can corrupt a world or break a running server.
-# Maps key → short danger note shown as a ⚠ tooltip on the key cell.
+# Maps key -> short danger note shown as a ⚠ tooltip on the key cell.
 _DANGEROUS_KEYS: dict[str, str] = {
     "level-name": (
         "⚠ Changing this makes the server create/load a DIFFERENT world folder.\n"
@@ -92,14 +92,14 @@ class ConfigTab(QWidget):
 
         self._build_ui()
 
-    # ── UI construction ───────────────────────────────────────────────────────
+    # UI construction
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
-        # ── Toolbar ──
+        # Toolbar
         toolbar = QHBoxLayout()
 
         self._filter_edit = QLineEdit()
@@ -120,7 +120,7 @@ class ConfigTab(QWidget):
 
         layout.addLayout(toolbar)
 
-        # ── Warning banner (shown when file is missing) ──
+        # Warning banner (shown when file is missing)
         self._warn = QLabel("")
         self._warn.setWordWrap(True)
         self._warn.setStyleSheet(
@@ -130,7 +130,7 @@ class ConfigTab(QWidget):
         self._warn.hide()
         layout.addWidget(self._warn)
 
-        # ── Table ──
+        # Table
         self._table = QTableWidget()
         self._table.setColumnCount(2)
         self._table.setHorizontalHeaderLabels(["Property", "Value"])
@@ -146,12 +146,12 @@ class ConfigTab(QWidget):
                                     | QAbstractItemView.EditTrigger.SelectedClicked)
         layout.addWidget(self._table, stretch=1)
 
-        # ── Status line ──
+        # Status line
         self._status = QLabel("")
         self._status.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         layout.addWidget(self._status)
 
-        # ── Legend ──
+        # Legend
         legend = QLabel(
             f"<span style='color:{theme.ACCENT}'>■</span> Important properties   "
             f"<span style='color:{theme.GREEN}'>true</span> / "
@@ -161,13 +161,13 @@ class ConfigTab(QWidget):
         legend.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         layout.addWidget(legend)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # Public API
 
     def load(self, instance: ServerInstance) -> None:
         self._instance = instance
         self._reload()
 
-    # ── Internals ─────────────────────────────────────────────────────────────
+    # Internals
 
     def _reload(self) -> None:
         if self._instance is None:
@@ -219,7 +219,7 @@ class ConfigTab(QWidget):
             val = self._data[key]
             important = key in _IMPORTANT_SET
 
-            # ── Key cell (read-only) ──
+            # Key cell (read-only)
             key_item = QTableWidgetItem(key)
             key_item.setFlags(key_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             key_item.setForeground(QColor(theme.ACCENT if important else theme.SUBTEXT))
@@ -235,7 +235,7 @@ class ConfigTab(QWidget):
                 key_item.setToolTip(f"Group: {group}")
             self._table.setItem(row, 0, key_item)
 
-            # ── Value cell: QComboBox for booleans, QTableWidgetItem otherwise ──
+            # Value cell: QComboBox for booleans, QTableWidgetItem otherwise
             if val.lower() in ("true", "false"):
                 combo = QComboBox()
                 combo.addItem("true")

@@ -41,9 +41,9 @@ from PyQt6.QtCore import (
 from ..data.instance_model import ServerInstance
 
 
-# ── Regex patterns for log line parsing ───────────────────────────────────────
+# Regex patterns for log line parsing
 
-# "Done (67.412s)!" — server finished starting (handles integer seconds too)
+# "Done (67.412s)!" -- server finished starting (handles integer seconds too)
 _RE_DONE = re.compile(r"Done \(([\d.]+)s\)!")
 
 # "Stopping the server"
@@ -82,7 +82,7 @@ class LogWatcher(QObject):
         self._thread.start()
     """
 
-    # ── Signals ───────────────────────────────────────────────────────────────
+    # Signals
 
     new_lines       = pyqtSignal(list)   # list[str] — raw log lines, newest last
     tps_update      = pyqtSignal(float)  # TPS value parsed from /forge tps output
@@ -103,7 +103,7 @@ class LogWatcher(QObject):
         self._poll_timer: QTimer | None = None
         self._active          = False
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
+    # Lifecycle
 
     def start(self) -> None:
         """Call this after moveToThread() + thread.start()."""
@@ -114,7 +114,7 @@ class LogWatcher(QObject):
         self._watcher.directoryChanged.connect(self._on_dir_changed)
 
         # Primary layer: 1-second poll.
-        # Created HERE in the worker thread — QTimer requires same-thread ownership.
+        # Created HERE in the worker thread -- QTimer requires same-thread ownership.
         self._poll_timer = QTimer()
         self._poll_timer.timeout.connect(self._on_file_changed)
         self._poll_timer.start(1000)
@@ -139,7 +139,7 @@ class LogWatcher(QObject):
         self._attach_watchers()
         self._on_file_changed()
 
-    # ── Watcher setup ─────────────────────────────────────────────────────────
+    # Watcher setup
 
     def _attach_watchers(self) -> None:
         old = self._watcher.files() + self._watcher.directories()
@@ -154,7 +154,7 @@ class LogWatcher(QObject):
         if logs_dir.exists():
             self._watcher.addPath(str(logs_dir))
 
-    # ── Event handlers ────────────────────────────────────────────────────────
+    # Event handlers
 
     def _on_dir_changed(self, _path: str) -> None:
         """New file appeared in logs/ — re-attach and read."""
@@ -215,7 +215,7 @@ class LogWatcher(QObject):
             for line in lines:
                 self._parse(line)
 
-    # ── Line parsing ──────────────────────────────────────────────────────────
+    # Line parsing
 
     def _parse(self, line: str) -> None:
         if m := _RE_DONE.search(line):

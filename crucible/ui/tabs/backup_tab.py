@@ -47,14 +47,14 @@ class BackupTab(QWidget):
         self._worker:   BackupWorker | None   = None
         self._build_ui()
 
-    # ── UI ────────────────────────────────────────────────────────────────────
+    # UI
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(10)
 
-        # ── Info / action row ──
+        # Info / action row
         info_row = QHBoxLayout()
 
         self._world_label = QLabel("World: —")
@@ -77,7 +77,7 @@ class BackupTab(QWidget):
         info_row.addWidget(self._backup_btn)
         layout.addLayout(info_row)
 
-        # ── Backup storage path label ──
+        # Backup storage path label
         self._path_label = QLabel("")
         self._path_label.setStyleSheet(
             f"color: {theme.SURFACE2}; font-size: 11px; font-family: monospace;"
@@ -85,7 +85,7 @@ class BackupTab(QWidget):
         self._path_label.setWordWrap(True)
         layout.addWidget(self._path_label)
 
-        # ── Progress (hidden normally) ──
+        # Progress (hidden normally)
         self._progress_lbl = QLabel("Creating backup…")
         self._progress_lbl.setStyleSheet(
             f"color: {theme.SUBTEXT}; font-size: 12px;"
@@ -98,7 +98,7 @@ class BackupTab(QWidget):
         layout.addWidget(self._progress_lbl)
         layout.addWidget(self._progress)
 
-        # ── Table ──
+        # Table
         self._table = QTableWidget(0, 4)
         self._table.setHorizontalHeaderLabels(["Filename", "Size", "Created", ""])
         hh = self._table.horizontalHeader()
@@ -114,7 +114,7 @@ class BackupTab(QWidget):
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         layout.addWidget(self._table, stretch=1)
 
-        # ── Prune setting ──
+        # Prune setting
         prune_row = QHBoxLayout()
         prune_row.addWidget(QLabel("Keep at most:"))
         self._prune_spin = QSpinBox()
@@ -126,20 +126,20 @@ class BackupTab(QWidget):
         prune_row.addStretch()
         layout.addLayout(prune_row)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # Public API
 
     def load(self, instance: ServerInstance) -> None:
         self._instance = instance
         self._manager  = BackupManager(instance)
         self._refresh()
 
-    # ── Internals ─────────────────────────────────────────────────────────────
+    # Internals
 
     def _refresh(self) -> None:
         if not self._manager or not self._instance:
             return
 
-        # World label — read level-name from server.properties
+        # World label -- read level-name from server.properties
         props = Path(self._instance.path) / "server.properties"
         level_name = "world"
         if props.exists():

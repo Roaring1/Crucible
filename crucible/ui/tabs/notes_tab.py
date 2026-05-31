@@ -32,7 +32,7 @@ class NotesTab(QWidget):
 
         self._build_ui()
 
-    # ── UI ────────────────────────────────────────────────────────────────────
+    # UI
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -59,7 +59,7 @@ class NotesTab(QWidget):
         footer.addWidget(self._status)
         layout.addLayout(footer)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # Public API
 
     def load(self, instance: ServerInstance) -> None:
         """Load notes for a new instance, flushing any pending save first."""
@@ -79,7 +79,7 @@ class NotesTab(QWidget):
             self._save_timer.stop()
             self._save()
 
-    # ── Internal ─────────────────────────────────────────────────────────────
+    # Internal
 
     def _on_changed(self) -> None:
         self._dirty = True

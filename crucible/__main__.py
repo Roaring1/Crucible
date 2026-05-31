@@ -37,7 +37,7 @@ from .utils import (
 )
 
 
-# ── Shared helper ─────────────────────────────────────────────────────────────
+# Shared helper
 
 def resolve_instance(manager: InstanceManager, key: str):
     """Look up an instance by name or ID prefix, exit on failure."""
@@ -49,7 +49,7 @@ def resolve_instance(manager: InstanceManager, key: str):
     return inst
 
 
-# ── Command handlers ──────────────────────────────────────────────────────────
+# Command handlers
 
 def cmd_list(manager: InstanceManager, tmux: TmuxManager, _args) -> None:
     if not manager.instances:
@@ -419,7 +419,7 @@ def cmd_gui(manager: InstanceManager) -> None:
     _sys.exit(app.exec())
 
 
-# ── Argument parser ────────────────────────────────────────────────────────────
+# Argument parser
 
 def build_parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
@@ -429,13 +429,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = root.add_subparsers(dest="command", metavar="<command>")
 
-    # ── gui ──
+    # gui
     sub.add_parser("gui", help="Launch the graphical interface (requires PyQt6)")
 
-    # ── list ──
+    # list
     sub.add_parser("list", help="List all registered instances")
 
-    # ── add ──
+    # add
     p_add = sub.add_parser("add", help="Register a server directory")
     p_add.add_argument("path",              help="Path to the GTNH server directory")
     p_add.add_argument("--name",            help="Display name (default: directory name)")
@@ -449,30 +449,30 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    # ── remove ──
+    # remove
     p_rm = sub.add_parser("remove", help="Unregister an instance (files untouched)")
     p_rm.add_argument("name", help="Instance name or ID prefix")
 
-    # ── start ──
+    # start
     p_start = sub.add_parser("start", help="Start the server via tmux")
     p_start.add_argument("name", help="Instance name or ID prefix")
 
-    # ── stop ──
+    # stop
     p_stop = sub.add_parser("stop", help="Stop the server gracefully")
     p_stop.add_argument("name", help="Instance name or ID prefix")
     p_stop.add_argument("--force",   action="store_true", help="Force-kill (no world save)")
     p_stop.add_argument("--timeout", type=int, default=90, metavar="S", help="Graceful timeout in seconds (default: 90)")
 
-    # ── restart ──
+    # restart
     p_restart = sub.add_parser("restart", help="Stop then start the server")
     p_restart.add_argument("name", help="Instance name or ID prefix")
     p_restart.add_argument("--timeout", type=int, default=90, metavar="S", help="Graceful stop timeout (default: 90)")
 
-    # ── status ──
+    # status
     p_status = sub.add_parser("status", help="Show running/stopped status")
     p_status.add_argument("name", nargs="?", help="Instance name or ID (omit for all)")
 
-    # ── attach ──
+    # attach
     p_attach = sub.add_parser("attach", help="Open server console in a new terminal window")
     p_attach.add_argument("name", help="Instance name or ID prefix")
     p_attach.add_argument(
@@ -482,25 +482,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Terminal emulator to use (default: auto-detect)",
     )
 
-    # ── send ──
+    # send
     p_send = sub.add_parser("send", help="Send a command to the server console")
     p_send.add_argument("name",           help="Instance name or ID prefix")
     p_send.add_argument("command", nargs="+", help="Command to send (e.g. say hello)")
 
-    # ── scan ──
+    # scan
     p_scan = sub.add_parser("scan", help="Scan a directory tree for GTNH server installs")
     p_scan.add_argument("path",            help="Directory to scan")
     p_scan.add_argument("--depth", type=int, default=3, metavar="N", help="Max recursion depth (default: 3)")
 
-    # ── validate ──
+    # validate
     p_val = sub.add_parser("validate", help="Validate instance paths and config")
     p_val.add_argument("name", nargs="?", help="Instance name or ID (omit for all)")
 
-    # ── info ──
+    # info
     p_info = sub.add_parser("info", help="Show full details for one instance")
     p_info.add_argument("name", help="Instance name or ID prefix")
 
-    # ── edit ──
+    # edit
     p_edit = sub.add_parser("edit", help="Edit instance metadata")
     p_edit.add_argument("name",            help="Instance name or ID prefix")
     p_edit.add_argument("--rename",        metavar="NAME",    help="New display name")
@@ -513,7 +513,7 @@ def build_parser() -> argparse.ArgumentParser:
     return root
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# Entry point
 
 def main() -> None:
     parser = build_parser()

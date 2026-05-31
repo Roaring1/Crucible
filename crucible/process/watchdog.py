@@ -58,7 +58,7 @@ class Watchdog(QObject):
         # Timer created in start() on the worker thread
         self._poll_timer: QTimer | None = None
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
+    # Lifecycle
 
     def start(self) -> None:
         """Called after moveToThread() + thread.start()."""
@@ -74,7 +74,7 @@ class Watchdog(QObject):
             self._poll_timer.deleteLater()
             self._poll_timer = None
 
-    # ── Registration ──────────────────────────────────────────────────────────
+    # Registration
 
     def watch(self, instance: ServerInstance, auto_restart: bool = False) -> None:
         """
@@ -97,7 +97,7 @@ class Watchdog(QObject):
         self._auto_restart.pop(instance_id, None)
         self._crash_count.pop(instance_id, None)
 
-    # ── Poll ──────────────────────────────────────────────────────────────────
+    # Poll
 
     def _poll(self) -> None:
         if not self._active or not self._watching:

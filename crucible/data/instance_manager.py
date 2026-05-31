@@ -13,14 +13,14 @@ from pathlib import Path
 
 from .instance_model import ServerInstance
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
+# Paths
 
 CONFIG_DIR     = Path.home() / ".config" / "crucible"
 REGISTRY_FILE  = CONFIG_DIR / "instances.json"
 REGISTRY_VERSION = 1
 
 
-# ── Manager ────────────────────────────────────────────────────────────────────
+# Manager
 
 class InstanceManager:
     """
@@ -38,7 +38,7 @@ class InstanceManager:
         self.registry_file = config_dir / "instances.json"
         self.instances: list[ServerInstance] = []
 
-    # ── Persistence ───────────────────────────────────────────────────────────
+    # Persistence
 
     def load(self) -> None:
         """Load registry from disk.  Missing file → empty list (not an error)."""
@@ -54,7 +54,7 @@ class InstanceManager:
                 for d in data.get("instances", [])
             ]
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
-            # Corrupted file — surface the error but don't crash the app
+            # Corrupted file -- surface the error but don't crash the app
             print(f"[crucible] Warning: registry parse error ({exc}) — starting empty")
             self.instances = []
 
@@ -71,7 +71,7 @@ class InstanceManager:
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(self.registry_file)
 
-    # ── CRUD ──────────────────────────────────────────────────────────────────
+    # CRUD
 
     def add_instance(
         self,
@@ -146,7 +146,7 @@ class InstanceManager:
         self.instances = ordered + leftover
         self.save()
 
-    # ── Lookups ───────────────────────────────────────────────────────────────
+    # Lookups
 
     def get_by_id(self, instance_id: str) -> ServerInstance | None:
         for i in self.instances:
@@ -165,7 +165,7 @@ class InstanceManager:
         """Convenience: try name first, then ID prefix."""
         return self.get_by_name(key) or self.get_by_id(key)
 
-    # ── Discovery ─────────────────────────────────────────────────────────────
+    # Discovery
 
     def find_server_dirs(
         self,

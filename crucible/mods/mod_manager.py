@@ -64,7 +64,7 @@ class ModManager:
     def _mods_dir(self) -> Path:
         return Path(self.instance.path) / "mods"
 
-    # ── Listing ───────────────────────────────────────────────────────────────
+    # Listing
 
     def list_mods(self) -> list[ModEntry]:
         """
@@ -115,7 +115,7 @@ class ModManager:
     def count_enabled(self) -> int:
         return sum(1 for m in self.list_mods() if m.enabled)
 
-    # ── Enable / Disable ──────────────────────────────────────────────────────
+    # Enable / Disable
 
     def enable(self, mod: ModEntry) -> ModEntry:
         """Remove .disabled suffix, return updated entry."""
@@ -168,7 +168,7 @@ class ModManager:
             size_bytes = dst.stat().st_size,
         )
 
-    # ── Jar inspection ────────────────────────────────────────────────────────
+    # Jar inspection
 
     def inspect_jar(self, mod: ModEntry) -> None:
         """
@@ -180,14 +180,14 @@ class ModManager:
             with zipfile.ZipFile(mod.path, "r") as zf:
                 names = zf.namelist()
 
-                # ── mcmod.info (Forge 1.7.10) ──
+                # mcmod.info (Forge 1.7.10)
                 if "mcmod.info" in names:
                     with zf.open("mcmod.info") as f:
                         raw = f.read().decode("utf-8", errors="replace")
                     self._parse_mcmod(mod, raw)
                     return
 
-                # ── META-INF/MANIFEST.MF ──
+                # META-INF/MANIFEST.MF
                 if "META-INF/MANIFEST.MF" in names:
                     with zf.open("META-INF/MANIFEST.MF") as f:
                         mf = f.read().decode("utf-8", errors="replace")

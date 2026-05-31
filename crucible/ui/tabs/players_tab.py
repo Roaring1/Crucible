@@ -37,7 +37,7 @@ _AVATAR_CACHE_DIR = Path.home() / ".local" / "share" / "crucible-backups" / "ava
 _AVATAR_MAX_AGE_S = 7 * 24 * 3600
 
 
-# ── Avatar fetcher ─────────────────────────────────────────────────────────────
+# Avatar fetcher
 
 class _AvatarFetcher(QObject):
     """
@@ -57,7 +57,7 @@ class _AvatarFetcher(QObject):
     def run(self) -> None:
         cache = self._cache_path()
 
-        # Fresh disk cache — no network needed
+        # Fresh disk cache -- no network needed
         if cache.exists():
             age = time.time() - cache.stat().st_mtime
             if age < _AVATAR_MAX_AGE_S:
@@ -78,14 +78,14 @@ class _AvatarFetcher(QObject):
             if not pix.isNull():
                 self.fetched.emit(self._name, pix)
         except Exception:
-            # Offline / minotar down — try stale cache
+            # Offline / minotar down -- try stale cache
             if cache.exists():
                 pix = QPixmap(str(cache))
                 if not pix.isNull():
                     self.fetched.emit(self._name, pix)
 
 
-# ── Main tab ───────────────────────────────────────────────────────────────────
+# Main tab
 
 class PlayersTab(QWidget):
     """Online players + whitelist/ops/banned management."""
@@ -100,7 +100,7 @@ class PlayersTab(QWidget):
         self._avatar_fetchers: list[_AvatarFetcher] = []
         self._build_ui()
 
-    # ── UI ────────────────────────────────────────────────────────────────────
+    # UI
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -132,7 +132,7 @@ class PlayersTab(QWidget):
         sub.addTab(self._banned_w,    "Banned")
         layout.addWidget(sub, stretch=1)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # Public API
 
     def load(self, instance: ServerInstance) -> None:
         self._instance = instance
@@ -161,7 +161,7 @@ class PlayersTab(QWidget):
                 pass
             self._watcher = None
 
-    # ── Slots ─────────────────────────────────────────────────────────────────
+    # Slots
 
     @pyqtSlot(str)
     def _on_joined(self, name: str) -> None:
@@ -181,7 +181,7 @@ class PlayersTab(QWidget):
         self._online.clear()
         self._refresh_online_list()
 
-    # ── Avatar fetching ───────────────────────────────────────────────────────
+    # Avatar fetching
 
     def _fetch_avatar(self, name: str) -> None:
         thread  = QThread()
@@ -208,7 +208,7 @@ class PlayersTab(QWidget):
         if name in self._online:
             self._refresh_online_list()
 
-    # ── List rendering ────────────────────────────────────────────────────────
+    # List rendering
 
     def _refresh_online_list(self) -> None:
         self._online_list.clear()
@@ -227,7 +227,7 @@ class PlayersTab(QWidget):
             self._online_list.addItem(item)
 
 
-# ── Per-file list widget ───────────────────────────────────────────────────────
+# Per-file list widget
 
 class _PlayerListWidget(QWidget):
     """Reusable editor for whitelist / ops / banned JSON files."""

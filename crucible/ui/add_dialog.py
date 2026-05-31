@@ -61,7 +61,7 @@ class AddInstanceDialog(QDialog):
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         layout.addLayout(form)
 
-        # ── Path field ──
+        # Path field
         path_row = QHBoxLayout()
         self._path_edit = QLineEdit()
         self._path_edit.setPlaceholderText("/home/roaring/GTNH-Server-TEST")
@@ -75,16 +75,16 @@ class AddInstanceDialog(QDialog):
 
         form.addRow("Server path:", path_row)
 
-        # ── Name field ──
+        # Name field
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText("My GTNH Server")
         form.addRow("Display name:", self._name_edit)
 
-        # ── Version field ──
+        # Version field
         self._ver_edit = QLineEdit("2.8.4")
         form.addRow("GTNH version:", self._ver_edit)
 
-        # ── Session field ──
+        # Session field
         self._session_edit = QLineEdit()
         self._session_edit.setPlaceholderText("auto-derived from name  (e.g. gtnh-my-server)")
         form.addRow("tmux session:", self._session_edit)
@@ -97,7 +97,7 @@ class AddInstanceDialog(QDialog):
         hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         layout.addWidget(hint)
 
-        # ── Validation warning area ──
+        # Validation warning area
         self._warn_label = QLabel("")
         self._warn_label.setWordWrap(True)
         self._warn_label.setStyleSheet(
@@ -107,7 +107,7 @@ class AddInstanceDialog(QDialog):
         self._warn_label.hide()
         layout.addWidget(self._warn_label)
 
-        # ── Buttons ──
+        # Buttons
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
@@ -116,7 +116,7 @@ class AddInstanceDialog(QDialog):
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # Helpers
 
     def _browse(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -159,7 +159,7 @@ class AddInstanceDialog(QDialog):
             )
             self._warn_label.show()
             self.result_instance = inst
-            # Don't call accept() yet — allow user to read warnings.
+            # Don't call accept() yet -- allow user to read warnings.
             # Clicking OK again will hit the early-return guard above and accept.
             return
 

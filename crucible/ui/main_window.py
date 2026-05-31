@@ -55,10 +55,10 @@ class MainWindow(QMainWindow):
         if manager.instances:
             self._sidebar.select_by_id(manager.instances[0].id)
 
-    # ── UI construction ───────────────────────────────────────────────────────
+    # UI construction
 
     def _build_ui(self) -> None:
-        # ── Central widget: splitter ──
+        # Central widget: splitter
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setChildrenCollapsible(True)
         self._splitter.setHandleWidth(5)
@@ -85,7 +85,7 @@ class MainWindow(QMainWindow):
         self._splitter.setStretchFactor(1, 1)
         self._splitter.setSizes([240, 960])
 
-        # ── Status bar ──
+        # Status bar
         sb = QStatusBar()
         sb.setFixedHeight(24)
         self.setStatusBar(sb)
@@ -97,14 +97,14 @@ class MainWindow(QMainWindow):
 
         self._update_status_bar()
 
-    # ── Population ────────────────────────────────────────────────────────────
+    # Population
 
     def _populate_sidebar(self) -> None:
         status_map = self._tmux.status_map(self._manager.instances)
         self._sidebar.populate(self._manager.instances, status_map)
         self._update_status_bar()
 
-    # ── Health check timer ────────────────────────────────────────────────────
+    # Health check timer
 
     def _start_health_timer(self) -> None:
         self._health_timer = QTimer(self)
@@ -124,7 +124,7 @@ class MainWindow(QMainWindow):
 
         self._update_status_bar()
 
-    # ── Status bar ────────────────────────────────────────────────────────────
+    # Status bar
 
     def _update_status_bar(self) -> None:
         n = len(self._manager.instances)
@@ -138,7 +138,7 @@ class MainWindow(QMainWindow):
             self._sb_tmux.setText("tmux not found")
             self._sb_tmux.setStyleSheet(f"color: {theme.RED};")
 
-    # ── Event handlers ────────────────────────────────────────────────────────
+    # Event handlers
 
     def _on_instance_selected(self, instance: ServerInstance) -> None:
         self._panel.load(instance)
@@ -169,7 +169,7 @@ class MainWindow(QMainWindow):
             self._sidebar.remove_instance(instance.id)
             self._update_status_bar()
 
-    # ── Close ─────────────────────────────────────────────────────────────────
+    # Close
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._health_timer.stop()

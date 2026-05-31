@@ -104,7 +104,7 @@ class Sidebar(QWidget):
         super().__init__(parent)
         self.setObjectName("Sidebar")
         self.setMinimumWidth(160)
-        # No setMaximumWidth — let the splitter handle sizing freely
+        # No setMaximumWidth -- let the splitter handle sizing freely
 
         self._items: dict[str, InstanceItem] = {}  # id → item
 
@@ -115,19 +115,19 @@ class Sidebar(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── Title bar ──
+        # Title bar
         title = QLabel("SERVERS")
         title.setObjectName("SidebarTitle")
         layout.addWidget(title)
 
-        # ── Instance list ──
+        # Instance list
         self._list = SidebarList()
         self._list.currentItemChanged.connect(self._on_selection_changed)
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._on_context_menu)
         layout.addWidget(self._list, stretch=1)
 
-        # ── Add button ──
+        # Add button
         add_btn = QPushButton("＋  Add Server")
         add_btn.setObjectName("SidebarAddButton")
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -140,7 +140,7 @@ class Sidebar(QWidget):
         footer.setStyleSheet(f"color: {theme.SURFACE2}; font-size: 10px; padding: 4px;")
         layout.addWidget(footer)
 
-    # ── Population ────────────────────────────────────────────────────────────
+    # Population
 
     def populate(
         self,
@@ -193,7 +193,7 @@ class Sidebar(QWidget):
             return item.instance
         return None
 
-    # ── Events ────────────────────────────────────────────────────────────────
+    # Events
 
     def _on_selection_changed(
         self, current: QListWidgetItem, _prev: QListWidgetItem

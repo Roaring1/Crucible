@@ -24,7 +24,7 @@ from .. import theme
 MAX_LINES    = 2000
 HISTORY_SIZE = 100
 
-# Map log level → hex color
+# Map log level -> hex color
 _LEVEL_RE = re.compile(
     r"\[(?:Server thread|main|Forge Version Check|FMLTweaker)/(\w+)\]"
 )
@@ -60,14 +60,14 @@ class ConsoleTab(QWidget):
 
         self._build_ui()
 
-    # ── UI construction ───────────────────────────────────────────────────────
+    # UI construction
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── Log view ──
+        # Log view
         self._view = QPlainTextEdit()
         self._view.setObjectName("ConsoleView")
         self._view.setReadOnly(True)
@@ -81,12 +81,12 @@ class ConsoleTab(QWidget):
         font.setFixedPitch(True)
         self._view.setFont(font)
 
-        # Detect manual scroll-up → disable auto-scroll
+        # Detect manual scroll-up -> disable auto-scroll
         self._view.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
         layout.addWidget(self._view, stretch=1)
 
-        # ── Status bar row ──
+        # Status bar row
         status_row = QWidget()
         status_row.setStyleSheet(
             f"background-color: {theme.CRUST}; "
@@ -110,7 +110,7 @@ class ConsoleTab(QWidget):
 
         layout.addWidget(status_row)
 
-        # ── Command input row ──
+        # Command input row
         cmd_row = QWidget()
         cmd_row.setStyleSheet(
             f"background-color: {theme.MANTLE}; "
@@ -164,7 +164,7 @@ class ConsoleTab(QWidget):
         layout.addWidget(cmd_row)
         layout.addWidget(opts_row)
 
-        # ── Quick commands row ──
+        # Quick commands row
         quick_row = QWidget()
         quick_row.setStyleSheet(
             f"background-color: {theme.CRUST}; "
@@ -209,7 +209,7 @@ class ConsoleTab(QWidget):
 
         self._active_players: set[str] = set()
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # Public API
 
     def attach(self, instance: ServerInstance, watcher: LogWatcher) -> None:
         """Connect to a new instance and its log watcher."""
@@ -252,7 +252,7 @@ class ConsoleTab(QWidget):
     def clear_console(self) -> None:
         self._view.clear()
 
-    # ── Slots ─────────────────────────────────────────────────────────────────
+    # Slots
 
     @pyqtSlot(list)
     def _on_new_lines(self, lines: list[str]) -> None:
@@ -321,7 +321,7 @@ class ConsoleTab(QWidget):
     def _on_log_missing(self) -> None:
         self._set_state("○ No log file yet — server offline or still starting", theme.SURFACE2)
 
-    # ── Internal helpers ──────────────────────────────────────────────────────
+    # Internal helpers
 
     def _update_player_label(self) -> None:
         n = len(self._active_players)
@@ -348,7 +348,7 @@ class ConsoleTab(QWidget):
             "tmux_missing": ("⚠ tmux missing", theme.RED),
         }
         text, color = mapping.get(status, (status.capitalize(), theme.SURFACE2))
-        # Don't clobber a more-specific log-watcher message for running state —
+        # Don't clobber a more-specific log-watcher message for running state --
         # e.g. "● Online  (started in 12.3s)" should survive a health-check ping.
         current = self._server_state_label.text()
         if status == "running" and "Online" in current:
@@ -369,7 +369,7 @@ class ConsoleTab(QWidget):
         fmt.setForeground(QColor(theme.SURFACE2))
         cursor.insertText(f"{msg}\n", fmt)
 
-    # ── Quick commands ────────────────────────────────────────────────────────
+    # Quick commands
 
     def _quick_send(self, cmd: str) -> None:
         """Send a preset command directly."""
@@ -388,7 +388,7 @@ class ConsoleTab(QWidget):
         self._cmd_input.setFocus()
         self._cmd_input.setCursorPosition(len("say "))
 
-    # ── Command sending ───────────────────────────────────────────────────────
+    # Command sending
 
     def _send_command(self) -> None:
         if self._instance is None:
@@ -433,7 +433,7 @@ class ConsoleTab(QWidget):
             # Default handling for all other keys
             QLineEdit.keyPressEvent(self._cmd_input, event)
 
-    # ── Auto-scroll ───────────────────────────────────────────────────────────
+    # Auto-scroll
 
     def _on_scroll(self, value: int) -> None:
         """If user scrolls away from bottom, pause auto-scroll."""
@@ -452,7 +452,7 @@ class ConsoleTab(QWidget):
                 self._view.verticalScrollBar().maximum()
             )
 
-    # ── Open log ──────────────────────────────────────────────────────────────
+    # Open log
 
     def _open_log(self) -> None:
         if self._instance is None:

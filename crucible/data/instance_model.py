@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 
-# ── Script names GTNH has used across versions ────────────────────────────────
+# Script names GTNH has used across versions
 
 _START_SCRIPT_NAMES = [
     "startserver-java9.sh",  # GTNH 2.8.x with java9args.txt (most common on 2.8.4)
@@ -26,7 +26,7 @@ _START_SCRIPT_NAMES = [
 ]
 
 
-# ── Data model ────────────────────────────────────────────────────────────────
+# Data model
 
 @dataclass
 class ServerInstance:
@@ -54,7 +54,7 @@ class ServerInstance:
         if not self.tmux_session:
             self.tmux_session = self._derive_session_name(self.name)
 
-    # ── Session name ──────────────────────────────────────────────────────────
+    # Session name
 
     @staticmethod
     def _derive_session_name(name: str) -> str:
@@ -64,7 +64,7 @@ class ServerInstance:
         slug = "".join(c for c in slug if c.isalnum() or c == "-")
         return f"gtnh-{slug}"
 
-    # ── Serialization ─────────────────────────────────────────────────────────
+    # Serialization
 
     def to_dict(self) -> dict:
         return {
@@ -97,7 +97,7 @@ class ServerInstance:
             last_started = d.get("last_started"),
         )
 
-    # ── Validation ────────────────────────────────────────────────────────────
+    # Validation
 
     def validate(self) -> list[str]:
         """
@@ -137,7 +137,7 @@ class ServerInstance:
 
         return problems
 
-    # ── Filesystem helpers ────────────────────────────────────────────────────
+    # Filesystem helpers
 
     @property
     def path_obj(self) -> Path:
@@ -153,7 +153,7 @@ class ServerInstance:
             candidate = p / name
             if candidate.exists():
                 return candidate
-        # Glob fallback — catches e.g. start-prod.sh
+        # Glob fallback -- catches e.g. start-prod.sh
         for match in sorted(p.glob("start*.sh")) + sorted(p.glob("Start*.sh")):
             return match
         return None
@@ -247,7 +247,7 @@ class ServerInstance:
                 found.append(candidate)
         return found
 
-    # ── Display helpers ───────────────────────────────────────────────────────
+    # Display helpers
 
     def short_id(self) -> str:
         return self.id[:8]

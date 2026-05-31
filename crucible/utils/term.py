@@ -9,7 +9,7 @@ import sys
 
 from crucible import __version__
 
-# ── ANSI codes ─────────────────────────────────────────────────────────────────
+# ANSI codes
 
 BOLD   = "\033[1m"
 DIM    = "\033[2m"
@@ -21,7 +21,7 @@ PURPLE = "\033[35m"
 RESET  = "\033[0m"
 
 
-# ── Formatted print helpers ────────────────────────────────────────────────────
+# Formatted print helpers
 
 def ok(msg: str) -> None:
     print(f"  {GREEN}✓{RESET}  {msg}")

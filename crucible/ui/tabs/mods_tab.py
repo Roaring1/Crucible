@@ -22,7 +22,7 @@ from ...mods.mod_manager import ModManager, ModEntry
 from .. import theme
 
 
-# ── Background inspection worker ──────────────────────────────────────────────
+# Background inspection worker
 
 class _InspectWorker(QObject):
     """Reads mod metadata from jar files in a background thread."""
@@ -40,7 +40,7 @@ class _InspectWorker(QObject):
         self.thread().quit()  # signal the QThread event loop to exit
 
 
-# ── Main tab ──────────────────────────────────────────────────────────────────
+# Main tab
 
 class ModsTab(QWidget):
     """Mod management table for one server instance."""
@@ -61,14 +61,14 @@ class ModsTab(QWidget):
         self._build_ui()
         self.setAcceptDrops(True)
 
-    # ── UI ────────────────────────────────────────────────────────────────────
+    # UI
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
-        # ── Toolbar ──
+        # Toolbar
         toolbar = QHBoxLayout()
 
         self._filter = QLineEdit()
@@ -88,7 +88,7 @@ class ModsTab(QWidget):
 
         layout.addLayout(toolbar)
 
-        # ── Table ──
+        # Table
         self._table = QTableWidget()
         self._table.setColumnCount(5)
         self._table.setHorizontalHeaderLabels(
@@ -114,12 +114,12 @@ class ModsTab(QWidget):
 
         layout.addWidget(self._table, stretch=1)
 
-        # ── Footer ──
+        # Footer
         self._count_label = QLabel("")
         self._count_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         layout.addWidget(self._count_label)
 
-        # ── Drop hint ──
+        # Drop hint
         self._drop_hint = QLabel("Drop .jar files here to add mods")
         self._drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._drop_hint.setStyleSheet(
@@ -127,7 +127,7 @@ class ModsTab(QWidget):
         )
         layout.addWidget(self._drop_hint)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # Public API
 
     def load(self, instance: ServerInstance) -> None:
         """Switch to displaying mods for the given instance."""
@@ -143,7 +143,7 @@ class ModsTab(QWidget):
         self._update_count()
         self._start_inspect_pass()
 
-    # ── Table population ──────────────────────────────────────────────────────
+    # Table population
 
     def _populate_table(self, mods: list[ModEntry]) -> None:
         self._table.setSortingEnabled(False)
@@ -231,7 +231,7 @@ class ModsTab(QWidget):
             parts.append(f"{bundled} bundled (not manageable)")
         self._count_label.setText("  ·  ".join(parts))
 
-    # ── Mod actions ───────────────────────────────────────────────────────────
+    # Mod actions
 
     def _toggle_mod(self, mod: ModEntry, row: int, enable: bool) -> None:
         if self._manager is None:
@@ -268,7 +268,7 @@ class ModsTab(QWidget):
             except OSError as exc:
                 QMessageBox.critical(self, "Error", f"Could not delete:\n{exc}")
 
-    # ── Add from file / drag-drop ─────────────────────────────────────────────
+    # Add from file / drag-drop
 
     def _pick_file(self) -> None:
         if self._manager is None:
@@ -304,7 +304,7 @@ class ModsTab(QWidget):
         if added:
             self.refresh()
 
-    # ── Background jar inspection ─────────────────────────────────────────────
+    # Background jar inspection
 
     def _start_inspect_pass(self) -> None:
         """Kick off background jar inspection to fill in mod names/versions."""

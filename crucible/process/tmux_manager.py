@@ -39,7 +39,7 @@ class TmuxManager:
 
     SESSION_PREFIX = "gtnh-"
 
-    # ── Internal subprocess wrapper ───────────────────────────────────────────
+    # Internal subprocess wrapper
 
     def _run(
         self,
@@ -64,13 +64,13 @@ class TmuxManager:
             # tmux not installed
             return subprocess.CompletedProcess(cmd, returncode=127, stdout="", stderr="tmux not found")
 
-    # ── Session name ──────────────────────────────────────────────────────────
+    # Session name
 
     def session_name(self, instance: ServerInstance) -> str:
         """Return the tmux session name for this instance."""
         return instance.tmux_session
 
-    # ── Status checks ─────────────────────────────────────────────────────────
+    # Status checks
 
     def is_running(self, instance: ServerInstance) -> bool:
         """Return True if a tmux session exists for this instance."""
@@ -107,7 +107,7 @@ class TmuxManager:
             if s.strip().startswith(self.SESSION_PREFIX)
         ]
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
+    # Lifecycle
 
     def start(self, instance: ServerInstance) -> tuple[bool, str]:
         """
@@ -183,7 +183,7 @@ class TmuxManager:
             if not self.is_running(instance):
                 return True, f"Server stopped gracefully after {elapsed}s"
 
-        # Timed out — fall through to force kill
+        # Timed out -- fall through to force kill
         ok, msg = self._force_kill(instance)
         if ok:
             return True, f"Server did not stop within {timeout_s}s — force-killed"
@@ -197,7 +197,7 @@ class TmuxManager:
             return True, f"Session '{session}' force-killed"
         return False, f"kill-session failed: {result.stderr.strip()}"
 
-    # ── Console interaction ───────────────────────────────────────────────────
+    # Console interaction
 
     def send_command(self, instance: ServerInstance, command: str) -> bool:
         """
@@ -237,7 +237,7 @@ class TmuxManager:
         session    = self.session_name(instance)
         attach_cmd = f"tmux attach -t {session}"
 
-        # Terminal → [command, ...] mapping
+        # Terminal -> [command, ...] mapping
         # Each command opens a new window running attach_cmd
         terminal_cmds: dict[str, list[str]] = {
             "konsole":        ["konsole", "-e", attach_cmd],
@@ -279,7 +279,7 @@ class TmuxManager:
                 f"  Run manually: {attach_cmd}",
             )
 
-    # ── Bulk queries (for the future sidebar health-check timer) ──────────────
+    # Bulk queries (for the future sidebar health-check timer)
 
     def status_map(
         self, instances: list[ServerInstance]
