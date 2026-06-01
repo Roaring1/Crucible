@@ -43,7 +43,7 @@ class MainWindow(QMainWindow):
         self._manager = manager
         self._tmux    = TmuxManager()
 
-        self.setWindowTitle("Crucible — GTNH Server Manager")
+        self.setWindowTitle("Crucible — Minecraft Server Manager")
         self.resize(1200, 760)
         self.setMinimumSize(900, 600)
 

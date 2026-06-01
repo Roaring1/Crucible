@@ -42,7 +42,7 @@ class AddInstanceDialog(QDialog):
         layout.setSpacing(12)
         layout.setContentsMargins(20, 16, 20, 16)
 
-        title = QLabel("Register a GTNH Server Directory")
+        title = QLabel("Register a Server Directory")
         title.setStyleSheet(
             f"font-size: 16px; font-weight: 700; color: {theme.TEXT};"
         )
@@ -64,7 +64,7 @@ class AddInstanceDialog(QDialog):
         # Path field
         path_row = QHBoxLayout()
         self._path_edit = QLineEdit()
-        self._path_edit.setPlaceholderText("/home/roaring/GTNH-Server-TEST")
+        self._path_edit.setPlaceholderText("/path/to/my-server")
         self._path_edit.textChanged.connect(self._auto_fill_name)
         path_row.addWidget(self._path_edit, stretch=1)
 
@@ -77,16 +77,16 @@ class AddInstanceDialog(QDialog):
 
         # Name field
         self._name_edit = QLineEdit()
-        self._name_edit.setPlaceholderText("My GTNH Server")
+        self._name_edit.setPlaceholderText("My Server")
         form.addRow("Display name:", self._name_edit)
 
-        # Version field
-        self._ver_edit = QLineEdit("2.8.4")
-        form.addRow("GTNH version:", self._ver_edit)
+        self._ver_edit = QLineEdit()
+        self._ver_edit.setPlaceholderText("e.g. 2.8.4  (optional)")
+        form.addRow("Version:", self._ver_edit)
 
         # Session field
         self._session_edit = QLineEdit()
-        self._session_edit.setPlaceholderText("auto-derived from name  (e.g. gtnh-my-server)")
+        self._session_edit.setPlaceholderText("auto-derived from name  (e.g. my-server)")
         form.addRow("tmux session:", self._session_edit)
 
         hint = QLabel(
@@ -120,7 +120,7 @@ class AddInstanceDialog(QDialog):
 
     def _browse(self) -> None:
         path = QFileDialog.getExistingDirectory(
-            self, "Select GTNH Server Directory", str(Path.home())
+            self, "Select Server Directory", str(Path.home())
         )
         if path:
             self._path_edit.setText(path)

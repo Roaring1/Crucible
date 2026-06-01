@@ -37,7 +37,7 @@ class TmuxManager:
     which is fine for Stage 1 CLI use.
     """
 
-    SESSION_PREFIX = "gtnh-"
+    SESSION_PREFIX = ""  # set to a prefix string to filter list_sessions() results
 
     # Internal subprocess wrapper
 
@@ -95,17 +95,18 @@ class TmuxManager:
 
     def list_sessions(self) -> list[str]:
         """
-        Return all active tmux session names that have our prefix.
-        Returns empty list if tmux isn't running or no sessions exist.
+        Return all active tmux session names.
+        If SESSION_PREFIX is set, only sessions starting with that string are returned.
+        Not used by status_map() (which calls is_running() per instance).
+        Useful for debugging or CLI summary commands.
         """
         result = self._run(["tmux", "list-sessions", "-F", "#{session_name}"])
         if result.returncode != 0:
             return []
-        return [
-            s.strip()
-            for s in result.stdout.splitlines()
-            if s.strip().startswith(self.SESSION_PREFIX)
-        ]
+        sessions = [s.strip() for s in result.stdout.splitlines() if s.strip()]
+        if self.SESSION_PREFIX:
+            sessions = [s for s in sessions if s.startswith(self.SESSION_PREFIX)]
+        return sessions
 
     # Lifecycle
 
