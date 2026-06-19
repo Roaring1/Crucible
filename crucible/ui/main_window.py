@@ -17,11 +17,14 @@ pushes updates to sidebar and instance panel.
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QCloseEvent
+from PyQt6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QMainWindow, QSplitter, QWidget, QStatusBar, QLabel,
-    QMessageBox,
+    QMessageBox, QApplication,
 )
 
 from ..data.instance_manager import InstanceManager
@@ -46,6 +49,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Crucible — Minecraft Server Manager")
         self.resize(1200, 760)
         self.setMinimumSize(900, 600)
+        self.setAcceptDrops(True)  # drag in Prism instances / packs / server dirs
 
         self._build_ui()
         self._populate_sidebar()
@@ -156,18 +160,123 @@ class MainWindow(QMainWindow):
         self._sidebar.update_status(instance_id, status)
 
     def _on_remove_requested(self, instance) -> None:
-        from PyQt6.QtWidgets import QMessageBox
-        reply = QMessageBox.question(
-            self,
-            "Remove Instance",
-            f"Remove \"{instance.name}\" from Crucible?\n\n"
-            f"The server files on disk are NOT deleted.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            self._manager.remove_instance(instance.id)
-            self._sidebar.remove_instance(instance.id)
-            self._update_status_bar()
+        box = QMessageBox(self)
+        box.setWindowTitle("Remove Instance")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(f"Remove \"{instance.name}\" from Crucible?")
+        box.setInformativeText(
+            "\u2022 Remove from list keeps the server files on disk "
+            "(you can re-add them later).\n"
+            "\u2022 Delete files too permanently removes the entire server "
+            f"folder:\n   {instance.path}\n\nThis cannot be undone.")
+        remove_btn = box.addButton("Remove from list",
+                                   QMessageBox.ButtonRole.AcceptRole)
+        delete_btn = box.addButton("Delete files too",
+                                   QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel_btn)
+        box.exec()
+        clicked = box.clickedButton()
+
+        if clicked is cancel_btn or clicked is None:
+            return
+
+        path = getattr(instance, "path", "") or ""
+
+        if clicked is delete_btn:
+            # Second confirmation for the irreversible option.
+            confirm = QMessageBox.warning(
+                self, "Delete files from disk",
+                f"Permanently delete ALL files for \"{instance.name}\"?\n\n"
+                f"{path}\n\nThis includes worlds, configs and backups. "
+                "This cannot be undone.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+
+        # Always unregister first so the registry never points at deleted files.
+        self._manager.remove_instance(instance.id)
+        self._sidebar.remove_instance(instance.id)
+
+        if clicked is delete_btn and path:
+            try:
+                shutil.rmtree(path, ignore_errors=False)
+            except OSError as e:
+                QMessageBox.critical(
+                    self, "Delete failed",
+                    f"Removed \"{instance.name}\" from the list, but the files "
+                    f"could not be fully deleted:\n\n{e}\n\n"
+                    "You may need to delete the folder manually.")
+            else:
+                self.statusBar().showMessage(
+                    f"Deleted \"{instance.name}\" and its files from disk", 5000)
+
+        self._update_status_bar()
+
+    # Drag and drop import
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        paths = [u.toLocalFile() for u in event.mimeData().urls()
+                 if u.toLocalFile()]
+        if not paths:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        for p in paths:
+            self._import_dropped_path(Path(p))
+
+    def _import_dropped_path(self, path: Path) -> None:
+        """Import a dropped Prism instance folder, pack archive, or server dir."""
+        if not path.exists():
+            return
+        name = path.stem if path.is_file() else path.name
+        archive = path.is_file() and path.suffix.lower() in (".zip", ".mrpack")
+        is_prism = path.is_dir() and (
+            (path / "mmc-pack.json").exists() or (path / "instance.cfg").exists())
+        is_server = path.is_dir() and (
+            (path / "server.properties").exists()
+            or (path / "eula.txt").exists()
+            or (path / "mods").is_dir())
+
+        try:
+            if archive or is_prism:
+                from ..importers.prism import import_prism_source
+                target = Path.home() / "CrucibleServers" / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+                try:
+                    import_prism_source(str(path), str(target))
+                finally:
+                    QApplication.restoreOverrideCursor()
+                inst = self._manager.add_instance(str(target), name)
+            elif is_server:
+                inst = self._manager.add_instance(str(path), name)
+            else:
+                QMessageBox.information(
+                    self, "Drag and drop",
+                    "Drop a Prism/MultiMC instance folder, a .zip/.mrpack "
+                    "modpack, or a Minecraft server folder to import it.")
+                return
+        except ValueError as e:
+            QMessageBox.warning(self, "Import failed", str(e))
+            return
+        except Exception as e:  # noqa: BLE001 - surface import failure to user
+            QMessageBox.critical(self, "Import failed",
+                                 f"Could not import \"{name}\":\n\n{e}")
+            return
+
+        status = self._tmux.get_status(inst)
+        self._sidebar.add_instance(inst, status)
+        self._sidebar.select_by_id(inst.id)
+        self._update_status_bar()
 
     # Close
 

@@ -35,7 +35,7 @@ from ..process.tmux_manager import TmuxManager
 from ..process.log_watcher import LogWatcher
 from ..process.watchdog import Watchdog
 from . import theme
-from .tabs import ConsoleTab, ModsTab, NotesTab, InfoTab, ConfigTab, BackupTab, PlayersTab, SetupTab
+from .tabs import ConsoleTab, ModsTab, NotesTab, InfoTab, ConfigTab, BackupTab, PlayersTab, SetupTab, SystemTab
 
 # How often to auto-query TPS when server is running (ms)
 _TPS_POLL_MS = 30_000
@@ -213,6 +213,7 @@ class InstancePanel(QWidget):
         self._config  = ConfigTab()
         self._backup  = BackupTab()
         self._players = PlayersTab()
+        self._system  = SystemTab()
 
         # "Setup" is first so non-technical owners land on the easy checklist.
         self._tabs.addTab(self._setup,   "🧭  Setup")
@@ -223,6 +224,7 @@ class InstancePanel(QWidget):
         self._tabs.addTab(self._config,  "⚙  Config")
         self._tabs.addTab(self._backup,  "💾  Backups")
         self._tabs.addTab(self._players, "👥  Players")
+        self._tabs.addTab(self._system,  "📊  System")
 
         layout.addWidget(self._tabs, stretch=1)
 
@@ -317,6 +319,7 @@ class InstancePanel(QWidget):
         self._config.load(instance)
         self._backup.load(instance)
         self._players.load(instance)
+        self._system.load(instance)
 
         # Start log watcher
         self._start_watcher(instance)
@@ -468,9 +471,15 @@ class InstancePanel(QWidget):
     # Auto-TPS
 
     def _auto_tps(self) -> None:
-        """Periodically ask the server for TPS data via /forge tps."""
+        """Periodically ask the server for TPS data, if its loader supports it.
+
+        Vanilla/Fabric/Quilt have no TPS command, so we send nothing rather than
+        spamming "Unknown or incomplete command" into their console.
+        """
         if self._instance and self._current_status == "running":
-            self._tmux.send_command(self._instance, "/forge tps")
+            cmd = self._instance.tps_command()
+            if cmd:
+                self._tmux.send_command(self._instance, cmd)
 
     # Status display
 

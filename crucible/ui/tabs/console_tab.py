@@ -178,9 +178,10 @@ class ConsoleTab(QWidget):
         quick_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         qr_layout.addWidget(quick_label)
 
-        # Each tuple: (button label, command to send)
+        # Each tuple: (button label, command to send). "__TPS__"/None are
+        # handled specially (TPS is loader-aware; Say opens a mini prompt).
         _QUICK_CMDS = [
-            ("TPS",         "/forge tps"),
+            ("TPS",         "__TPS__"),
             ("List",        "list"),
             ("Save",        "save-all"),
             ("Whitelist",   "whitelist list"),
@@ -193,7 +194,9 @@ class ConsoleTab(QWidget):
                 f"font-size: 11px; padding: 2px 8px; "
                 f"border-radius: 4px;"
             )
-            if cmd is not None:
+            if cmd == "__TPS__":
+                btn.clicked.connect(self._quick_tps)
+            elif cmd is not None:
                 btn.clicked.connect(lambda _checked, c=cmd: self._quick_send(c))
             else:
                 btn.clicked.connect(self._quick_say)
@@ -381,6 +384,20 @@ class ConsoleTab(QWidget):
             self._append_system(f"» {cmd}")
         else:
             self._append_system("Quick command failed (is server running?)")
+
+    def _quick_tps(self) -> None:
+        """Send the loader-appropriate TPS command, or explain if there isn't one."""
+        if self._instance is None:
+            return
+        cmd = self._instance.tps_command()
+        if not cmd:
+            loader = (self._instance.loader or "vanilla") or "vanilla"
+            self._append_system(
+                f"This server ({loader}) has no built-in TPS command. "
+                "TPS reporting is available on Forge/NeoForge and Paper-family "
+                "servers.")
+            return
+        self._quick_send(cmd)
 
     def _quick_say(self) -> None:
         """Open the command input pre-filled with 'say ' for a broadcast message."""

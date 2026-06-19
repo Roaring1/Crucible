@@ -342,6 +342,20 @@ class ServerInstance:
                 pass
         return "25565"
 
+    def tps_command(self) -> str | None:
+        """Console command to query TPS for this server's loader, or None.
+
+        Vanilla/Fabric/Quilt have no built-in TPS command, so polling them just
+        spams "Unknown or incomplete command". Forge/NeoForge use ``forge tps``;
+        Paper-family servers use ``tps``. Returning None means "don't poll".
+        """
+        loader = (self.loader or "").strip().lower()
+        if loader in ("forge", "neoforge"):
+            return "forge tps"
+        if loader in ("paper", "purpur", "spigot", "bukkit", "folia"):
+            return "tps"
+        return None
+
     def readiness(self) -> list[dict]:
         """Friendly pre-flight checklist for non-technical owners.
 

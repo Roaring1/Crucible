@@ -27,10 +27,12 @@ from PyQt6.QtWidgets import (
     QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView,
     QLineEdit, QPushButton, QMessageBox,
+    QMenu, QInputDialog,
 )
 
 from ...data.instance_model import ServerInstance
 from ...process.log_watcher import LogWatcher
+from ...process.tmux_manager import TmuxManager
 from .. import theme
 
 _AVATAR_CACHE_DIR = Path.home() / ".local" / "share" / "crucible" / "avatars"
@@ -98,6 +100,7 @@ class PlayersTab(QWidget):
         self._avatars:  dict[str, QPixmap]    = {}
         self._avatar_threads:  list[QThread]        = []
         self._avatar_fetchers: list[_AvatarFetcher] = []
+        self._tmux = TmuxManager()
         self._build_ui()
 
     # UI
@@ -120,7 +123,21 @@ class PlayersTab(QWidget):
         self._online_list.setStyleSheet(
             f"background: {theme.SURFACE0}; border-radius: 4px;"
         )
+        # Click a player to act on them (op, kick, ban, teleport, give…).
+        self._online_list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self._online_list.customContextMenuRequested.connect(
+            self._show_player_menu)
+        self._online_list.itemDoubleClicked.connect(
+            lambda item: self._show_player_menu(
+                self._online_list.visualItemRect(item).center()))
         layout.addWidget(self._online_list)
+
+        hint = QLabel("Tip: click a player above for actions (op, kick, ban, "
+                      "gamemode, teleport, give…).")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 10px;")
+        layout.addWidget(hint)
 
         sub = QTabWidget()
         sub.setDocumentMode(True)
@@ -209,6 +226,76 @@ class PlayersTab(QWidget):
             self._refresh_online_list()
 
     # List rendering
+
+    # Player actions (click a name in the online list)
+
+    def _selected_player(self) -> str | None:
+        item = self._online_list.currentItem()
+        if item is None:
+            return None
+        name = item.text().strip()
+        return name or None
+
+    def _send(self, command: str) -> bool:
+        """Send a console command for the current instance via tmux."""
+        if self._instance is None:
+            return False
+        return self._tmux.send_command(self._instance, command)
+
+    def _show_player_menu(self, pos) -> None:
+        item = self._online_list.itemAt(pos) if hasattr(pos, "x") else None
+        if item is not None:
+            self._online_list.setCurrentItem(item)
+        name = self._selected_player()
+        if not name:
+            return
+
+        menu = QMenu(self)
+        menu.addAction(f"Make {name} an operator", lambda: self._send(f"op {name}"))
+        menu.addAction(f"Remove operator from {name}", lambda: self._send(f"deop {name}"))
+        menu.addSeparator()
+
+        gm = menu.addMenu("Gamemode")
+        for mode in ("survival", "creative", "adventure", "spectator"):
+            gm.addAction(mode.capitalize(),
+                         lambda m=mode: self._send(f"gamemode {m} {name}"))
+
+        menu.addAction("Teleport to spawn",
+                       lambda: self._send(f"spawnpoint {name}") or
+                       self._send(f"tp {name} @e[type=minecraft:player,limit=1]"))
+        menu.addAction("Give item…", lambda: self._give_item(name))
+        menu.addAction("Whisper…", lambda: self._whisper(name))
+        menu.addSeparator()
+        menu.addAction("Kick…", lambda: self._kick(name))
+        menu.addAction("Ban…", lambda: self._ban(name))
+        menu.addAction("Pardon (unban)", lambda: self._send(f"pardon {name}"))
+
+        menu.exec(self._online_list.mapToGlobal(pos)
+                  if hasattr(pos, "x") else self._online_list.cursor().pos())
+
+    def _give_item(self, name: str) -> None:
+        item, ok = QInputDialog.getText(
+            self, "Give item", f"Item to give {name} (e.g. minecraft:diamond 64):")
+        if ok and item.strip():
+            self._send(f"give {name} {item.strip()}")
+
+    def _whisper(self, name: str) -> None:
+        msg, ok = QInputDialog.getText(
+            self, "Whisper", f"Private message to {name}:")
+        if ok and msg.strip():
+            self._send(f"tell {name} {msg.strip()}")
+
+    def _kick(self, name: str) -> None:
+        reason, ok = QInputDialog.getText(
+            self, "Kick player", f"Reason for kicking {name} (optional):")
+        if ok:
+            self._send(f"kick {name} {reason.strip()}".rstrip())
+
+    def _ban(self, name: str) -> None:
+        if QMessageBox.question(
+            self, "Ban player", f"Ban {name} from the server?"
+        ) == QMessageBox.StandardButton.Yes:
+            self._send(f"ban {name}")
 
     def _refresh_online_list(self) -> None:
         self._online_list.clear()

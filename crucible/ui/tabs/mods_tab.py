@@ -80,6 +80,20 @@ class ModsTab(QWidget):
         add_btn.clicked.connect(self._pick_file)
         toolbar.addWidget(add_btn)
 
+        # One-click "find and install a mod" (searches Modrinth automatically).
+        addmod_btn = QPushButton("✨ Add a mod")
+        addmod_btn.setToolTip("Search Modrinth and install a mod (with its "
+                              "dependencies) automatically.")
+        addmod_btn.clicked.connect(self._open_add_mod)
+        toolbar.addWidget(addmod_btn)
+
+        # One-click "make a client instance" for friends (Prism/Modrinth/CF).
+        client_btn = QPushButton("📦 Make client…")
+        client_btn.setToolTip("Bundle this server's mods into a client pack "
+                              "for Prism Launcher, Modrinth App, or CurseForge.")
+        client_btn.clicked.connect(self._open_make_client)
+        toolbar.addWidget(client_btn)
+
         # Shown only when the imported pack shipped a download index.
         self._dl_btn = QPushButton("⬇  Download from pack")
         self._dl_btn.setToolTip(
@@ -138,6 +152,20 @@ class ModsTab(QWidget):
         layout.addWidget(self._drop_hint)
 
     # Public API
+
+    def _open_add_mod(self) -> None:
+        if getattr(self, "_instance", None) is None:
+            return
+        from ..add_mod_dialog import AddModDialog
+        dlg = AddModDialog(self._instance, self)
+        dlg.exec()
+        self.refresh()
+
+    def _open_make_client(self) -> None:
+        if getattr(self, "_instance", None) is None:
+            return
+        from ..client_export_dialog import ClientExportDialog
+        ClientExportDialog(self._instance, self).exec()
 
     def load(self, instance: ServerInstance) -> None:
         """Switch to displaying mods for the given instance."""

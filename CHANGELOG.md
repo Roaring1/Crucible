@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.4.4 — 2026-06-19
+
+### Added
+
+- **"Copy connection address" now offers loopback / LAN / public separately**
+  (`crucible/data/netinfo.py`): instantly shows `127.0.0.1:<port>` (this PC
+  only) and the detected LAN IP (e.g. `192.168.x.x:<port>`, for other devices
+  on the same network) with no network calls, and fetches the public WAN IP
+  (needs port-forwarding) as a third option. Replaces the old single
+  ipify-only public-IP button, which was misleading when testing from the
+  same network as the server (NAT hairpinning doesn't loop back to it).
+- **Player actions menu** (Players tab): right-click or double-click an
+  online player for op/deop, gamemode, teleport to spawn, give item,
+  whisper, kick, ban, and pardon — sent as console commands via tmux.
+- **Resource monitor** (`crucible/process/resource_monitor.py`): dependency-free
+  per-server CPU% / RSS sampling read from `/proc`, surfaced in a new
+  **System tab** (`system_tab.py`).
+- **Modrinth mod browser/search** (`crucible/mods/modrinth.py`) and an
+  "Add mod" dialog (`add_mod_dialog.py`) for searching and installing mods
+  directly from the Mods tab.
+- **Client pack export** (`crucible/exporters/client_export.py` +
+  `client_export_dialog.py`): builds a Prism/MultiMC-importable client pack
+  from a running server's mods/config so players can join with matching mods.
+- **Drag-and-drop import.** The main window now accepts dropped Prism
+  instances, modpack archives, or server folders directly onto the sidebar.
+- Console tab gained quick-command affordances.
+
 ## v0.4.3 — 2026-06-19
 
 ### Added

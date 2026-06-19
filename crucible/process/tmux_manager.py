@@ -142,8 +142,13 @@ class TmuxManager:
             "-d",              # detached — don't steal the terminal
             "-s", session,     # session name
             "-c", instance.path,  # working directory
+            # Tag the JVM with a per-instance marker so it's identifiable in
+            # Activity Monitor / Mission Control / htop AND matchable by the
+            # resource monitor.
             "env CRUCIBLE_JAVA_ARGS="
-            + shlex.quote(instance.java_args)
+            + shlex.quote(
+                f"{instance.java_args} -Dcrucible.session={session}".strip()
+            )
             + " bash "
             + shlex.quote(script.name),  # command; script.name is the bare filename
         ]
