@@ -112,6 +112,14 @@ class NewServerDialog(QDialog):
         self._build_ui()
         self._reload_versions()
 
+    def _open_modpack_dialog(self) -> None:
+        from .modpack_dialog import ModpackDialog
+        dlg = ModpackDialog(self._manager, self)
+        if dlg.exec() and dlg.result_instance is not None:
+            # Hand the freshly-created instance back to the caller and close.
+            self.result_instance = dlg.result_instance
+            self.accept()
+
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -129,6 +137,19 @@ class NewServerDialog(QDialog):
         sub.setWordWrap(True)
         sub.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
         layout.addWidget(sub)
+
+        # Shortcut to the one-click modpack installer.
+        pack_row = QHBoxLayout()
+        pack_lbl = QLabel("Want a ready-made modpack instead?")
+        pack_lbl.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
+        pack_row.addWidget(pack_lbl)
+        self._modpack_btn = QPushButton("\U0001F4E6  Install a modpack instead\u2026")
+        self._modpack_btn.setToolTip(
+            "Browse Modrinth modpacks and install one as a server in one click.")
+        self._modpack_btn.clicked.connect(self._open_modpack_dialog)
+        pack_row.addWidget(self._modpack_btn)
+        pack_row.addStretch()
+        layout.addLayout(pack_row)
 
         form = QFormLayout()
         form.setSpacing(10)

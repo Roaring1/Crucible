@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 _API = "https://api.modrinth.com/v2"
-_UA = "Crucible/0.4.6 (Minecraft server manager)"
+_UA = "Crucible/0.4.7 (Minecraft server manager)"
 
 
 def humanize_count(n: int) -> str:
@@ -111,18 +111,20 @@ def _get(url: str, timeout: float = 12.0):
 
 
 def search(query: str, *, loader: str = "", mc_version: str = "",
-           limit: int = 20, index: str = "relevance") -> list:
+           limit: int = 20, index: str = "relevance", offset: int = 0,
+           project_type: str = "mod") -> list:
     query = (query or "").strip()
-    # With no search text, show the most popular compatible mods instead of an
-    # empty list -- gives the browser content the moment it opens.
+    # With no search text, show the most popular compatible projects instead of
+    # an empty list -- gives the browser content the moment it opens.
     if not query and index == "relevance":
         index = "downloads"
-    facets = [["project_type:mod"]]
+    facets = [[f"project_type:{project_type}"]]
     if loader and loader != "vanilla":
         facets.append([f"categories:{loader}"])
     if mc_version:
         facets.append([f"versions:{mc_version}"])
     params = {"query": query, "limit": str(limit),
+              "offset": str(max(0, int(offset))),
               "facets": json.dumps(facets), "index": index}
     data = _get(f"{_API}/search?{urllib.parse.urlencode(params)}")
     hits = []
@@ -144,10 +146,71 @@ def search(query: str, *, loader: str = "", mc_version: str = "",
 
 
 def browse_popular(*, loader: str = "", mc_version: str = "",
-                   limit: int = 30) -> list:
+                   limit: int = 30, offset: int = 0,
+                   project_type: str = "mod") -> list:
     """Most-downloaded mods compatible with this server (no query)."""
     return search("", loader=loader, mc_version=mc_version,
-                  limit=limit, index="downloads")
+                  limit=limit, index="downloads", offset=offset,
+                  project_type=project_type)
+
+
+def search_modpacks(query: str = "", *, loader: str = "", mc_version: str = "",
+                    limit: int = 30, offset: int = 0) -> list:
+    """Search Modrinth modpacks (project_type:modpack). Empty query -> popular."""
+    return search(query, loader=loader, mc_version=mc_version,
+                  limit=limit, offset=offset, project_type="modpack")
+
+
+@dataclass
+class ModpackFile:
+    project_id: str
+    title: str
+    version_id: str
+    version_number: str
+    filename: str
+    url: str
+    sha1: str
+    size: int
+    game_versions: list = field(default_factory=list)
+    loaders: list = field(default_factory=list)
+
+
+def resolve_modpack(project_id: str, *, mc_version: str = "",
+                    loader: str = "") -> "ModpackFile":
+    """Find the newest .mrpack file for a Modrinth modpack project."""
+    params = {}
+    if mc_version:
+        params["game_versions"] = json.dumps([mc_version])
+    if loader and loader != "vanilla":
+        params["loaders"] = json.dumps([loader])
+    url = f"{_API}/project/{project_id}/version"
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    versions = _get(url)
+    if not versions:
+        raise ModrinthError("No matching modpack version found.")
+    v = versions[0]
+    files = v.get("files", []) or []
+    mrpack = None
+    for f in files:
+        if str(f.get("filename", "")).lower().endswith(".mrpack"):
+            mrpack = f
+            if f.get("primary"):
+                break
+    if mrpack is None:
+        mrpack = _pick_primary(files)
+    if not mrpack:
+        raise ModrinthError("Modpack version has no downloadable file.")
+    return ModpackFile(
+        project_id=project_id, title=v.get("name", project_id),
+        version_id=v.get("id", ""), version_number=v.get("version_number", ""),
+        filename=mrpack.get("filename", "modpack.mrpack"),
+        url=mrpack.get("url", ""),
+        sha1=(mrpack.get("hashes", {}) or {}).get("sha1", ""),
+        size=int(mrpack.get("size", 0) or 0),
+        game_versions=list(v.get("game_versions", []) or []),
+        loaders=list(v.get("loaders", []) or []),
+    )
 
 
 def fetch_bytes(url: str, timeout: float = 15.0) -> bytes:
@@ -304,3 +367,82 @@ def _save_record(path: Path, record: dict) -> None:
 
 def added_mods(server_path) -> dict:
     return _load_record(Path(server_path) / ".crucible" / "added-mods.json")
+
+
+# ----------------------- update / dependency checks ---------------------
+
+def check_update(server_path, filename: str, *, loader: str,
+                 mc_version: str):
+    """Return a newer ModFile for a Crucible-installed mod, else None.
+
+    Looks the file up in .crucible/added-mods.json (so we know the project and
+    the exact version that was installed). Raises ModrinthError on network
+    failure so the caller can show a friendly offline message.
+    """
+    rec = added_mods(server_path)
+    base = filename[:-9] if filename.endswith(".disabled") else filename
+    meta = rec.get(base) or rec.get(filename)
+    if not meta or not meta.get("project_id"):
+        return None
+    newest = resolve_file(meta["project_id"], loader=loader, mc_version=mc_version)
+    if newest.version_id and newest.version_id == meta.get("version_id", ""):
+        return None
+    return newest
+
+
+def apply_update(server_path, old_filename: str, new_file, *,
+                 verify: bool = True):
+    """Install new_file, then remove the old jar it replaces (and its record)."""
+    server = Path(server_path)
+    mods = server / "mods"
+    res = install_files(server_path, [new_file], verify=verify)
+    record_path = server / ".crucible" / "added-mods.json"
+    if new_file.filename != old_filename:
+        base = old_filename[:-9] if old_filename.endswith(".disabled") else old_filename
+        for cand in {old_filename, base, base + ".disabled"}:
+            if cand == new_file.filename:
+                continue
+            p = mods / cand
+            try:
+                if p.exists():
+                    p.unlink()
+            except OSError:
+                pass
+            rec = _load_record(record_path)
+            if rec.pop(cand, None) is not None:
+                _save_record(record_path, rec)
+    return res
+
+
+def verify_dependencies(server_path, *, loader: str, mc_version: str):
+    """Check that required dependencies of Crucible-installed mods are present.
+
+    Returns (missing_files: list[ModFile], notes: list[str]). Network failures
+    for individual mods are collected in notes rather than raised, so the action
+    degrades gracefully when offline.
+    """
+    server = Path(server_path)
+    mods = server / "mods"
+    present = set()
+    if mods.exists():
+        for p in mods.iterdir():
+            if p.is_file():
+                present.add(p.name)
+                if p.name.endswith(".disabled"):
+                    present.add(p.name[:-9])
+    rec = added_mods(server_path)
+    missing = {}
+    notes = []
+    for fname, meta in rec.items():
+        pid = meta.get("project_id")
+        if not pid:
+            continue
+        try:
+            files = resolve_with_deps(pid, loader=loader, mc_version=mc_version)
+        except ModrinthError as e:
+            notes.append(f"{fname}: {e}")
+            continue
+        for mf in files[1:]:
+            if mf.filename not in present and mf.filename not in missing:
+                missing[mf.filename] = mf
+    return list(missing.values()), notes

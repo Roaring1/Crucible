@@ -40,6 +40,22 @@ class _InspectWorker(QObject):
         self.thread().quit()  # signal the QThread event loop to exit
 
 
+class _NetWorker(QObject):
+    """Runs one network callable off the UI thread and reports the result."""
+    done   = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, fn):
+        super().__init__()
+        self._fn = fn
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self._fn())
+        except Exception as exc:  # noqa: BLE001 - surface any failure to UI
+            self.failed.emit(str(exc))
+
+
 # Main tab
 
 class ModsTab(QWidget):
@@ -57,6 +73,8 @@ class ModsTab(QWidget):
         self._mods:    list[ModEntry]     = []
         self._thread:  QThread | None     = None
         self._worker:  _InspectWorker | None = None
+        self._net_thread: QThread | None     = None
+        self._net_worker: _NetWorker | None  = None
 
         self._build_ui()
         self.setAcceptDrops(True)
@@ -135,6 +153,8 @@ class ModsTab(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.setShowGrid(False)
         self._table.setSortingEnabled(True)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._show_context_menu)
 
         layout.addWidget(self._table, stretch=1)
 
@@ -241,6 +261,7 @@ class ModsTab(QWidget):
                 display = mod.display_name
             name_item = QTableWidgetItem(display)
             name_item.setToolTip(str(mod.path))
+            name_item.setData(Qt.ItemDataRole.UserRole, mod)
             if is_bundled:
                 name_item.setForeground(Qt.GlobalColor.darkCyan)
             elif not mod.enabled:
@@ -325,6 +346,170 @@ class ModsTab(QWidget):
                 self.refresh()
             except OSError as exc:
                 QMessageBox.critical(self, "Error", f"Could not delete:\n{exc}")
+
+    # Right-click context menu (Prism-style)
+
+    def _show_context_menu(self, pos) -> None:
+        if self._manager is None:
+            return
+        from PyQt6.QtWidgets import QMenu
+        row = self._table.rowAt(pos.y())
+        if row < 0:
+            return
+        name_item = self._table.item(row, self._COL_NAME)
+        if name_item is None:
+            return
+        mod = name_item.data(Qt.ItemDataRole.UserRole)
+        if mod is None:
+            return
+
+        is_bundled = getattr(mod, "bundled", False)
+        menu = QMenu(self)
+        if not is_bundled:
+            if mod.enabled:
+                menu.addAction("Disable").triggered.connect(
+                    lambda: self._set_enabled(mod, False))
+            else:
+                menu.addAction("Enable").triggered.connect(
+                    lambda: self._set_enabled(mod, True))
+            menu.addSeparator()
+            menu.addAction("Update (Modrinth)").triggered.connect(
+                lambda: self._update_mod(mod))
+            menu.addAction("Verify dependencies").triggered.connect(
+                lambda: self._verify_deps())
+            menu.addSeparator()
+        menu.addAction("Open on Modrinth").triggered.connect(
+            lambda: self._open_mod_page(mod))
+        if not is_bundled:
+            menu.addSeparator()
+            menu.addAction("Delete").triggered.connect(
+                lambda: self._delete_mod(mod, row))
+        menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _set_enabled(self, mod: ModEntry, enable: bool) -> None:
+        if self._manager is None:
+            return
+        try:
+            if enable:
+                self._manager.enable(mod)
+            else:
+                self._manager.disable(mod)
+        except OSError as exc:
+            QMessageBox.critical(self, "Error", f"Could not toggle mod:\n{exc}")
+            return
+        self.refresh()
+
+    # Network-backed actions (run off the UI thread)
+
+    def _run_net(self, fn, on_done, busy: str = "Working\u2026") -> None:
+        if self._net_thread is not None and self._net_thread.isRunning():
+            QMessageBox.information(
+                self, "Please wait",
+                "Another Modrinth action is still running. Try again in a moment.")
+            return
+        self._count_label.setText(busy)
+        self._net_thread = QThread()
+        self._net_worker = _NetWorker(fn)
+        self._net_worker.moveToThread(self._net_thread)
+        self._net_thread.started.connect(self._net_worker.run)
+        self._net_worker.done.connect(on_done)
+        self._net_worker.failed.connect(self._on_net_error)
+        self._net_worker.done.connect(self._net_thread.quit)
+        self._net_worker.failed.connect(self._net_thread.quit)
+
+        def _cleanup():
+            self._net_thread = None
+            self._net_worker = None
+        self._net_thread.finished.connect(_cleanup)
+        self._net_thread.start()
+
+    def _on_net_error(self, msg: str) -> None:
+        self._update_count()
+        QMessageBox.warning(
+            self, "Modrinth",
+            f"Could not complete the request:\n{msg}\n\n"
+            "Check your internet connection and try again.")
+
+    def _update_mod(self, mod: ModEntry) -> None:
+        inst = getattr(self, "_instance", None)
+        if inst is None:
+            return
+        from ...mods import modrinth
+        loader = inst.loader or "vanilla"
+        mc = inst.minecraft_version or ""
+        path = inst.path
+        filename = mod.filename
+        title = mod.display_name
+
+        def work():
+            new = modrinth.check_update(path, filename, loader=loader, mc_version=mc)
+            if new is None:
+                return ("none", None)
+            return ("done", modrinth.apply_update(path, filename, new))
+
+        def done(result):
+            self._update_count()
+            kind, res = result
+            if kind == "none":
+                QMessageBox.information(
+                    self, "Update", f"{title} is already up to date.")
+            else:
+                QMessageBox.information(
+                    self, "Update",
+                    f"Updated {title}.\n\n{res.summary()}\n\n"
+                    "Restart the server for changes to take effect.")
+                self.refresh()
+
+        self._run_net(work, done, busy=f"Checking for updates to {title}\u2026")
+
+    def _verify_deps(self) -> None:
+        inst = getattr(self, "_instance", None)
+        if inst is None:
+            return
+        from ...mods import modrinth
+        loader = inst.loader or "vanilla"
+        mc = inst.minecraft_version or ""
+        path = inst.path
+
+        def work():
+            missing, notes = modrinth.verify_dependencies(
+                path, loader=loader, mc_version=mc)
+            installed = modrinth.install_files(path, missing) if missing else None
+            return (missing, notes, installed)
+
+        def done(result):
+            self._update_count()
+            missing, notes, installed = result
+            lines = []
+            if not missing:
+                lines.append("All required dependencies are present. \u2713")
+            else:
+                lines.append(
+                    f"Installed {len(missing)} missing dependency(ies):")
+                lines.extend(f"  \u2022 {m.filename}" for m in missing)
+                if installed is not None:
+                    lines.append("")
+                    lines.append(installed.summary())
+            if notes:
+                lines.append("")
+                lines.append("Notes:")
+                lines.extend(f"  \u2022 {n}" for n in notes)
+            QMessageBox.information(
+                self, "Verify dependencies", "\n".join(lines))
+            if missing:
+                self.refresh()
+
+        self._run_net(work, done, busy="Verifying dependencies\u2026")
+
+    def _open_mod_page(self, mod: ModEntry) -> None:
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtCore import QUrl
+        from urllib.parse import quote
+        url = getattr(mod, "url", "") or ""
+        if not url:
+            term = getattr(mod, "name", "") or mod.filename
+            url = "https://modrinth.com/mods?q=" + quote(term)
+        QDesktopServices.openUrl(QUrl(url))
 
     # Add from file / drag-drop
 

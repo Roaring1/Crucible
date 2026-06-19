@@ -18,7 +18,7 @@ from PyQt6.QtGui import QPixmap, QIcon, QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QListWidget, QListWidgetItem, QMessageBox, QSplitter, QWidget,
-    QTextEdit, QFrame, QSizePolicy,
+    QTextEdit, QFrame, QSizePolicy, QCheckBox,
 )
 
 from ..mods import modrinth
@@ -28,22 +28,25 @@ from . import theme
 # ----------------------------- workers ---------------------------------
 
 class _SearchWorker(QObject):
-    done = pyqtSignal(object)
+    done = pyqtSignal(int, object)   # offset, hits
     failed = pyqtSignal(str)
 
-    def __init__(self, query, loader, mc):
+    def __init__(self, query, loader, mc, offset=0, page=30):
         super().__init__()
         self._q, self._loader, self._mc = query, loader, mc
+        self._offset, self._page = offset, page
 
     def run(self):
         try:
             if self._q:
                 hits = modrinth.search(self._q, loader=self._loader,
-                                       mc_version=self._mc, limit=30)
+                                       mc_version=self._mc, limit=self._page,
+                                       offset=self._offset)
             else:
                 hits = modrinth.browse_popular(loader=self._loader,
-                                               mc_version=self._mc, limit=30)
-            self.done.emit(hits)
+                                               mc_version=self._mc, limit=self._page,
+                                               offset=self._offset)
+            self.done.emit(self._offset, hits)
         except Exception as e:  # noqa: BLE001 - surface any failure to UI
             self.failed.emit(str(e))
 
@@ -117,13 +120,20 @@ class AddModDialog(QDialog):
     def __init__(self, instance, parent=None):
         super().__init__(parent)
         self._instance = instance
-        self._hits = []                  # list[ModHit] indexed by row
+        self._all_hits = []              # every ModHit fetched so far
+        self._view = []                  # filtered subset shown in the list
         self._item_by_pid = {}           # project_id -> QListWidgetItem
         self._pixmaps = {}               # project_id -> QPixmap (cache)
         self._threads = []               # [(QThread, worker), ...]
         self._icon_worker = None
         self._sel_pid = None             # currently selected project id
         self._resolved = {}              # project_id -> [ModFile, ...]
+        # infinite-scroll / paging state
+        self._query = ""                 # active query ("" = browse popular)
+        self._offset = 0                 # next page offset to request
+        self._page = 30                  # page size
+        self._has_more = True            # whether more results may exist
+        self._loading_more = False       # guard against concurrent page loads
         self.setWindowTitle("Add a mod")
         self.resize(900, 600)
         self._build_ui()
@@ -157,6 +167,24 @@ class AddModDialog(QDialog):
         row.addWidget(self._search_btn)
         root.addLayout(row)
 
+        # Compatibility filter: show mods that run on the client and/or server.
+        filt = QHBoxLayout()
+        filt_label = QLabel("Show:")
+        filt_label.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:12px;")
+        filt.addWidget(filt_label)
+        self._cb_client = QCheckBox("Client")
+        self._cb_client.setChecked(True)
+        self._cb_client.setToolTip("Show mods that run on the client side.")
+        self._cb_client.toggled.connect(self._on_filter_changed)
+        filt.addWidget(self._cb_client)
+        self._cb_server = QCheckBox("Server")
+        self._cb_server.setChecked(True)
+        self._cb_server.setToolTip("Show mods that run on the server side.")
+        self._cb_server.toggled.connect(self._on_filter_changed)
+        filt.addWidget(self._cb_server)
+        filt.addStretch()
+        root.addLayout(filt)
+
         self._status = QLabel("Powered by Modrinth \u00b7 no account needed")
         self._status.setWordWrap(True)
         self._status.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:11px;")
@@ -172,6 +200,8 @@ class AddModDialog(QDialog):
             f"QListWidget::item {{ padding:6px; border-bottom:1px solid {theme.SURFACE0}; }}")
         self._results.currentRowChanged.connect(self._on_sel)
         self._results.itemDoubleClicked.connect(lambda *_: self._do_install())
+        self._results.verticalScrollBar().valueChanged.connect(
+            self._maybe_load_more)
         split.addWidget(self._results)
 
         # right: detail panel
@@ -271,37 +301,116 @@ class AddModDialog(QDialog):
     # --- search ---
     def _do_search(self, initial: bool = False):
         q = self._search.text().strip()
+        self._query = q
+        self._offset = 0
+        self._has_more = True
+        self._loading_more = True
+        self._all_hits = []
+        self._resolved.clear()
+        self._sel_pid = None
         self._status.setText(
             "Loading popular mods\u2026" if not q else "Searching\u2026")
         self._search_btn.setEnabled(False)
-        w = _SearchWorker(q, self._loader(), self._mc())
+        w = _SearchWorker(q, self._loader(), self._mc(),
+                          offset=0, page=self._page)
         self._spawn(w, w.done, w.failed)
         w.done.connect(self._on_results)
         w.failed.connect(self._on_error)
 
-    def _on_results(self, hits):
+    def _on_filter_changed(self, *_):
+        # Re-filter what we already have, then top up if the view looks short.
+        self._rebuild_view()
+        self._maybe_load_more()
+
+    def _passes_filter(self, hit) -> bool:
+        want_client = self._cb_client.isChecked()
+        want_server = self._cb_server.isChecked()
+        if want_client and want_server:
+            return True
+        if not want_client and not want_server:
+            return False
+        if want_server:
+            return getattr(hit, "server_side", "") != "unsupported"
+        return getattr(hit, "client_side", "") != "unsupported"
+
+    def _maybe_load_more(self, *_):
+        if self._loading_more or not self._has_more:
+            return
+        # Don't hammer the API when the filter excludes everything.
+        if not (self._cb_client.isChecked() or self._cb_server.isChecked()):
+            return
+        sb = self._results.verticalScrollBar()
+        near_bottom = sb.maximum() <= 0 or sb.value() >= sb.maximum() - 4
+        if not near_bottom:
+            return
+        self._loading_more = True
+        self._status.setText("Loading more\u2026")
+        w = _SearchWorker(self._query, self._loader(), self._mc(),
+                          offset=self._offset, page=self._page)
+        self._spawn(w, w.done, w.failed)
+        w.done.connect(self._on_results)
+        w.failed.connect(self._on_error)
+
+    def _on_results(self, offset, hits):
         self._search_btn.setEnabled(True)
-        self._hits = hits
+        self._loading_more = False
+        # A late batch from a superseded query/offset: ignore it.
+        if offset != self._offset:
+            return
+        hits = hits or []
+        known = {h.project_id for h in self._all_hits}
+        new_hits = [h for h in hits if h.project_id not in known]
+        self._all_hits.extend(new_hits)
+        self._offset = offset + len(hits)
+        self._has_more = len(hits) >= self._page
+        self._rebuild_view()
+        if new_hits:
+            self._start_icons(new_hits)
+        # Filter may have hidden this whole page; keep pulling if so.
+        self._maybe_load_more()
+
+    def _make_item(self, h) -> QListWidgetItem:
+        dl = modrinth.humanize_count(h.downloads)
+        tag = h.server_label()
+        second = f"{dl} downloads"
+        if tag:
+            second += f"  \u00b7  {tag}"
+        item = QListWidgetItem(f"{h.title}\n{second}")
+        pix = self._pixmaps.get(h.project_id)
+        item.setIcon(QIcon(pix) if pix is not None else self._blank_icon())
+        self._item_by_pid[h.project_id] = item
+        return item
+
+    def _rebuild_view(self):
+        """Re-filter every fetched hit and repaint the results list."""
+        prev_pid = self._sel_pid
+        self._view = [h for h in self._all_hits if self._passes_filter(h)]
         self._item_by_pid.clear()
+        self._results.blockSignals(True)
         self._results.clear()
-        if not hits:
+        for h in self._view:
+            self._results.addItem(self._make_item(h))
+        self._results.blockSignals(False)
+        if prev_pid is not None:
+            for i, h in enumerate(self._view):
+                if h.project_id == prev_pid:
+                    self._results.setCurrentRow(i)
+                    break
+        self._update_status()
+
+    def _update_status(self):
+        total = len(self._all_hits)
+        shown = len(self._view)
+        if total == 0:
             self._status.setText("No results \u2014 try a different name.")
             return
-        self._status.setText(
-            f"{len(hits)} mod(s) \u00b7 click one for details, double-click to install")
-        blank = self._blank_icon()
-        for h in hits:
-            dl = modrinth.humanize_count(h.downloads)
-            tag = h.server_label()
-            second = f"{dl} downloads"
-            if tag:
-                second += f"  \u00b7  {tag}"
-            item = QListWidgetItem(f"{h.title}\n{second}")
-            item.setIcon(blank)
-            self._results.addItem(item)
-            self._item_by_pid[h.project_id] = item
-        # fetch icons in the background
-        self._start_icons(hits)
+        msg = f"{shown} mod(s)"
+        if shown != total:
+            msg += f" shown of {total} fetched"
+        msg += " \u00b7 click for details, double-click to install"
+        if self._has_more:
+            msg += " \u00b7 scroll for more"
+        self._status.setText(msg)
 
     def _start_icons(self, hits):
         if self._icon_worker is not None:
@@ -327,14 +436,15 @@ class AddModDialog(QDialog):
 
     def _on_error(self, msg):
         self._search_btn.setEnabled(True)
+        self._loading_more = False
         self._install_btn.setEnabled(False)
         self._status.setText("\u26a0 " + msg)
 
     # --- selection / detail ---
     def _on_sel(self, row):
-        if row < 0 or row >= len(self._hits):
+        if row < 0 or row >= len(self._view):
             return
-        hit = self._hits[row]
+        hit = self._view[row]
         self._sel_pid = hit.project_id
         self._install_btn.setEnabled(False)
         self._d_link.setEnabled(True)
@@ -413,15 +523,15 @@ class AddModDialog(QDialog):
 
     def _open_page(self):
         row = self._results.currentRow()
-        if 0 <= row < len(self._hits):
-            QDesktopServices.openUrl(QUrl(self._hits[row].page_url()))
+        if 0 <= row < len(self._view):
+            QDesktopServices.openUrl(QUrl(self._view[row].page_url()))
 
     # --- install ---
     def _do_install(self):
         row = self._results.currentRow()
-        if row < 0 or row >= len(self._hits):
+        if row < 0 or row >= len(self._view):
             return
-        hit = self._hits[row]
+        hit = self._view[row]
         files = self._resolved.get(hit.project_id)
         if not files:
             self._status.setText("Still checking versions \u2014 try again in a moment.")

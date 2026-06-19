@@ -503,6 +503,65 @@ def cmd_create_server(manager: InstanceManager, args) -> None:
         dim("The folder was still created. Retry with internet via 'crucible install-server <name>'.")
 
 
+def cmd_install_modpack(manager: InstanceManager, args) -> None:
+    """Install a Modrinth modpack (or local .mrpack) as a ready-to-run server."""
+    from pathlib import Path
+    from .importers import modpack_auto
+
+    if args.dir:
+        target = Path(args.dir).expanduser()
+    else:
+        base = args.name or args.id_or_slug or "modpack"
+        slug = "".join(c for c in base if c.isalnum() or c in "-_.").strip() or "modpack"
+        target = Path.home() / "CrucibleServers" / slug
+
+    if args.mrpack:
+        src = Path(args.mrpack).expanduser()
+        info(f"Installing modpack from {src} into {target}\u2026")
+        result = modpack_auto.install_modpack_from_mrpack(
+            src, target,
+            accept_eula=args.accept_eula,
+            log_cb=lambda m: dim(f"    {m}"),
+        )
+    else:
+        if not args.id_or_slug:
+            err("Provide a Modrinth modpack id/slug, or use --mrpack FILE.")
+            sys.exit(1)
+        info(f"Installing modpack '{args.id_or_slug}' into {target}\u2026")
+        result = modpack_auto.install_modpack_from_modrinth(
+            args.id_or_slug, target,
+            mc_version=args.mc or "",
+            loader=args.loader or "",
+            accept_eula=args.accept_eula,
+            log_cb=lambda m: dim(f"    {m}"),
+        )
+
+    # Register regardless \u2014 the folder is well-formed even on partial failure.
+    name = args.name or Path(result.path or target).name
+    version_label = f"MC {result.minecraft_version}" if result.minecraft_version else ""
+    if result.loader:
+        version_label = (version_label + f" \u00b7 {result.loader}").strip(" \u00b7")
+    try:
+        inst = manager.add_instance(
+            result.path or str(target), name, version_label,
+            pack_source="modrinth_modpack",
+            minecraft_version=result.minecraft_version,
+            loader=result.loader,
+            loader_version=result.loader_version,
+        )
+        info(f"Registered: {inst.name} ({inst.short_id()})")
+    except ValueError as exc:
+        warn(str(exc))
+
+    if result.ok:
+        ok("Modpack installed: " + result.summary())
+        if not args.accept_eula:
+            dim("Run 'crucible accept-eula <name>' (and read the Minecraft EULA) before starting.")
+    else:
+        err("Modpack install failed: " + (result.failed_reason or "unknown"))
+        dim("The folder was still created. Retry with internet, or check the log above.")
+
+
 def cmd_install_server(manager: InstanceManager, args) -> None:
     """Install / repair the dedicated server program for a registered instance."""
     from .importers import serverloader as sl
@@ -816,6 +875,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_create.add_argument("--overwrite", action="store_true", help="Allow creating into a non-empty folder")
     p_create.add_argument("--accept-eula", action="store_true", help="Write eula=true. Only use if you accept the Minecraft EULA.")
 
+    # install-modpack
+    p_imp = sub.add_parser("install-modpack", help="Install a Modrinth modpack (or local .mrpack) as a ready-to-run server")
+    p_imp.add_argument("id_or_slug", nargs="?", help="Modrinth modpack id or slug (omit when using --mrpack)")
+    p_imp.add_argument("--mrpack", help="Install from a local .mrpack file instead of Modrinth")
+    p_imp.add_argument("--dir", help="Folder to install the server in (default: ~/CrucibleServers/<name>)")
+    p_imp.add_argument("--name", help="Registered server name")
+    p_imp.add_argument("--mc", help="Preferred Minecraft version (default: the pack's own)")
+    p_imp.add_argument("--loader", help="Preferred loader override (default: the pack's own)")
+    p_imp.add_argument("--accept-eula", action="store_true", help="Write eula=true. Only use if you accept the Minecraft EULA.")
+
     # list-mc-versions
     p_lmv = sub.add_parser("list-mc-versions", help="List available Minecraft versions from Mojang")
     p_lmv.add_argument("--snapshots", action="store_true", help="Include snapshot versions")
@@ -898,6 +967,7 @@ def main() -> None:
         "create-server": lambda: cmd_create_server(manager, args),
         "list-mc-versions": lambda: cmd_list_mc_versions(manager, args),
         "install-server": lambda: cmd_install_server(manager, args),
+        "install-modpack": lambda: cmd_install_modpack(manager, args),
         "download-mods": lambda: cmd_download_mods(manager, args),
         "accept-eula": lambda: cmd_accept_eula(manager, args),
         "doctor":   lambda: cmd_doctor(manager, tmux, args),

@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.4.7 — 2026-06-19
+
+### Added
+
+- **One-click server-side modpack hosting.** A new "Install a modpack instead…"
+  button in the New Server dialog opens a Modrinth modpack browser. Pick a pack
+  and Crucible does everything: downloads the correct dedicated-server loader
+  (Fabric/Forge/NeoForge/Quilt/Vanilla) at the pack's Minecraft version, pulls
+  every server-side mod from the pack manifest (skipping client-only mods),
+  applies the pack's `server-overrides`/`overrides` (configs, server.properties,
+  etc.), writes the start script and EULA, and registers the instance — no
+  manual mod wrangling. Also available headless via
+  `crucible install-modpack <id-or-slug>` and `--mrpack <file>`.
+- **Add-a-mod browser: infinite scroll.** Results now load 30 at a time and
+  fetch more automatically as you scroll, instead of a single fixed page.
+- **Add-a-mod browser: Client / Server filter.** A filter row at the top lets
+  you show client- and/or server-side mods (both on by default).
+- **Mods tab: per-mod actions.** Right-click any installed mod to Enable/
+  Disable it, Check for updates (Modrinth), Verify dependencies, open its
+  Modrinth page, or Delete it. Dependency verification scans every recorded mod
+  and reports anything missing.
+
 ## v0.4.6 — 2026-06-19
 
 ### Added
