@@ -508,12 +508,36 @@ class InstancePanel(QWidget):
 
     # Button actions
 
+    def _preflight_properties(self, inst) -> None:
+        """Auto-repair crash-causing server.properties values before launch.
+
+        Catches the classic blank/garbled numeric setting (e.g. server-port=)
+        that makes Minecraft die with NumberFormatException before boot.
+        """
+        try:
+            from ..data import properties as _props
+            props_path = inst.path_obj / "server.properties"
+            if not _props.has_blocking_errors(props_path):
+                return
+            res = _props.autorepair_file(props_path, only_errors=True)
+            if res.changed:
+                QMessageBox.information(
+                    self, "Fixed server settings",
+                    "Crucible auto-corrected settings that would have crashed the "
+                    "server before it started:\n\n"
+                    + "\n".join(f"  •  {k}: '{o}' → '{n}'" for k, o, n in res.changed)
+                    + "\n\nA backup was saved as server.properties.bak.",
+                )
+        except Exception:
+            pass
+
     def _do_start(self) -> None:
         if not self._instance:
             return
         self._btn_start.setEnabled(False)
         self._btn_start.setText("Starting…")
         inst = self._instance
+        self._preflight_properties(inst)
 
         def _on_done(ok: bool, msg: str) -> None:
             if ok:
@@ -585,6 +609,7 @@ class InstancePanel(QWidget):
                     QMessageBox.critical(self, "Start Failed", msg)
                 self._btn_restart.setText("↺  Restart")
                 self._btn_restart.setEnabled(True)
+            self._preflight_properties(inst)
             self._run_tmux(lambda: self._tmux.start(inst), _on_start_done)
 
         def _after_check(ok: bool, msg: str) -> None:

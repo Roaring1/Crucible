@@ -403,6 +403,34 @@ class ServerInstance:
                       "will be generated on first start",
             "fix": None if props_ok else "start_once",
         })
+
+        if props_ok:
+            try:
+                from .properties import validate_file
+                issues = validate_file(p / "server.properties")
+            except Exception:
+                issues = []
+            errs = [i for i in issues if i.is_error]
+            if errs:
+                items.append({
+                    "key": "settings", "label": "Server settings are valid",
+                    "ok": False,
+                    "detail": (f"{len(errs)} setting(s) would crash the server "
+                               f"(e.g. {errs[0].key}) — click to fix"),
+                    "fix": "fix_properties",
+                })
+            elif issues:
+                items.append({
+                    "key": "settings", "label": "Server settings are valid",
+                    "ok": None,
+                    "detail": f"{len(issues)} minor issue(s) — optional cleanup",
+                    "fix": "fix_properties",
+                })
+            else:
+                items.append({
+                    "key": "settings", "label": "Server settings are valid",
+                    "ok": True, "detail": "No problems found", "fix": None,
+                })
         return items
 
     # Display helpers

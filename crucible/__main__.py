@@ -139,8 +139,65 @@ def cmd_remove(manager: InstanceManager, args) -> None:
     ok(f"Removed '{inst.name}' from registry (files untouched)")
 
 
+def _preflight_properties(inst) -> None:
+    """Auto-repair crash-causing server.properties values before starting.
+
+    Catches the classic blank/garbled numeric setting (e.g. ``server-port=``)
+    that makes Minecraft die with ``NumberFormatException`` before it boots.
+    """
+    from pathlib import Path
+    from .data import properties as props
+    path = Path(inst.path) / "server.properties"
+    if not props.has_blocking_errors(path):
+        return
+    res = props.autorepair_file(path, only_errors=True)
+    if res.changed:
+        warn("Fixed server.properties values that would have crashed the server:")
+        for k, o, n in res.changed:
+            dim(f"    {k}: '{o}' -> '{n}'")
+        if res.backup_path:
+            dim(f"    (backup saved: {res.backup_path})")
+
+
+def cmd_fix_properties(manager: InstanceManager, args) -> None:
+    """Detect & fix invalid server.properties values (the 'did you mean' helper)."""
+    from pathlib import Path
+    from .data import properties as props
+    inst = resolve_instance(manager, args.name)
+    path = Path(inst.path) / "server.properties"
+    if not path.exists():
+        warn("This server has no server.properties yet (it is generated on first start).")
+        return
+    issues = props.validate_file(path)
+    if not issues:
+        ok("No problems found in server.properties.")
+        return
+    errors = [i for i in issues if i.is_error]
+    warn(f"Found {len(issues)} issue(s) ({len(errors)} would crash the server):")
+    for i in issues:
+        tag = "CRASH" if i.is_error else "note "
+        suggestion = f"  -> did you mean '{i.suggestion}'?" if i.suggestion else ""
+        dim(f"    [{tag}] {i.message}{suggestion}")
+    apply_fixes = getattr(args, "apply", False)
+    full = getattr(args, "all", False)
+    if not apply_fixes:
+        print()
+        info("Re-run with --apply to fix the crash-causing values automatically.")
+        info("Add --all to also apply suggested fixes for the advisory items.")
+        return
+    res = props.autorepair_file(path, only_errors=not full, fix_unknown_keys=full)
+    ok(res.summary())
+    for k, o, n in res.changed:
+        dim(f"    {k}: '{o}' -> '{n}'")
+    if res.backup_path:
+        dim(f"    backup: {res.backup_path}")
+    if any(i.is_error for i in res.remaining):
+        err("Some crash-causing values could not be auto-fixed; edit them manually.")
+
+
 def cmd_start(manager: InstanceManager, tmux: TmuxManager, args) -> None:
     inst = resolve_instance(manager, args.name)
+    _preflight_properties(inst)
     success, msg = tmux.start(inst)
 
     if success:
@@ -688,6 +745,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_start = sub.add_parser("start", help="Start the server via tmux")
     p_start.add_argument("name", help="Instance name or ID prefix")
 
+    # fix-properties
+    p_fixprops = sub.add_parser(
+        "fix-properties", help="Check & fix invalid server.properties values")
+    p_fixprops.add_argument("name", help="Instance name or ID prefix")
+    p_fixprops.add_argument(
+        "--apply", action="store_true", help="Apply fixes (default: just report)")
+    p_fixprops.add_argument(
+        "--all", action="store_true",
+        help="Also apply advisory fixes & rename typo'd keys")
+
     # stop
     p_stop = sub.add_parser("stop", help="Stop the server gracefully")
     p_stop.add_argument("name", help="Instance name or ID prefix")
@@ -819,6 +886,7 @@ def main() -> None:
         "add":      lambda: cmd_add(manager, args),
         "remove":   lambda: cmd_remove(manager, args),
         "start":    lambda: cmd_start(manager, tmux, args),
+        "fix-properties": lambda: cmd_fix_properties(manager, args),
         "stop":     lambda: cmd_stop(manager, tmux, args),
         "restart":  lambda: cmd_restart(manager, tmux, args),
         "status":   lambda: cmd_status(manager, tmux, args),

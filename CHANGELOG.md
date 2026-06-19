@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.4.3 — 2026-06-19
+
+### Added
+
+- **`server.properties` validator and auto-repair** (`crucible/data/properties.py`):
+  detects invalid values (e.g. a blank `server-port=` that crashes the server
+  with a `NumberFormatException` before it boots), suggests fixes for unknown
+  keys, and can auto-correct crash-causing values (advisory ones need
+  `--all`). Always writes a `.bak` backup before changing anything.
+- **Pre-flight auto-repair before server start.** Both the GUI (Start/Restart
+  buttons in `instance_panel.py`) and CLI now run the properties check before
+  launch and silently fix blocking errors, surfacing what changed.
+- New GUI dialog `properties_dialog.py` (`PropertiesFixDialog`) and a
+  "Check settings" button on the Setup tab.
+- New CLI command: `crucible fix-properties NAME [--apply] [--all]`.
+
 ## v0.4.2 — 2026-06-18
 
 ### Added

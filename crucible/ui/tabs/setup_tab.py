@@ -202,6 +202,11 @@ class SetupTab(QWidget):
             btn = QPushButton("Open folder")
             btn.clicked.connect(self._open_folder)
             return btn
+        if fix == "fix_properties":
+            btn = QPushButton("Check settings")
+            btn.setToolTip("Find and fix invalid server.properties values")
+            btn.clicked.connect(self._fix_properties)
+            return btn
         return None
 
     def _maybe_add_download_section(self) -> None:
@@ -265,6 +270,18 @@ class SetupTab(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "Accept EULA", f"Could not write eula.txt:\n{exc}")
             return
+        self._rebuild()
+
+    def _fix_properties(self) -> None:
+        inst = self._instance
+        if inst is None:
+            return
+        try:
+            from ..properties_dialog import PropertiesFixDialog
+            dlg = PropertiesFixDialog(inst.path_obj / "server.properties", parent=self)
+            dlg.exec()
+        except Exception as exc:
+            QMessageBox.warning(self, "Server settings", f"Could not open settings check:\n{exc}")
         self._rebuild()
 
     def _install_server(self) -> None:
