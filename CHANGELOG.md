@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.4.9 — 2026-06-19
+
+### Fixed
+
+- **"Fix loading errors" now actually finds the culprit mod.** The previous
+  release detected the `invalid dist DEDICATED_SERVER` crash but reported "the
+  crash log did not name which mod" on real crash *reports*, because the parser
+  only understood the console wording (`- Name (id) has failed to load`). It now
+  reads every format FML/NeoForge emits:
+  - `Failure message: Name (id) has failed to load` (crash-report block)
+  - `Mod file: …/<jar>.jar` — the offending jar named directly
+  - `Failed to create mod instance. ModID: <id>`
+  - `TRANSFORMER/<id>@<version>` stack frames
+- **Auto-quarantine is now reliable.** Crucible disables the offending jar found
+  by any of the above signals (the `Mod file:` path is matched against the
+  installed jars), then — if the crash truly names nothing — falls back to
+  scanning `mods/` for client-only jars and disabling those automatically.
+- **No more false positives.** Loader/engine jars and `Using Mod File:` JarJar
+  dependency warnings are ignored, and a jar is no longer mistaken for the
+  loader just because its version string contains "NeoForge" (e.g.
+  `statuseffectbars-1.21.1-NeoForge-1.0.2.jar` is correctly treated as a mod).
+
 ## v0.4.8 — 2026-06-19
 
 ### Fixed

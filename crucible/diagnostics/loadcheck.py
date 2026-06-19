@@ -40,11 +40,51 @@ _DIST_RE = re.compile(r"invalid dist DEDICATED_SERVER", re.IGNORECASE)
 _CLIENT_CLASS_RE = re.compile(
     r"load class\s+([\w/.$]+)\s+for invalid dist DEDICATED_SERVER", re.IGNORECASE)
 
-# "- Status Effect Bars (statuseffectbars) has failed to load correctly"
+# "<Name> (<id>) has failed to load correctly" — matches every wording FML uses:
+#   "- Status Effect Bars (statuseffectbars) has failed to load correctly"      (console)
+#   "Failure message: Status Effect Bars (statuseffectbars) has failed to load"  (crash report)
 _FAILED_MOD_RE = re.compile(
-    r"-\s*(?P<name>.+?)\s*\((?P<id>[A-Za-z0-9_][A-Za-z0-9_\-]*)\)\s*has failed to load",
+    r"(?P<name>[^\n(]+?)\s*\((?P<id>[A-Za-z0-9_][A-Za-z0-9_\-]*)\)\s*has failed to load",
     re.IGNORECASE,
 )
+
+# "Failed to create mod instance. ModID: statuseffectbars, class com.…"
+_FAILED_INSTANCE_RE = re.compile(
+    r"Failed to create mod instance\.\s*ModID:\s*(?P<id>[A-Za-z0-9_\-]+)",
+    re.IGNORECASE,
+)
+
+# Stack frames like "TRANSFORMER/statuseffectbars@1.0.2/com.foo.Bar".
+_TRANSFORMER_MOD_RE = re.compile(r"TRANSFORMER/(?P<id>[A-Za-z0-9_\-]+)@")
+
+# The crash-report failure block names the offending jar like::
+#     Mod file: /home/…/mods/statuseffectbars-1.21.1-NeoForge-1.0.2.jar
+#     Failure message: Status Effect Bars (statuseffectbars) has failed to load
+# Require the "Failure message: … has failed to load" line right after so we never
+# pick up unrelated "Using Mod File: …" dependency-selection warnings.
+_MOD_FILE_RE = re.compile(
+    r"(?:^|\n)[ \t]*Mod [Ff]ile:[ \t]*(?P<path>\S+\.jar)[ \t]*\n"
+    r"[ \t]*Failure message:[^\n]*has failed to load",
+    re.IGNORECASE,
+)
+
+# Loader/engine ids that show up in stack frames but are never the culprit mod.
+_NON_MOD_IDS = {"minecraft", "neoforge", "forge", "fml", "fml_loader",
+                "mcp", "modlauncher", "bootstraplauncher"}
+# Filename PREFIXES that mark a jar as the loader/engine itself, not a mod.
+# (Matched with startswith — a mod named "foo-1.21.1-NeoForge-1.0.2.jar" is a
+#  real mod and must NOT be excluded just because "neoforge" is in its version.)
+_NON_MOD_JAR_PREFIXES = ("neoforge-", "forge-", "fmlloader-", "fmlcore-",
+                         "loader-", "server-", "minecraft-", "client-")
+# Substrings that unambiguously mark loader/runtime libraries (not mod names).
+_NON_MOD_JAR_SUBSTR = ("modlauncher", "bootstraplauncher", "securejarhandler",
+                       "javafmllanguage", "lowcodelanguage", "mclanguage")
+
+
+def _is_loader_jar(filename: str) -> bool:
+    low = filename.lower()
+    return low.startswith(_NON_MOD_JAR_PREFIXES) or any(
+        s in low for s in _NON_MOD_JAR_SUBSTR)
 
 # Missing-dependency style errors (NeoForge/Forge wording varies by version)
 _MISSING_DEP_RE = re.compile(
@@ -72,6 +112,8 @@ class Diagnosis:
     issues: list[LoadIssue] = field(default_factory=list)
     source: str = ""                # where the log came from
     found_crash: bool = False
+    # Jar filenames named directly by the crash report ("Mod file: ….jar").
+    offender_jar_names: list[str] = field(default_factory=list)
 
     @property
     def client_on_server_modids(self) -> list[str]:
@@ -161,25 +203,44 @@ def parse_crash_log(text: str) -> Diagnosis:
 
     # 1. Client-only-on-server (the dist crash).
     if _DIST_RE.search(text):
-        modids = [m.group("id").lower() for m in _FAILED_MOD_RE.finditer(text)]
+        # Gather mod ids from every wording FML/NeoForge uses.
+        ids: list[str] = []
+        for rx in (_FAILED_MOD_RE, _FAILED_INSTANCE_RE):
+            for m in rx.finditer(text):
+                ids.append(m.group("id").lower())
+        for m in _TRANSFORMER_MOD_RE.finditer(text):
+            mid = m.group("id").lower()
+            if mid not in _NON_MOD_IDS:
+                ids.append(mid)
         # de-dupe preserve order
         seen, uniq = set(), []
-        for m in modids:
-            if m not in seen:
+        for m in ids:
+            if m and m not in seen:
                 seen.add(m)
                 uniq.append(m)
+
+        # Jar paths named directly in the crash report ("Mod file: ….jar").
+        for m in _MOD_FILE_RE.finditer(text):
+            name = Path(m.group("path")).name
+            if _is_loader_jar(name):
+                continue
+            if name not in diag.offender_jar_names:
+                diag.offender_jar_names.append(name)
+
         cls_m = _CLIENT_CLASS_RE.search(text)
         cls = cls_m.group(1).replace("/", ".") if cls_m else "a client-only class"
-        if uniq:
-            names = ", ".join(uniq)
+        named = uniq or [Path(n).stem for n in diag.offender_jar_names]
+        if named:
+            names = ", ".join(named)
             detail = (f"Client-only mod(s) on a dedicated server: {names}. "
                       f"They try to load {cls}, which does not exist on servers "
-                      f"(invalid dist DEDICATED_SERVER). These mods must be removed "
-                      f"from the server (they only run on the client).")
+                      f"(invalid dist DEDICATED_SERVER). These mods only run on the "
+                      f"client and must be disabled on the server.")
         else:
             detail = (f"A mod tried to load {cls} on a dedicated server "
-                      f"(invalid dist DEDICATED_SERVER), but the crash log did not "
-                      f"name which mod. Check recently added client-side mods.")
+                      f"(invalid dist DEDICATED_SERVER). The crash log did not name "
+                      f"the mod, so Crucible will scan installed mods for client-only "
+                      f"jars and disable them automatically.")
         diag.issues.append(LoadIssue("client_on_server", detail, uniq))
 
     # 2. Missing/unsupported mandatory dependencies.
@@ -269,6 +330,20 @@ def _enabled_jars(mods_dir: Path) -> list[Path]:
     if not mods_dir.is_dir():
         return []
     return [p for p in mods_dir.glob("*.jar") if not p.name.endswith(".disabled")]
+
+
+def _resolve_jar_by_name(mods_dir: Path, filename: str) -> Path | None:
+    """Find an enabled jar in mods/ matching a filename from a crash report."""
+    if not mods_dir.is_dir() or not filename:
+        return None
+    exact = mods_dir / filename
+    if exact.exists():
+        return exact
+    low = filename.lower()
+    for jar in _enabled_jars(mods_dir):
+        if jar.name.lower() == low:
+            return jar
+    return None
 
 
 def map_modids_to_jars(server_path: str | Path,
@@ -394,15 +469,56 @@ def autofix_loading(server_path: str | Path, *, apply: bool = False,
     diag = diagnose_server(root, log_text=log_text)
     result = FixResult(diagnosis=diag, applied=apply)
 
+    if not any(i.kind == "client_on_server" for i in diag.issues):
+        return result
+
+    mods_dir = root / "mods"
+    jars_to_disable: dict[str, Path] = {}   # filename -> path
+
+    # (a) Jars named directly in the crash report ("Mod file:") — most reliable.
+    for name in diag.offender_jar_names:
+        p = _resolve_jar_by_name(mods_dir, name)
+        if p is not None:
+            jars_to_disable[p.name] = p
+
+    # (b) Jars resolved from named mod ids.
     modids = diag.client_on_server_modids
+    unresolved: list[str] = []
     if modids:
         found, unresolved = map_modids_to_jars(root, modids)
-        result.unresolved = unresolved
-        if found:
-            if apply:
-                result.quarantined = quarantine_jars(
-                    root, list(found.values()),
-                    reason="client-only mod on dedicated server")
-            else:
-                result.quarantined = sorted({p.name for p in found.values()})
+        for p in found.values():
+            jars_to_disable[p.name] = p
+        # A modid we already covered via its jar isn't really unresolved.
+        disabled_stems = {n.lower() for n in jars_to_disable}
+        unresolved = [m for m in unresolved
+                      if not any(m.replace("_", "").replace("-", "")
+                                 in s.replace("_", "").replace("-", "")
+                                 for s in disabled_stems)]
+
+    # (c) Fallback: the crash named nothing we could locate. Rather than giving
+    #     up (the old behaviour), automatically scan mods/ for client-only jars
+    #     and quarantine those. This is what "fix automatically" should do.
+    if not jars_to_disable:
+        for fname, _reason in scan_client_only(root):
+            p = mods_dir / fname
+            if p.exists():
+                jars_to_disable[p.name] = p
+        if jars_to_disable:
+            result.messages.append(
+                "Crash did not name the mod; disabled client-only jar(s) found "
+                "by scanning mods/.")
+            unresolved = []
+        else:
+            result.messages.append(
+                "Crash did not name the mod and no jar statically declares itself "
+                "client-only. Check the most recently added client-side mod.")
+
+    result.unresolved = unresolved
+    if jars_to_disable:
+        if apply:
+            result.quarantined = quarantine_jars(
+                root, list(jars_to_disable.values()),
+                reason="client-only mod on dedicated server")
+        else:
+            result.quarantined = sorted(jars_to_disable)
     return result
