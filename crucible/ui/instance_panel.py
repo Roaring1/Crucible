@@ -35,7 +35,7 @@ from ..process.tmux_manager import TmuxManager
 from ..process.log_watcher import LogWatcher
 from ..process.watchdog import Watchdog
 from . import theme
-from .tabs import ConsoleTab, ModsTab, NotesTab, InfoTab, ConfigTab, BackupTab, PlayersTab
+from .tabs import ConsoleTab, ModsTab, NotesTab, InfoTab, ConfigTab, BackupTab, PlayersTab, SetupTab
 
 # How often to auto-query TPS when server is running (ms)
 _TPS_POLL_MS = 30_000
@@ -205,6 +205,7 @@ class InstancePanel(QWidget):
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
 
+        self._setup   = SetupTab()
         self._console = ConsoleTab()
         self._mods    = ModsTab()
         self._notes   = NotesTab(self._manager)
@@ -213,6 +214,8 @@ class InstancePanel(QWidget):
         self._backup  = BackupTab()
         self._players = PlayersTab()
 
+        # "Setup" is first so non-technical owners land on the easy checklist.
+        self._tabs.addTab(self._setup,   "🧭  Setup")
         self._tabs.addTab(self._console, "Console")
         self._tabs.addTab(self._mods,    "Mods")
         self._tabs.addTab(self._notes,   "Notes")
@@ -250,25 +253,30 @@ class InstancePanel(QWidget):
     def _on_ip_fetched(self, ip: str) -> None:
         self._btn_ip.setEnabled(True)
         if ip:
-            # Read server port from server.properties if available
+            # Read server port via the model helper (guards a missing instance
+            # and an unreadable/absent server.properties internally).
             port = "25565"
             try:
-                sp = self._instance.path if isinstance(self._instance.path, str) else str(self._instance.path)
-                with open(f"{sp}/server.properties", encoding="utf-8", errors="replace") as _f:
-                    props = _f.read()
-                for line in props.splitlines():
-                    if line.startswith("server-port="):
-                        port = line.split("=", 1)[1].strip()
-                        break
+                if self._instance is not None:
+                    port = self._instance.server_port()
+            except Exception:
+                port = "25565"
+            # Always include the port so a non-default port isn't silently lost.
+            addr = f"{ip}:{port}"
+            try:
+                QApplication.clipboard().setText(addr)
             except Exception:
                 pass
-            addr = f"{ip}:{port}" if port != "25565" else ip
-            QApplication.clipboard().setText(addr)
             self._btn_ip.setText("✓  Copied!")
+            self._btn_ip.setToolTip(f"Copied {addr} to clipboard")
             # Reset label after 2s
             QTimer.singleShot(2000, lambda: self._btn_ip.setText("⧉  Copy IP"))
         else:
             self._btn_ip.setText("✗  Failed")
+            self._btn_ip.setToolTip(
+                "Could not fetch your public IP (no internet?). "
+                "Players on your LAN can still use your local IP."
+            )
             QTimer.singleShot(2000, lambda: self._btn_ip.setText("⧉  Copy IP"))
 
     def _show_empty(self) -> None:
@@ -302,6 +310,7 @@ class InstancePanel(QWidget):
             self._tps_timer.start()
 
         # Load tabs
+        self._setup.load(instance)
         self._mods.load(instance)
         self._notes.load(instance)
         self._info.load(instance, status)
@@ -320,7 +329,7 @@ class InstancePanel(QWidget):
           • "starting" is never overridden by the health check — only the
             log-watcher's server_started signal promotes it to "running".
           • "stopping" is kept until the session disappears.
-          • Any other transition (session vanished → stopped, external
+          • Any other transition (session vanished ��� stopped, external
             start detected → running) is applied immediately.
         """
         if self._current_status == "starting" and status == "running":

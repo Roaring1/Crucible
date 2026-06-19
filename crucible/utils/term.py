@@ -54,7 +54,7 @@ def banner() -> str:
         f"{BOLD}{CYAN}"
         f"  ╔═══════════════════════════════╗\n"
         f"  ║   C R U C I B L E             ║\n"
-        f"  ║   GTNH Server Manager  v{__version__}   ║\n"
+        f"  ║   Minecraft Server Manager  v{__version__}   ║\n"
         f"  ╚═══════════════════════════════╝"
         f"{RESET}\n"
     )

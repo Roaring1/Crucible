@@ -5,6 +5,7 @@ from .notes_tab import NotesTab
 from .info_tab import InfoTab
 from .backup_tab import BackupTab
 from .players_tab import PlayersTab
+from .setup_tab import SetupTab
 
 __all__ = ["ConsoleTab", "ConfigTab", "ModsTab", "NotesTab", "InfoTab",
-           "BackupTab", "PlayersTab"]
+           "BackupTab", "PlayersTab", "SetupTab"]

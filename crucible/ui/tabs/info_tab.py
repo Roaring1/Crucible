@@ -119,6 +119,14 @@ class InfoTab(QWidget):
         add_row(12, "LAST STARTED",
                     instance.last_started[:19].replace("T", "  ") if instance.last_started
                     else "never (via Crucible)")
+        if getattr(instance, "pack_source", "") or getattr(instance, "minecraft_version", "") or getattr(instance, "loader", ""):
+            add_row(13, "PACK SOURCE", getattr(instance, "pack_source", "") or "manual")
+            add_row(14, "MINECRAFT", getattr(instance, "minecraft_version", ""))
+            loader = getattr(instance, "loader", "")
+            loader_ver = getattr(instance, "loader_version", "")
+            add_row(15, "LOADER", (loader + (" " + loader_ver if loader_ver else "")) if loader else "")
+        if getattr(instance, "prism_source", ""):
+            add_row(16, "PRISM SOURCE", getattr(instance, "prism_source", ""), theme.SURFACE2)
 
         self._layout.addLayout(grid)
 

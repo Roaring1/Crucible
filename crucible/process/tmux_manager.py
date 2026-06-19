@@ -16,6 +16,7 @@ tmux command reference (matching the user's current manual workflow):
 
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 import time
@@ -141,7 +142,10 @@ class TmuxManager:
             "-d",              # detached — don't steal the terminal
             "-s", session,     # session name
             "-c", instance.path,  # working directory
-            f"bash {script.name}",  # command; script.name is the bare filename
+            "env CRUCIBLE_JAVA_ARGS="
+            + shlex.quote(instance.java_args)
+            + " bash "
+            + shlex.quote(script.name),  # command; script.name is the bare filename
         ]
 
         result = self._run(cmd)

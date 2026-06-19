@@ -8,11 +8,24 @@ and JSON serialization.
 
 from __future__ import annotations
 
+import shutil
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
+
+# Files that indicate a runnable dedicated server is actually present
+# (as opposed to a client-only pack staging folder).
+_SERVER_LAUNCHER_GLOBS = [
+    "server.jar",
+    "minecraft_server*.jar",
+    "fabric-server-launch.jar",
+    "quilt-server-launch.jar",
+    "paper*.jar",
+    "forge-*.jar",
+    "neoforge-*.jar",
+]
 
 
 # Known start script names across Minecraft server flavours
@@ -26,6 +39,7 @@ _START_SCRIPT_NAMES = [
     "start.sh",
     "run.sh",                 # vanilla 1.17+ server launcher
     "launch.sh",
+    "run-server.sh",
 ]
 
 
@@ -43,6 +57,11 @@ class ServerInstance:
     path: str                      # absolute path to server dir (string for JSON compat)
     name: str                      # display name, editable
     version: str       = ""        # server / modpack version string
+    pack_source: str   = ""        # prism_instance / modrinth / curseforge / manual
+    minecraft_version: str = ""    # detected Minecraft version
+    loader: str        = ""        # forge / neoforge / fabric / quilt / vanilla
+    loader_version: str = ""       # detected loader version
+    prism_source: str  = ""        # original Prism instance/archive path
     notes: str         = ""        # free-form markdown notes
     java_args: str     = "-Xms2G -Xmx4G"
     color: str         = "#c8903a" # accent color for sidebar dot
@@ -74,6 +93,11 @@ class ServerInstance:
             "path":         self.path,
             "name":         self.name,
             "version":      self.version,
+            "pack_source":  self.pack_source,
+            "minecraft_version": self.minecraft_version,
+            "loader":       self.loader,
+            "loader_version": self.loader_version,
+            "prism_source": self.prism_source,
             "notes":        self.notes,
             "java_args":    self.java_args,
             "color":        self.color,
@@ -90,6 +114,11 @@ class ServerInstance:
             path         = d["path"],
             name         = d["name"],
             version      = d.get("version", ""),
+            pack_source  = d.get("pack_source", ""),
+            minecraft_version = d.get("minecraft_version", ""),
+            loader       = d.get("loader", ""),
+            loader_version = d.get("loader_version", ""),
+            prism_source = d.get("prism_source", ""),
             notes        = d.get("notes", ""),
             java_args    = d.get("java_args", "-Xms2G -Xmx4G"),
             color        = d.get("color", "#c8903a"),
@@ -248,6 +277,133 @@ class ServerInstance:
             if (p / candidate).exists():
                 found.append(candidate)
         return found
+
+    # Server-setup helpers (used by the GUI Setup tab and the CLI 'doctor')
+
+    def eula_path(self) -> Path:
+        return self.path_obj / "eula.txt"
+
+    def eula_accepted(self) -> bool | None:
+        """True if eula=true, False if eula=false, None if file is missing."""
+        p = self.eula_path()
+        if not p.exists():
+            return None
+        try:
+            for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                s = line.strip().lower()
+                if s.startswith("eula="):
+                    return s.split("=", 1)[1].strip() == "true"
+        except OSError:
+            return None
+        return False
+
+    def set_eula_accepted(self, accepted: bool = True) -> None:
+        """Write eula.txt with the requested acceptance state (atomic)."""
+        p = self.eula_path()
+        body = (
+            "# Edited by Crucible. By setting eula=true you agree to the\n"
+            "# Minecraft EULA (https://aka.ms/MinecraftEULA).\n"
+            f"eula={'true' if accepted else 'false'}\n"
+        )
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(body, encoding="utf-8")
+        tmp.replace(p)
+
+    @staticmethod
+    def java_info() -> tuple[bool, str]:
+        """Return (found, detail). Detail is the java path or a hint."""
+        java = shutil.which("java")
+        if java:
+            return True, java
+        return False, "java not found on PATH — install a JDK/JRE to run the server"
+
+    def has_server_launcher(self) -> bool:
+        """True if a dedicated-server jar or loader args dir appears present."""
+        p = self.path_obj
+        if (p / "libraries").is_dir():
+            # Forge/NeoForge unix_args style installs live under libraries/.
+            if any(p.glob("libraries/net/*/*/*/unix_args.txt")):
+                return True
+        for pattern in _SERVER_LAUNCHER_GLOBS:
+            if any(p.glob(pattern)):
+                return True
+        return False
+
+    def server_port(self) -> str:
+        props = self.path_obj / "server.properties"
+        if props.exists():
+            try:
+                for line in props.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if line.strip().startswith("server-port="):
+                        port = line.split("=", 1)[1].strip()
+                        if port:
+                            return port
+            except OSError:
+                pass
+        return "25565"
+
+    def readiness(self) -> list[dict]:
+        """Friendly pre-flight checklist for non-technical owners.
+
+        Each item: {key, label, ok (bool|None), detail, fix} where 'fix' is a
+        machine-readable hint the GUI can turn into an action button:
+        'accept_eula', 'install_server', 'start_once', or None.
+        """
+        items: list[dict] = []
+        p = self.path_obj
+
+        exists = p.is_dir()
+        items.append({
+            "key": "folder", "label": "Server folder exists",
+            "ok": exists, "detail": self.path, "fix": None,
+        })
+        if not exists:
+            return items
+
+        java_ok, java_detail = self.java_info()
+        items.append({
+            "key": "java", "label": "Java is installed",
+            "ok": java_ok, "detail": java_detail, "fix": None,
+        })
+
+        eula = self.eula_accepted()
+        items.append({
+            "key": "eula", "label": "Minecraft EULA accepted",
+            "ok": eula,
+            "detail": ("Accepted" if eula else
+                       "eula.txt missing — will be created" if eula is None else
+                       "eula=false — the server will refuse to start"),
+            "fix": None if eula else "accept_eula",
+        })
+
+        launcher = self.has_server_launcher()
+        script = self.get_startscript()
+        items.append({
+            "key": "launcher", "label": "Server program is installed",
+            "ok": launcher or script is not None,
+            "detail": (str(script) if script else
+                       "Found server jar/loader" if launcher else
+                       "No server jar/loader found — install the dedicated server"),
+            "fix": None if (launcher or script) else "install_server",
+        })
+
+        mods = self.get_mod_count()
+        items.append({
+            "key": "mods", "label": "Mods present",
+            "ok": mods > 0 if (p / "mods").exists() else None,
+            "detail": f"{mods} mod(s) in mods/" if (p / "mods").exists() else "no mods/ folder",
+            "fix": None,
+        })
+
+        props_ok = (p / "server.properties").exists()
+        items.append({
+            "key": "properties", "label": "server.properties present",
+            "ok": props_ok,
+            "detail": f"port {self.server_port()}" if props_ok else
+                      "will be generated on first start",
+            "fix": None if props_ok else "start_once",
+        })
+        return items
 
     # Display helpers
 

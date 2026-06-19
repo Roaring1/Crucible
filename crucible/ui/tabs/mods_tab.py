@@ -80,6 +80,16 @@ class ModsTab(QWidget):
         add_btn.clicked.connect(self._pick_file)
         toolbar.addWidget(add_btn)
 
+        # Shown only when the imported pack shipped a download index.
+        self._dl_btn = QPushButton("⬇  Download from pack")
+        self._dl_btn.setToolTip(
+            "This pack listed mods to download rather than bundling them. "
+            "Try to fetch them now (needs internet)."
+        )
+        self._dl_btn.clicked.connect(self._download_from_pack)
+        self._dl_btn.hide()
+        toolbar.addWidget(self._dl_btn)
+
         refresh_btn = QPushButton("↻")
         refresh_btn.setFixedWidth(36)
         refresh_btn.setToolTip("Refresh mod list")
@@ -132,6 +142,26 @@ class ModsTab(QWidget):
     def load(self, instance: ServerInstance) -> None:
         """Switch to displaying mods for the given instance."""
         self._manager = ModManager(instance)
+        self._instance = instance
+        # Reveal the download button only when a pack index is present.
+        try:
+            from ...importers.downloader import has_downloadable_index
+            self._dl_btn.setVisible(has_downloadable_index(instance.path))
+        except Exception:
+            self._dl_btn.hide()
+        self.refresh()
+
+    def _download_from_pack(self) -> None:
+        inst = getattr(self, "_instance", None)
+        if inst is None:
+            return
+        try:
+            from ..download_dialog import DownloadModsDialog
+            dlg = DownloadModsDialog(inst.path, inst.name, parent=self)
+            dlg.start()
+            dlg.exec()
+        except Exception as exc:
+            QMessageBox.warning(self, "Download mods", f"Could not start download:\n{exc}")
         self.refresh()
 
     def refresh(self) -> None:

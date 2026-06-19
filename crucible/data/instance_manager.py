@@ -77,8 +77,13 @@ class InstanceManager:
         self,
         path: str,
         name: str,
-        version: str = "2.8.4",
+        version: str = "",
         tmux_session: str = "",
+        pack_source: str = "",
+        minecraft_version: str = "",
+        loader: str = "",
+        loader_version: str = "",
+        prism_source: str = "",
     ) -> ServerInstance:
         """
         Register a new server directory.
@@ -101,6 +106,11 @@ class InstanceManager:
             path         = resolved,
             name         = name,
             version      = version,
+            pack_source  = pack_source,
+            minecraft_version = minecraft_version,
+            loader       = loader,
+            loader_version = loader_version,
+            prism_source = prism_source,
             tmux_session = tmux_session,  # empty → auto-derived in __post_init__
         )
 
@@ -184,6 +194,10 @@ class InstanceManager:
             "startserver.sh",
             "startserver-java9.sh",
             "startserver-java17.sh",
+            "start.sh",
+            "run.sh",
+            "launch.sh",
+            "run-server.sh",
         }
 
         def _walk(p: Path, depth: int) -> None:

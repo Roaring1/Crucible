@@ -4,7 +4,7 @@ crucible/ui/tabs/players_tab.py
 Player management tab.
 
 Top:    Online Now  — live from LogWatcher signals, with 20×20 player-head
-        avatars (cached to disk at ~/.local/share/crucible-backups/avatars/).
+        avatars (cached to disk at ~/.local/share/crucible/avatars/).
 Bottom: Sub-tabs    — Whitelist | Ops | Banned
 
 Avatar cache: fetched from minotar.net on first join, stored as PNG.
@@ -33,7 +33,7 @@ from ...data.instance_model import ServerInstance
 from ...process.log_watcher import LogWatcher
 from .. import theme
 
-_AVATAR_CACHE_DIR = Path.home() / ".local" / "share" / "crucible-backups" / "avatars"
+_AVATAR_CACHE_DIR = Path.home() / ".local" / "share" / "crucible" / "avatars"
 _AVATAR_MAX_AGE_S = 7 * 24 * 3600
 
 
@@ -69,7 +69,7 @@ class _AvatarFetcher(QObject):
         # Fetch from network
         try:
             import urllib.request
-            url = f"https://minotar.net/avatar/{self._name}/20"
+            url = "https://minotar.net/avatar/%s/20" % self._name
             with urllib.request.urlopen(url, timeout=8) as resp:
                 data = resp.read()
             cache.write_bytes(data)

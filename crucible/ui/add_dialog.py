@@ -2,6 +2,9 @@
 crucible/ui/add_dialog.py
 
 Dialog for adding a new server instance.
+
+Layout favours the *recommended* path — importing a Prism instance or modpack
+archive — with manual folder registration available below for advanced users.
 """
 
 from __future__ import annotations
@@ -12,17 +15,18 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog,
-    QDialogButtonBox, QMessageBox,
+    QDialogButtonBox, QMessageBox, QCheckBox, QFrame, QInputDialog,
 )
 
 from ..data.instance_manager import InstanceManager
 from ..data.instance_model import ServerInstance
+from ..importers.prism import import_prism_source
 from . import theme
 
 
 class AddInstanceDialog(QDialog):
     """
-    Modal dialog that lets the user register a server directory.
+    Modal dialog that lets the user import or register a server directory.
 
     On accept(), the instance is added to the manager and available
     via .result_instance.
@@ -33,7 +37,7 @@ class AddInstanceDialog(QDialog):
         self._manager = manager
         self.result_instance: ServerInstance | None = None
         self.setWindowTitle("Add Server Instance")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(560)
         self.setModal(True)
         self._build_ui()
 
@@ -42,19 +46,76 @@ class AddInstanceDialog(QDialog):
         layout.setSpacing(12)
         layout.setContentsMargins(20, 16, 20, 16)
 
-        title = QLabel("Register a Server Directory")
-        title.setStyleSheet(
+        # ---- Recommended: import from Prism / modpack -------------------
+        rec_title = QLabel("Import a modpack  —  recommended")
+        rec_title.setStyleSheet(
             f"font-size: 16px; font-weight: 700; color: {theme.TEXT};"
         )
-        layout.addWidget(title)
+        layout.addWidget(rec_title)
 
-        sub = QLabel(
-            "Point Crucible at an existing server folder. "
+        rec_sub = QLabel(
+            "The easiest way to get started. Point Crucible at a Prism Launcher "
+            "instance or a modpack archive (.zip / .mrpack from Modrinth or "
+            "CurseForge) and it will set up a server folder for you — copying only "
+            "server-safe files and generating a start script."
+        )
+        rec_sub.setWordWrap(True)
+        rec_sub.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
+        layout.addWidget(rec_sub)
+
+        import_row = QHBoxLayout()
+        import_folder_btn = QPushButton("📦  Import Prism Instance…")
+        import_folder_btn.setObjectName("PrimaryButton")
+        import_folder_btn.setFixedHeight(34)
+        import_folder_btn.clicked.connect(self._import_prism_folder)
+        import_row.addWidget(import_folder_btn)
+        import_archive_btn = QPushButton("🗃  Import Modpack Archive…")
+        import_archive_btn.setObjectName("PrimaryButton")
+        import_archive_btn.setFixedHeight(34)
+        import_archive_btn.clicked.connect(self._import_prism_archive)
+        import_row.addWidget(import_archive_btn)
+        layout.addLayout(import_row)
+
+        self._dl_check = QCheckBox(
+            "After importing, try to download the pack's mods (needs internet)"
+        )
+        self._dl_check.setChecked(False)
+        self._dl_check.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
+        self._dl_check.setToolTip(
+            "Some packs only ship a list of mods, not the files. If checked, "
+            "Crucible will try to download them after import. CurseForge packs "
+            "may need a free API key (CURSEFORGE_API_KEY)."
+        )
+        layout.addWidget(self._dl_check)
+
+        import_hint = QLabel(
+            "Tip: importing a *fully installed* Prism instance is the most reliable "
+            "option — it already contains the mod jars and the server loader."
+        )
+        import_hint.setWordWrap(True)
+        import_hint.setStyleSheet(f"color: {theme.SURFACE2}; font-size: 11px;")
+        layout.addWidget(import_hint)
+
+        # ---- Divider ----------------------------------------------------
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {theme.SURFACE1};")
+        layout.addWidget(sep)
+
+        # ---- Advanced: register an existing folder ----------------------
+        adv_title = QLabel("Or register an existing server folder")
+        adv_title.setStyleSheet(
+            f"font-size: 13px; font-weight: 600; color: {theme.TEXT};"
+        )
+        layout.addWidget(adv_title)
+
+        adv_sub = QLabel(
+            "Already have a server set up? Point Crucible at it. "
             "Files on disk are never modified by this operation."
         )
-        sub.setWordWrap(True)
-        sub.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
-        layout.addWidget(sub)
+        adv_sub.setWordWrap(True)
+        adv_sub.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
+        layout.addWidget(adv_sub)
 
         form = QFormLayout()
         form.setSpacing(10)
@@ -130,6 +191,140 @@ class AddInstanceDialog(QDialog):
         if not self._name_edit.text():
             self._name_edit.setText(Path(text).name)
 
+    def _choose_prism_target(self, suggested_name: str) -> str:
+        """Let the user pick a parent folder and name a NEW destination folder.
+
+        getExistingDirectory can't create folders easily, so we ask for a parent
+        directory and then a folder name, and create it ourselves.
+        """
+        base = Path.home() / "CrucibleServers"
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            base = Path.home()
+
+        parent = QFileDialog.getExistingDirectory(
+            self,
+            "Choose where to create the new server folder",
+            str(base),
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not parent:
+            return ""
+
+        name, ok = QInputDialog.getText(
+            self, "Name the server folder",
+            "Folder name for the new server:",
+            text=self._safe_folder_name(suggested_name),
+        )
+        if not ok:
+            return ""
+        name = self._safe_folder_name(name) or self._safe_folder_name(suggested_name) or "server"
+        target = Path(parent) / name
+
+        if target.exists() and any(target.iterdir()):
+            resp = QMessageBox.question(
+                self, "Folder not empty",
+                f"{target} already exists and is not empty.\n\n"
+                "Import into it anyway? Existing files may be overwritten.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                return ""
+        return str(target)
+
+    @staticmethod
+    def _safe_folder_name(name: str) -> str:
+        keep = "-_. "
+        cleaned = "".join(c for c in (name or "") if c.isalnum() or c in keep).strip()
+        return cleaned.replace(" ", "-")
+
+    def _finish_prism_import(self, source: str) -> None:
+        suggested = Path(source).stem or Path(source).name or "Prism Server"
+        target = self._choose_prism_target(suggested)
+        if not target:
+            return
+
+        want_download = self._dl_check.isChecked()
+        try:
+            info = import_prism_source(
+                source, target, overwrite=True, download_mods=want_download
+            )
+            name = info.name or Path(target).name
+            version = info.version_label
+            inst = self._manager.add_instance(
+                target,
+                name,
+                version,
+                pack_source=info.source_type,
+                minecraft_version=info.minecraft_version,
+                loader=info.loader,
+                loader_version=info.loader_version,
+                prism_source=source,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Prism Import Failed", str(exc))
+            return
+
+        self._path_edit.setText(target)
+        self._name_edit.setText(inst.name)
+        self._ver_edit.setText(inst.version)
+        self.result_instance = inst
+
+        # Offer the download dialog if the pack only shipped an index and the
+        # user did not already opt into auto-download.
+        if not want_download:
+            self._maybe_offer_download(target, inst.name)
+
+        warnings = info.warnings + inst.validate()
+        if warnings:
+            self._warn_label.setText(
+                "⚠  Imported with warnings:\n• " + "\n• ".join(warnings)
+            )
+            self._warn_label.show()
+            return
+        self.accept()
+
+    def _maybe_offer_download(self, target: str, server_name: str) -> None:
+        try:
+            from ..importers.downloader import has_downloadable_index
+            if not has_downloadable_index(target):
+                return
+        except Exception:
+            return
+        resp = QMessageBox.question(
+            self, "Download mods?",
+            "This pack shipped a mod download list instead of the actual files.\n\n"
+            "Try to download the server mods now? (needs internet)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if resp != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from .download_dialog import DownloadModsDialog
+            dlg = DownloadModsDialog(target, server_name, parent=self)
+            dlg.start()
+            dlg.exec()
+        except Exception as exc:
+            QMessageBox.warning(self, "Download mods", f"Could not start download:\n{exc}")
+
+    def _import_prism_folder(self) -> None:
+        source = QFileDialog.getExistingDirectory(
+            self, "Select Prism instance folder", str(Path.home())
+        )
+        if source:
+            self._finish_prism_import(source)
+
+    def _import_prism_archive(self) -> None:
+        source, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Prism / Modrinth / CurseForge pack",
+            str(Path.home()),
+            "Modpack archives (*.zip *.mrpack);;All files (*)",
+        )
+        if source:
+            self._finish_prism_import(source)
+
     def _on_accept(self) -> None:
         # Second OK click after warnings were shown: instance already registered, just close.
         if self.result_instance is not None:
@@ -138,11 +333,14 @@ class AddInstanceDialog(QDialog):
 
         path    = self._path_edit.text().strip()
         name    = self._name_edit.text().strip() or Path(path).name
-        version = self._ver_edit.text().strip() or "2.8.4"
+        version = self._ver_edit.text().strip()
         session = self._session_edit.text().strip()
 
         if not path:
-            QMessageBox.warning(self, "Missing Path", "Please enter the server directory path.")
+            QMessageBox.warning(
+                self, "Nothing to add",
+                "Import a modpack above, or enter the path to an existing server folder.",
+            )
             return
 
         try:

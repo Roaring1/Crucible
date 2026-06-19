@@ -18,7 +18,9 @@ Commands
   status [name|id]        Show running/stopped status (all if no arg)
   attach <name|id>        Open the server console in a new terminal window
   send   <name|id> <cmd>  Send a command to the server console
-  scan   <path>           Scan a directory tree for GTNH server installs
+  scan   <path>           Scan a directory tree for server installs
+  scan-prism <path>       Scan for Prism/MultiMC instances
+  import-prism <src> <dst> Import a Prism instance/modpack as a server folder
   validate [name|id]      Validate instance paths and configuration
   info   <name|id>        Show full details for one instance
   edit   <name|id>        Edit instance metadata (name, version, notes…)
@@ -54,7 +56,7 @@ def resolve_instance(manager: InstanceManager, key: str):
 def cmd_list(manager: InstanceManager, tmux: TmuxManager, _args) -> None:
     if not manager.instances:
         dim("No instances registered.")
-        dim("Add one with:  crucible add /path/to/GTNH-Server")
+        dim("Add one with:  crucible add /path/to/server")
         return
 
     status_map = tmux.status_map(manager.instances)
@@ -253,7 +255,7 @@ def cmd_send(manager: InstanceManager, tmux: TmuxManager, args) -> None:
 def cmd_scan(manager: InstanceManager, args) -> None:
     from pathlib import Path
     search = Path(args.path).expanduser()
-    info(f"Scanning {search} for GTNH server directories…")
+    info(f"Scanning {search} for Minecraft server directories…")
 
     found = manager.find_server_dirs(search, max_depth=args.depth)
 
@@ -274,6 +276,133 @@ def cmd_scan(manager: InstanceManager, args) -> None:
     if any(str(p) not in registered for p in found):
         info(f"Register with: {CYAN}crucible add <path>{RESET}")
     print()
+
+
+def cmd_scan_prism(_manager: InstanceManager, args) -> None:
+    from .importers.prism import scan_prism_instances, detect_prism_source
+    found = scan_prism_instances(args.path, max_depth=args.depth)
+    if not found:
+        dim(f"No Prism instances found under {args.path}")
+        return
+    print(f"\n  Found {len(found)} Prism instance(s):\n")
+    for p in found:
+        try:
+            plan = detect_prism_source(p)
+            label = plan.info.version_label
+            print(f"  {CYAN}→{RESET}  {p}  {DIM}{plan.info.name} {label}{RESET}")
+        except Exception:
+            print(f"  {CYAN}→{RESET}  {p}")
+    print()
+
+
+def cmd_import_prism(manager: InstanceManager, args) -> None:
+    from pathlib import Path
+    from .importers.prism import import_prism_source
+    try:
+        info_obj = import_prism_source(
+            args.source, args.target,
+            accept_eula=args.accept_eula,
+            overwrite=args.overwrite,
+            download_mods=getattr(args, "download_mods", False),
+            download_log_cb=lambda m: dim(f"    {m}"),
+        )
+    except Exception as exc:
+        err(str(exc))
+        sys.exit(1)
+
+    name = args.name or info_obj.name or Path(args.target).name
+    version = args.version or info_obj.version_label
+    try:
+        inst = manager.add_instance(
+            args.target,
+            name,
+            version,
+            pack_source=info_obj.source_type,
+            minecraft_version=info_obj.minecraft_version,
+            loader=info_obj.loader,
+            loader_version=info_obj.loader_version,
+            prism_source=args.source,
+        )
+    except ValueError as exc:
+        warn(str(exc))
+        inst = None
+
+    ok(f"Imported Prism-compatible source to {args.target}")
+    if inst:
+        info(f"Registered: {inst.name} ({inst.short_id()})")
+    if info_obj.warnings:
+        warn("Import warnings:")
+        for w in info_obj.warnings:
+            dim(f"    {w}")
+    info(f"Read next: {args.target}/CRUCIBLE_IMPORT.md")
+
+
+def cmd_download_mods(manager: InstanceManager, args) -> None:
+    """Best-effort download of a server's pack mods from its stored index."""
+    from .importers.downloader import download_pack_mods, has_downloadable_index
+    inst = resolve_instance(manager, args.name)
+    if not has_downloadable_index(inst.path):
+        warn("No pack index found for this server (nothing to download).")
+        info("This is normal for fully-installed imports that already include mod jars.")
+        return
+    info(f"Downloading mods for {inst.name}…")
+    try:
+        result = download_pack_mods(inst.path, log_cb=lambda m: dim(f"    {m}"))
+    except Exception as exc:  # download_pack_mods shouldn't raise, but be safe
+        err(f"Download failed unexpectedly: {exc}")
+        sys.exit(1)
+    ok("Download finished: " + result.summary())
+    if result.failed:
+        warn("Could not download these (grab them manually or set CURSEFORGE_API_KEY):")
+        for name, reason in result.failed:
+            dim(f"    {name}: {reason}")
+
+
+def cmd_accept_eula(manager: InstanceManager, args) -> None:
+    """Write eula=true for a server (user is accepting the Minecraft EULA)."""
+    inst = resolve_instance(manager, args.name)
+    try:
+        inst.set_eula_accepted(True)
+    except Exception as exc:
+        err(f"Could not write eula.txt: {exc}")
+        sys.exit(1)
+    ok(f"eula.txt set to true for {inst.name}")
+    info("You have indicated agreement to the Minecraft EULA (https://aka.ms/MinecraftEULA).")
+
+
+def cmd_doctor(manager: InstanceManager, tmux: TmuxManager, args) -> None:
+    """Friendly readiness check: is this server ready for friends to join?"""
+    if args.name:
+        instances = [resolve_instance(manager, args.name)]
+    else:
+        instances = manager.instances
+    if not instances:
+        warn("No instances registered yet. Import a modpack or add a server folder first.")
+        return
+    for inst in instances:
+        print(f"\n  {BOLD}{inst.name}{RESET}  {DIM}({inst.short_id()}){RESET}")
+        try:
+            items = inst.readiness()
+        except Exception as exc:
+            err(f"    readiness check failed: {exc}")
+            continue
+        for item in items:
+            state = item.get("ok")
+            label = item.get("label", "")
+            detail = item.get("detail", "")
+            line = f"  {label}: {detail}"
+            if state is True:
+                ok(line)
+            elif state is False:
+                err(line)
+            else:
+                warn(line)
+        # Helpful next-step hints
+        fixes = [i.get("fix") for i in items if i.get("fix")]
+        if "accept_eula" in fixes:
+            dim(f"      → run: crucible accept-eula {inst.name!r}")
+        if "install_server" in fixes:
+            dim("      → import a fully-installed Prism instance, or add the server jar/loader")
 
 
 def cmd_validate(manager: InstanceManager, args) -> None:
@@ -401,7 +530,7 @@ def cmd_gui(manager: InstanceManager) -> None:
 
     app = QApplication(_sys.argv)
     app.setApplicationName("Crucible")
-    app.setApplicationDisplayName("Crucible — GTNH Server Manager")
+    app.setApplicationDisplayName("Crucible — Minecraft Server Manager")
     # Required for KDE/Wayland task manager and icon-only task manager to pick up
     # the icon.  The string must match the base name of the .desktop file
     # (crucible.desktop) and the Icon= entry inside it.
@@ -424,7 +553,7 @@ def cmd_gui(manager: InstanceManager) -> None:
 def build_parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog        = "crucible",
-        description = "Crucible — GTNH Server Manager",
+        description = "Crucible — Minecraft Server Manager",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = root.add_subparsers(dest="command", metavar="<command>")
@@ -437,9 +566,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # add
     p_add = sub.add_parser("add", help="Register a server directory")
-    p_add.add_argument("path",              help="Path to the GTNH server directory")
+    p_add.add_argument("path",              help="Path to the Minecraft server directory")
     p_add.add_argument("--name",            help="Display name (default: directory name)")
-    p_add.add_argument("--version",         default="2.8.4", help="GTNH version (default: 2.8.4)")
+    p_add.add_argument("--version",         default="", help="Server / modpack version label")
     p_add.add_argument(
         "--session",
         metavar="NAME",
@@ -488,9 +617,36 @@ def build_parser() -> argparse.ArgumentParser:
     p_send.add_argument("command", nargs="+", help="Command to send (e.g. say hello)")
 
     # scan
-    p_scan = sub.add_parser("scan", help="Scan a directory tree for GTNH server installs")
+    p_scan = sub.add_parser("scan", help="Scan a directory tree for Minecraft server installs")
     p_scan.add_argument("path",            help="Directory to scan")
     p_scan.add_argument("--depth", type=int, default=3, metavar="N", help="Max recursion depth (default: 3)")
+
+    # scan-prism
+    p_scan_prism = sub.add_parser("scan-prism", help="Scan for Prism/MultiMC instances")
+    p_scan_prism.add_argument("path", help="Directory to scan, e.g. ~/.local/share/PrismLauncher/instances")
+    p_scan_prism.add_argument("--depth", type=int, default=4, metavar="N", help="Max recursion depth (default: 4)")
+
+    # import-prism
+    p_import_prism = sub.add_parser("import-prism", help="Import Prism/MultiMC/Modrinth/CurseForge source as a server folder")
+    p_import_prism.add_argument("source", help="Prism instance folder or .zip/.mrpack")
+    p_import_prism.add_argument("target", help="Destination server folder")
+    p_import_prism.add_argument("--name", help="Registered server name")
+    p_import_prism.add_argument("--version", help="Registered version label")
+    p_import_prism.add_argument("--overwrite", action="store_true", help="Allow importing into a non-empty target")
+    p_import_prism.add_argument("--accept-eula", action="store_true", help="Write eula=true. Only use if you accept the Minecraft EULA.")
+    p_import_prism.add_argument("--download-mods", action="store_true", help="After import, try to download mods listed in the pack index (needs internet).")
+
+    # download-mods
+    p_dl = sub.add_parser("download-mods", help="Try to download a server's mods from its imported pack index")
+    p_dl.add_argument("name", help="Instance name or ID prefix")
+
+    # accept-eula
+    p_eula = sub.add_parser("accept-eula", help="Write eula=true for a server (accept the Minecraft EULA)")
+    p_eula.add_argument("name", help="Instance name or ID prefix")
+
+    # doctor
+    p_doctor = sub.add_parser("doctor", help="Friendly readiness check: is the server ready for friends to join?")
+    p_doctor.add_argument("name", nargs="?", help="Instance name or ID (omit for all)")
 
     # validate
     p_val = sub.add_parser("validate", help="Validate instance paths and config")
@@ -504,7 +660,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_edit = sub.add_parser("edit", help="Edit instance metadata")
     p_edit.add_argument("name",            help="Instance name or ID prefix")
     p_edit.add_argument("--rename",        metavar="NAME",    help="New display name")
-    p_edit.add_argument("--version",       metavar="VER",     help="GTNH version string")
+    p_edit.add_argument("--version",       metavar="VER",     help="Server / modpack version string")
     p_edit.add_argument("--session",       metavar="SESSION", help="tmux session name")
     p_edit.add_argument("--java-args",     metavar="ARGS",    help="JVM arguments")
     p_edit.add_argument("--notes",         metavar="TEXT",    help="Notes (replaces existing)")
@@ -544,6 +700,11 @@ def main() -> None:
         "attach":   lambda: cmd_attach(manager, tmux, args),
         "send":     lambda: cmd_send(manager, tmux, args),
         "scan":     lambda: cmd_scan(manager, args),
+        "scan-prism": lambda: cmd_scan_prism(manager, args),
+        "import-prism": lambda: cmd_import_prism(manager, args),
+        "download-mods": lambda: cmd_download_mods(manager, args),
+        "accept-eula": lambda: cmd_accept_eula(manager, args),
+        "doctor":   lambda: cmd_doctor(manager, tmux, args),
         "validate": lambda: cmd_validate(manager, args),
         "info":     lambda: cmd_info(manager, tmux, args),
         "edit":     lambda: cmd_edit(manager, args),

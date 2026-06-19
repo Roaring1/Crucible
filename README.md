@@ -1,6 +1,6 @@
 # Crucible
 
-GUI + CLI for GT: New Horizons dedicated servers on Linux (Arch, Nobara, Fedora).
+GUI + CLI for Minecraft dedicated servers on Linux (Arch, Nobara, Fedora), with GT: New Horizons support and Prism Launcher modpack import.
 
 Manages server start/stop/restart via tmux, tails the live log, handles mods,
 backups, server.properties editing, player lists, and auto-restart on crash.
@@ -37,7 +37,23 @@ crucible send Midtech "forge tps"
 crucible status
 ```
 
-First launch: click **+ Add Server** and point it at your GTNH server folder.
+First launch: click **+ Add Server** and point it at a server folder, or use the Prism import buttons.
+
+---
+
+## Prism Launcher compatibility
+
+Crucible can now import Prism/MultiMC instances and Prism-compatible pack archives as dedicated-server folders:
+
+```bash
+crucible scan-prism ~/.local/share/PrismLauncher/instances
+crucible import-prism /path/to/PrismInstance /path/to/ServerFolder
+crucible import-prism pack.mrpack /path/to/ServerFolder
+```
+
+Best results come from importing a fully installed Prism instance, because Modrinth/CurseForge exports often contain remote indexes rather than the downloaded jars. Import copies server-safe content (`mods`, `config`, `defaultconfigs`, `kubejs`, `scripts`, `patchouli_books`) and writes `start.sh`, `server.properties`, `eula.txt`, `.crucible/import-summary.json`, and `CRUCIBLE_IMPORT.md` with warnings and next steps.
+
+The GUI **+ Add Server** dialog also includes **Import Prism Instance…** and **Import Modpack Archive…** buttons.
 
 ---
 
