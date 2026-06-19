@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Literal
 
 from ..data.instance_model import ServerInstance
+from . import netfix
 
 
 class TmuxManager:
@@ -137,6 +138,18 @@ class TmuxManager:
             )
 
         session = self.session_name(instance)
+
+        # Force the IPv4 stack so the server can bind its port on machines where
+        # IPv6 is disabled/unavailable (fixes Netty bind error -97,
+        # "Address family not supported by protocol"). Covers Crucible's own
+        # start.sh via CRUCIBLE_JAVA_ARGS...
+        java_args = netfix.ensure_ipv4(instance.java_args)
+        # ...and Forge/NeoForge run scripts that read user_jvm_args.txt instead.
+        try:
+            netfix.ensure_user_jvm_args_file(instance.path)
+        except OSError:
+            pass
+
         cmd = [
             "tmux", "new-session",
             "-d",              # detached — don't steal the terminal
@@ -147,7 +160,7 @@ class TmuxManager:
             # resource monitor.
             "env CRUCIBLE_JAVA_ARGS="
             + shlex.quote(
-                f"{instance.java_args} -Dcrucible.session={session}".strip()
+                f"{java_args} -Dcrucible.session={session}".strip()
             )
             + " bash "
             + shlex.quote(script.name),  # command; script.name is the bare filename

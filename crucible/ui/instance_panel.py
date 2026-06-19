@@ -39,6 +39,10 @@ from .tabs import ConsoleTab, ModsTab, NotesTab, InfoTab, ConfigTab, BackupTab, 
 
 # How often to auto-query TPS when server is running (ms)
 _TPS_POLL_MS = 30_000
+# While the server is in a transient "stopping"/"starting" state, poll the tmux
+# session this often so the header flips to the resolved state quickly instead
+# of waiting up to HEALTH_CHECK_INTERVAL_MS (5s) for the slow health check.
+_TRANSITION_POLL_MS = 1_200
 
 
 class _TmuxWorker(QObject):
@@ -92,6 +96,15 @@ class InstancePanel(QWidget):
         self._tps_timer = QTimer(self)
         self._tps_timer.setInterval(_TPS_POLL_MS)
         self._tps_timer.timeout.connect(self._auto_tps)
+
+        # Fast transition poll -- only active while "stopping"/"starting".
+        # Resolves the header to "offline"/"online" as soon as the tmux session
+        # settles, so a stopping server doesn't sit on "STOPPING…" for seconds
+        # after it has actually exited.
+        self._transition_timer = QTimer(self)
+        self._transition_timer.setInterval(_TRANSITION_POLL_MS)
+        self._transition_timer.timeout.connect(self._poll_transition)
+        self._transition_polling = False  # a check is currently in flight
 
     # Off-thread helper
 
@@ -509,6 +522,46 @@ class InstancePanel(QWidget):
         self._btn_stop.setEnabled(running or starting)
         self._btn_restart.setEnabled(True)
         self._btn_attach.setEnabled(running or starting)
+
+        # Drive (or stop) the fast transition poll based on the new state.
+        if status in ("starting", "stopping"):
+            if not self._transition_timer.isActive():
+                self._transition_timer.start()
+        else:
+            self._transition_timer.stop()
+            self._transition_polling = False
+
+    def _poll_transition(self) -> None:
+        """Check the tmux session while in a transient state and resolve fast.
+
+        Runs the (blocking) ``is_running`` check off the main thread. When the
+        session has gone away we flip "stopping" (and a "starting" server that
+        died during boot) straight to "stopped" without waiting for the slow
+        5-second health check.
+        """
+        inst = self._instance
+        if inst is None or self._current_status not in ("starting", "stopping"):
+            self._transition_timer.stop()
+            self._transition_polling = False
+            return
+        if self._transition_polling:
+            return  # previous check still running -- don't stack them up
+        self._transition_polling = True
+        expecting = self._current_status
+
+        def _done(is_running: bool, _msg: str) -> None:
+            self._transition_polling = False
+            # Bail out if the user switched servers or the state already moved.
+            if self._instance is not inst or self._current_status != expecting:
+                return
+            if not is_running:
+                # Session gone: a stopping server is now stopped; a starting
+                # server that vanished before "Done" crashed/exited.
+                self._update_status_display("stopped")
+                self.status_changed.emit(inst.id, "stopped")
+                self._info.load(inst, "stopped")
+
+        self._run_tmux(lambda: (self._tmux.is_running(inst), ""), _done)
 
     def _set_buttons_enabled(self, enabled: bool) -> None:
         for btn in (self._btn_start, self._btn_stop,

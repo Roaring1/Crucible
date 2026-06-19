@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.4.5 — 2026-06-19
+
+### Fixed
+
+- **Server fails to bind its port on machines with IPv6 disabled.** New
+  `crucible/process/netfix.py` forces the JVM onto the IPv4 stack
+  (`-Djava.net.preferIPv4Stack=true` / `-Djava.net.preferIPv6Addresses=false`)
+  on every start, fixing Netty bind error `-97`
+  (`Address family not supported by protocol`) — which looks like a
+  port-in-use problem but isn't, and changing the port does nothing. Applied
+  both via `CRUCIBLE_JAVA_ARGS` (Crucible's own `start.sh`) and by patching
+  `user_jvm_args.txt` for modern Forge/NeoForge run scripts that read JVM
+  flags from there instead.
+- **Faster start/stop status updates.** A new fast transition poll
+  (`_TRANSITION_POLL_MS` = 1.2s) resolves the "starting…"/"stopping…" header
+  as soon as the tmux session actually settles, instead of waiting up to the
+  5s health-check interval.
+
 ## v0.4.4 — 2026-06-19
 
 ### Added
