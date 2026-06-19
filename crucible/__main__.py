@@ -305,6 +305,8 @@ def cmd_import_prism(manager: InstanceManager, args) -> None:
             overwrite=args.overwrite,
             download_mods=getattr(args, "download_mods", False),
             download_log_cb=lambda m: dim(f"    {m}"),
+            install_server=getattr(args, "install_server", False),
+            install_log_cb=lambda m: dim(f"    {m}"),
         )
     except Exception as exc:
         err(str(exc))
@@ -368,6 +370,106 @@ def cmd_accept_eula(manager: InstanceManager, args) -> None:
         sys.exit(1)
     ok(f"eula.txt set to true for {inst.name}")
     info("You have indicated agreement to the Minecraft EULA (https://aka.ms/MinecraftEULA).")
+
+
+def cmd_list_mc_versions(manager: InstanceManager, args) -> None:
+    """List available Minecraft versions from Mojang's manifest."""
+    from .importers import serverloader as sl
+    info("Fetching Minecraft version list…")
+    versions = sl.list_versions(include_snapshots=getattr(args, "snapshots", False))
+    if not versions:
+        err("Could not fetch the version list (offline?).")
+        dim("You can still create a server by passing an explicit --mc version.")
+        sys.exit(1)
+    latest = sl.latest_release()
+    if latest:
+        ok(f"Latest release: {latest}")
+    shown = versions[: getattr(args, "limit", 30) or 30]
+    for v in shown:
+        marker = "  ← latest" if v.id == latest else ""
+        dim(f"  {v.id:16} ({v.type}){marker}")
+    if len(versions) > len(shown):
+        dim(f"  …and {len(versions) - len(shown)} more (use --limit to see more)")
+
+
+def cmd_create_server(manager: InstanceManager, args) -> None:
+    """Create a brand-new server from scratch (vanilla is the simplest)."""
+    from pathlib import Path
+    from .importers import serverloader as sl
+
+    loader = sl.normalize_loader(args.loader or "vanilla")
+    mc = args.mc
+    if not mc:
+        mc = sl.latest_release()
+        if not mc:
+            err("Could not determine a Minecraft version. Pass one with --mc (e.g. --mc 1.21.1).")
+            sys.exit(1)
+        info(f"No --mc given; using latest release {mc}")
+
+    if args.dir:
+        target = Path(args.dir).expanduser()
+    else:
+        name_slug = "".join(c for c in (args.name or f"{loader}-{mc}") if c.isalnum() or c in "-_.").strip() or "server"
+        target = Path.home() / "CrucibleServers" / name_slug
+
+    info(f"Creating {loader} server for Minecraft {mc} at {target}…")
+    result = sl.create_fresh_server(
+        target,
+        minecraft_version=mc,
+        loader=loader,
+        loader_version=args.loader_version or "",
+        accept_eula=args.accept_eula,
+        overwrite=args.overwrite,
+        log_cb=lambda m: dim(f"    {m}"),
+    )
+
+    # Register regardless — the folder is well-formed even if the download failed.
+    version_label = f"MC {mc}" + (f" · {loader}" if loader != "vanilla" else "")
+    try:
+        inst = manager.add_instance(
+            str(target), args.name or target.name, version_label,
+            pack_source=f"new_{loader}",
+            minecraft_version=mc,
+            loader=("" if loader == "vanilla" else loader),
+            loader_version=args.loader_version or "",
+        )
+        info(f"Registered: {inst.name} ({inst.short_id()})")
+    except ValueError as exc:
+        warn(str(exc))
+
+    if result.ok:
+        ok("Server created: " + result.summary())
+        if not args.accept_eula:
+            dim("Run 'crucible accept-eula <name>' (and read the Minecraft EULA) before starting.")
+    else:
+        err("Server program not installed: " + (result.failed_reason or "unknown"))
+        dim("The folder was still created. Retry with internet via 'crucible install-server <name>'.")
+
+
+def cmd_install_server(manager: InstanceManager, args) -> None:
+    """Install / repair the dedicated server program for a registered instance."""
+    from .importers import serverloader as sl
+    inst = resolve_instance(manager, args.name)
+    mc = args.mc or inst.minecraft_version
+    loader = sl.normalize_loader(args.loader or inst.loader or "vanilla")
+    if not mc:
+        err("This instance has no recorded Minecraft version. Pass one with --mc.")
+        sys.exit(1)
+    info(f"Installing {loader} server program for {inst.name} (MC {mc})…")
+    result = sl.install_server_loader(
+        inst.path,
+        minecraft_version=mc,
+        loader=loader,
+        loader_version=args.loader_version or inst.loader_version or "",
+        log_cb=lambda m: dim(f"    {m}"),
+    )
+    if result.ok:
+        ok("Installed: " + result.summary())
+    else:
+        err("Install failed: " + (result.failed_reason or "unknown"))
+        if sl.requires_java(loader):
+            dim("This loader needs Java on PATH to run its installer. Vanilla and Fabric don't.")
+        sys.exit(1)
 
 
 def cmd_doctor(manager: InstanceManager, tmux: TmuxManager, args) -> None:
@@ -635,6 +737,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_import_prism.add_argument("--overwrite", action="store_true", help="Allow importing into a non-empty target")
     p_import_prism.add_argument("--accept-eula", action="store_true", help="Write eula=true. Only use if you accept the Minecraft EULA.")
     p_import_prism.add_argument("--download-mods", action="store_true", help="After import, try to download mods listed in the pack index (needs internet).")
+    p_import_prism.add_argument("--install-server", action="store_true", help="After import, try to install the dedicated server program if the pack didn't ship one (needs internet).")
+
+    # create-server
+    p_create = sub.add_parser("create-server", help="Create a brand-new server (vanilla is easiest: just pick a version)")
+    p_create.add_argument("--mc", help="Minecraft version (default: latest release)")
+    p_create.add_argument("--loader", default="vanilla", help="vanilla (default), fabric, neoforge, forge, or quilt")
+    p_create.add_argument("--loader-version", help="Loader version (default: latest)")
+    p_create.add_argument("--name", help="Registered server name")
+    p_create.add_argument("--dir", help="Folder to create the server in (default: ~/CrucibleServers/<name>)")
+    p_create.add_argument("--overwrite", action="store_true", help="Allow creating into a non-empty folder")
+    p_create.add_argument("--accept-eula", action="store_true", help="Write eula=true. Only use if you accept the Minecraft EULA.")
+
+    # list-mc-versions
+    p_lmv = sub.add_parser("list-mc-versions", help="List available Minecraft versions from Mojang")
+    p_lmv.add_argument("--snapshots", action="store_true", help="Include snapshot versions")
+    p_lmv.add_argument("--limit", type=int, default=30, help="How many to show (default 30)")
+
+    # install-server
+    p_is = sub.add_parser("install-server", help="Install/repair the dedicated server program for an instance")
+    p_is.add_argument("name", help="Instance name or ID prefix")
+    p_is.add_argument("--mc", help="Minecraft version (default: the instance's recorded version)")
+    p_is.add_argument("--loader", help="Loader override (default: the instance's recorded loader)")
+    p_is.add_argument("--loader-version", help="Loader version (default: latest / recorded)")
 
     # download-mods
     p_dl = sub.add_parser("download-mods", help="Try to download a server's mods from its imported pack index")
@@ -702,6 +827,9 @@ def main() -> None:
         "scan":     lambda: cmd_scan(manager, args),
         "scan-prism": lambda: cmd_scan_prism(manager, args),
         "import-prism": lambda: cmd_import_prism(manager, args),
+        "create-server": lambda: cmd_create_server(manager, args),
+        "list-mc-versions": lambda: cmd_list_mc_versions(manager, args),
+        "install-server": lambda: cmd_install_server(manager, args),
         "download-mods": lambda: cmd_download_mods(manager, args),
         "accept-eula": lambda: cmd_accept_eula(manager, args),
         "doctor":   lambda: cmd_doctor(manager, tmux, args),

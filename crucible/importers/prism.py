@@ -433,6 +433,8 @@ def import_prism_source(
     download_mods: bool = False,
     download_log_cb=None,
     download_progress_cb=None,
+    install_server: bool = False,
+    install_log_cb=None,
 ) -> PrismPackInfo:
     """Import a Prism instance / modpack into a server folder.
 
@@ -513,6 +515,28 @@ def import_prism_source(
         except Exception as exc:  # never let downloading break an import
             warnings.append(f"Mod download step errored (import still succeeded): {exc}")
 
+    # Optional best-effort install of the dedicated server program when the
+    # imported pack didn't ship one (Prism ships clients, not servers).
+    server_install_summary: dict | None = None
+    if install_server and not has_server_launcher and not (target / "libraries").exists():
+        try:
+            from . import serverloader as _sl
+            log = install_log_cb or download_log_cb
+            si = _sl.install_server_loader(
+                target,
+                minecraft_version=plan.info.minecraft_version,
+                loader=plan.info.loader,
+                loader_version=plan.info.loader_version,
+                log_cb=log,
+            )
+            server_install_summary = {
+                "ok": si.ok, "loader": si.loader, "launcher": si.launcher,
+                "failed_reason": si.failed_reason,
+            }
+            warnings.append("Server install attempt: " + si.summary())
+        except Exception as exc:  # never let install break an import
+            warnings.append(f"Server install step errored (import still succeeded): {exc}")
+
     plan.info.warnings = warnings
     summary = {
         "source": str(plan.source),
@@ -520,6 +544,7 @@ def import_prism_source(
         "detected": plan.info.__dict__,
         "copied": copied,
         "download": download_summary,
+        "server_install": server_install_summary,
     }
     (target / ".crucible" / "import-summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     _write_import_report(target, plan, copied, warnings)

@@ -194,8 +194,9 @@ class SetupTab(QWidget):
             btn.clicked.connect(self._accept_eula)
             return btn
         if fix == "install_server":
-            btn = QPushButton("How to install")
-            btn.clicked.connect(self._explain_install)
+            btn = QPushButton("Install server now")
+            btn.setToolTip("Download the matching dedicated server program (needs internet)")
+            btn.clicked.connect(self._install_server)
             return btn
         if fix == "start_once":
             btn = QPushButton("Open folder")
@@ -264,6 +265,67 @@ class SetupTab(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "Accept EULA", f"Could not write eula.txt:\n{exc}")
             return
+        self._rebuild()
+
+    def _install_server(self) -> None:
+        inst = self._instance
+        if inst is None:
+            return
+        mc = (inst.minecraft_version or "").strip()
+        if not mc:
+            self._explain_install()
+            return
+        try:
+            from ...importers import serverloader as sl
+        except Exception:
+            self._explain_install()
+            return
+        loader = sl.normalize_loader(inst.loader or "vanilla")
+        if sl.requires_java(loader):
+            try:
+                java_ok, _ = ServerInstance.java_info()
+            except Exception:
+                java_ok = False
+            if not java_ok:
+                QMessageBox.warning(
+                    self, "Java required",
+                    f"Installing a {loader} server runs an installer that needs Java "
+                    "on your PATH, which wasn't found. Vanilla and Fabric don't need it.",
+                )
+                return
+        resp = QMessageBox.question(
+            self, "Install server program",
+            f"Download the {loader} dedicated server for Minecraft {mc} into this "
+            "folder? This needs an internet connection.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if resp != QMessageBox.StandardButton.Yes:
+            return
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        result = None
+        try:
+            result = sl.install_server_loader(
+                inst.path,
+                minecraft_version=mc,
+                loader=loader,
+                loader_version=inst.loader_version or "",
+            )
+        except Exception as exc:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Install server", f"Install failed:\n{exc}")
+            return
+        QApplication.restoreOverrideCursor()
+        if result is not None and result.ok:
+            QMessageBox.information(self, "Install server", "Success: " + result.summary())
+        else:
+            reason = result.failed_reason if result is not None else "unknown error"
+            QMessageBox.warning(
+                self, "Install server",
+                f"Could not install automatically:\n{reason}\n\n"
+                "You can also import a fully-installed Prism instance, or drop the "
+                "matching server jar into this folder, then press Re-check.",
+            )
         self._rebuild()
 
     def _explain_install(self) -> None:

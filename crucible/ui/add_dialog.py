@@ -46,6 +46,33 @@ class AddInstanceDialog(QDialog):
         layout.setSpacing(12)
         layout.setContentsMargins(20, 16, 20, 16)
 
+        # ---- Easiest: create a brand-new server -------------------------
+        new_title = QLabel("Create a new server  —  easiest")
+        new_title.setStyleSheet(
+            f"font-size: 16px; font-weight: 700; color: {theme.TEXT};"
+        )
+        layout.addWidget(new_title)
+
+        new_sub = QLabel(
+            "No modpack? Spin up a fresh server in seconds. Vanilla is the simplest "
+            "— just pick a Minecraft version and go. Fabric, Forge, NeoForge and "
+            "Quilt are available too."
+        )
+        new_sub.setWordWrap(True)
+        new_sub.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
+        layout.addWidget(new_sub)
+
+        new_btn = QPushButton("✨  Create a new server…")
+        new_btn.setObjectName("PrimaryButton")
+        new_btn.setFixedHeight(34)
+        new_btn.clicked.connect(self._create_new_server)
+        layout.addWidget(new_btn)
+
+        sep0 = QFrame()
+        sep0.setFrameShape(QFrame.Shape.HLine)
+        sep0.setStyleSheet(f"color: {theme.SURFACE1};")
+        layout.addWidget(sep0)
+
         # ---- Recommended: import from Prism / modpack -------------------
         rec_title = QLabel("Import a modpack  —  recommended")
         rec_title.setStyleSheet(
@@ -307,6 +334,17 @@ class AddInstanceDialog(QDialog):
             dlg.exec()
         except Exception as exc:
             QMessageBox.warning(self, "Download mods", f"Could not start download:\n{exc}")
+
+    def _create_new_server(self) -> None:
+        try:
+            from .new_server_dialog import NewServerDialog
+            dlg = NewServerDialog(self._manager, parent=self)
+        except Exception as exc:
+            QMessageBox.warning(self, "Create server", f"Could not open the creator:\n{exc}")
+            return
+        if dlg.exec() and dlg.result_instance is not None:
+            self.result_instance = dlg.result_instance
+            self.accept()
 
     def _import_prism_folder(self) -> None:
         source = QFileDialog.getExistingDirectory(
