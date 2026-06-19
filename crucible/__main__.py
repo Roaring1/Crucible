@@ -195,6 +195,88 @@ def cmd_fix_properties(manager: InstanceManager, args) -> None:
         err("Some crash-causing values could not be auto-fixed; edit them manually.")
 
 
+def cmd_fix_loading(manager: InstanceManager, args) -> None:
+    """Diagnose & fix server start/loading crashes (e.g. client-only mods)."""
+    from pathlib import Path
+    from .diagnostics import loadcheck as lc
+    inst = resolve_instance(manager, args.name)
+    root = Path(inst.path)
+
+    # --restore: re-enable everything Crucible previously quarantined.
+    if getattr(args, "restore", False):
+        restored = lc.restore_quarantined(root)
+        if restored:
+            ok(f"Re-enabled {len(restored)} mod(s): " + ", ".join(restored))
+        else:
+            dim("No quarantined mods to restore.")
+        return
+
+    # --scan: static best-effort scan for client-only mods (no crash needed).
+    if getattr(args, "scan", False):
+        flagged = lc.scan_client_only(root)
+        if not flagged:
+            ok("No mods statically declare themselves client-only.")
+        else:
+            warn(f"{len(flagged)} mod(s) declare environment=client:")
+            for name, reason in flagged:
+                dim(f"    {name}  ({reason})")
+            info("These only run on the client. Disable them with the Mods tab "
+                 "or by running with --apply after a start attempt.")
+        return
+
+    log_text = None
+    if getattr(args, "log", None):
+        p = Path(args.log)
+        if not p.exists():
+            err(f"Log file not found: {p}")
+            sys.exit(1)
+        log_text = p.read_text(encoding="utf-8", errors="replace")
+
+    apply_fix = getattr(args, "apply", False)
+    res = lc.autofix_loading(root, apply=apply_fix, log_text=log_text)
+    diag = res.diagnosis
+
+    if not diag.found_crash:
+        ok("No crash report found for this server. If it just crashed, start it "
+           "once more so a crash report is written, then re-run this command.")
+        return
+
+    if diag.source:
+        dim(f"Analysed: {diag.source}")
+    if diag.is_clean:
+        warn("A crash log was found, but no known loading problem was recognised.")
+        dim("Open the crash report above for the full stack trace.")
+        return
+
+    warn("Loading problems detected:")
+    for line in diag.human_summary().splitlines():
+        dim("    " + line)
+
+    culprits = diag.client_on_server_modids
+    if not culprits:
+        info("No client-only mod could be auto-quarantined. Resolve the issues above manually.")
+        return
+
+    if not apply_fix:
+        print()
+        if res.quarantined:
+            info("Re-run with --apply to disable these client-only mod(s): "
+                 + ", ".join(res.quarantined))
+        if res.unresolved:
+            dim("Could not locate jars for: " + ", ".join(res.unresolved))
+        return
+
+    if res.quarantined:
+        ok(f"Disabled {len(res.quarantined)} client-only mod(s): "
+           + ", ".join(res.quarantined))
+        dim("They were renamed to *.jar.disabled (re-enable any time with "
+            "'crucible fix-loading <name> --restore' or the Mods tab).")
+        info("Now try starting the server again.")
+    if res.unresolved:
+        warn("Could not find jars for: " + ", ".join(res.unresolved))
+        dim("Remove these client-only mods from mods/ manually.")
+
+
 def cmd_start(manager: InstanceManager, tmux: TmuxManager, args) -> None:
     inst = resolve_instance(manager, args.name)
     _preflight_properties(inst)
@@ -814,6 +896,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--all", action="store_true",
         help="Also apply advisory fixes & rename typo'd keys")
 
+    # fix-loading
+    p_fixload = sub.add_parser(
+        "fix-loading",
+        help="Diagnose & fix start/loading crashes (client-only mods, etc.)")
+    p_fixload.add_argument("name", help="Instance name or ID prefix")
+    p_fixload.add_argument(
+        "--apply", action="store_true",
+        help="Quarantine the offending client-only mod(s) (default: just report)")
+    p_fixload.add_argument(
+        "--scan", action="store_true",
+        help="Statically scan mods/ for client-only mods (no crash log needed)")
+    p_fixload.add_argument(
+        "--restore", action="store_true",
+        help="Re-enable mods Crucible previously quarantined")
+    p_fixload.add_argument(
+        "--log", metavar="FILE",
+        help="Analyse a specific crash/log file instead of the newest one")
+
     # stop
     p_stop = sub.add_parser("stop", help="Stop the server gracefully")
     p_stop.add_argument("name", help="Instance name or ID prefix")
@@ -956,6 +1056,7 @@ def main() -> None:
         "remove":   lambda: cmd_remove(manager, args),
         "start":    lambda: cmd_start(manager, tmux, args),
         "fix-properties": lambda: cmd_fix_properties(manager, args),
+        "fix-loading": lambda: cmd_fix_loading(manager, args),
         "stop":     lambda: cmd_stop(manager, tmux, args),
         "restart":  lambda: cmd_restart(manager, tmux, args),
         "status":   lambda: cmd_status(manager, tmux, args),

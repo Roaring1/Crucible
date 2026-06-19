@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.4.8 — 2026-06-19
+
+### Fixed
+
+- **Client-only mods no longer crash dedicated servers (auto-fix).** A new
+  loading-crash diagnostics engine recognises the classic
+  `Attempted to load class …/Screen for invalid dist DEDICATED_SERVER`
+  failure (e.g. *Status Effect Bars* in Create+), reads the crash report,
+  figures out which jar provides the offending mod id (Fabric `fabric.mod.json`
+  + NeoForge/Forge `mods.toml`), and quarantines just that client-only jar by
+  renaming it to `*.jar.disabled` — your server-side mods are never touched.
+  Re-enable any time from the Mods tab. It also recognises missing/unsupported
+  mandatory dependencies and duplicate mods for clearer guidance.
+
+### Added
+
+- **"Fix loading errors…" (right-click a server in the sidebar).** Diagnoses
+  the latest crash and offers to disable the culprit client-only mod(s) with one
+  click, then tells you to start again.
+- **`crucible fix-loading <name>` CLI.** `--apply` to quarantine, `--scan` for a
+  static client-only scan (no crash needed), `--restore` to re-enable previously
+  quarantined mods, and `--log FILE` to analyse a specific crash/log file.
+- **Sidebar drag & drop.** Drag servers in the left pane to reorder them (the
+  order is saved). Drop a Prism/MultiMC instance, `.mrpack`, `.zip`, or server
+  folder onto the list to import it. Drag a server *out* of the list to copy its
+  folder into a file manager, and use the new **"Export for Prism…"** right-click
+  action to package a server as a `.zip` you can import via Prism's
+  *Add Instance → Import from zip*.
+
 ## v0.4.7 — 2026-06-19
 
 ### Added

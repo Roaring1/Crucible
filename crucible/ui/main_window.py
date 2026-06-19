@@ -73,6 +73,10 @@ class MainWindow(QMainWindow):
         self._sidebar.instance_selected.connect(self._on_instance_selected)
         self._sidebar.add_requested.connect(self._on_add_requested)
         self._sidebar.remove_requested.connect(self._on_remove_requested)
+        self._sidebar.fix_loading_requested.connect(self._on_fix_loading_requested)
+        self._sidebar.export_requested.connect(self._on_export_requested)
+        self._sidebar.order_changed.connect(self._on_order_changed)
+        self._sidebar.paths_dropped.connect(self._on_paths_dropped)
         self._splitter.addWidget(self._sidebar)
 
         # Right: instance panel (must be created before wiring sidebar RMB signals)
@@ -155,6 +159,121 @@ class MainWindow(QMainWindow):
             self._sidebar.add_instance(inst, status)
             self._sidebar.select_by_id(inst.id)
             self._update_status_bar()
+
+    def _on_order_changed(self, order: list) -> None:
+        """Persist the new sidebar order after an internal drag-reorder."""
+        try:
+            self._manager.reorder([str(i) for i in order])
+            self._manager.save()
+        except Exception:  # noqa: BLE001 - reordering must never crash the UI
+            pass
+
+    def _on_paths_dropped(self, paths: list) -> None:
+        """Import Prism/.mrpack/.zip/server folders dropped onto the sidebar."""
+        for p in paths:
+            if p:
+                self._import_dropped_path(Path(p))
+
+    def _on_fix_loading_requested(self, instance: ServerInstance) -> None:
+        """Diagnose a start/loading crash and offer to quarantine client-only mods."""
+        from ..diagnostics import loadcheck as lc
+        res = lc.autofix_loading(instance.path, apply=False)
+        diag = res.diagnosis
+
+        if not diag.found_crash:
+            QMessageBox.information(
+                self, "Fix loading errors",
+                "No crash report was found for this server.\n\n"
+                "If it just failed to start, try starting it once more so a "
+                "crash report is written, then run this again.")
+            return
+
+        if diag.is_clean:
+            QMessageBox.information(
+                self, "Fix loading errors",
+                "A crash log was found, but no automatically-fixable loading "
+                "problem was recognised.\n\nOpen the latest crash report in the "
+                "server's crash-reports/ folder for the full details.")
+            return
+
+        summary = diag.human_summary()
+        culprits = res.quarantined  # filenames we would disable (dry run)
+        if not culprits:
+            extra = ""
+            if res.unresolved:
+                extra = ("\n\nCould not locate jars for: "
+                         + ", ".join(res.unresolved))
+            QMessageBox.warning(
+                self, "Fix loading errors",
+                summary + extra + "\n\nResolve these issues manually, then try "
+                "starting the server again.")
+            return
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setWindowTitle("Fix loading errors")
+        msg.setText(summary)
+        msg.setInformativeText(
+            "Disable (quarantine) these client-only mod(s) so the server can "
+            "start?\n\n  • " + "\n  • ".join(culprits)
+            + "\n\nThey will be renamed to *.jar.disabled and can be re-enabled "
+            "from the Mods tab at any time.")
+        msg.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        msg.setDefaultButton(QMessageBox.StandardButton.Yes)
+        if msg.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        applied = lc.autofix_loading(instance.path, apply=True)
+        done = applied.quarantined
+        tail = ""
+        if applied.unresolved:
+            tail = ("\n\nCould not find jars for: "
+                    + ", ".join(applied.unresolved)
+                    + "\nRemove these from mods/ manually.")
+        QMessageBox.information(
+            self, "Fix loading errors",
+            f"Disabled {len(done)} client-only mod(s):\n  • "
+            + "\n  • ".join(done) + tail
+            + "\n\nYou can start the server again now.")
+
+    def _on_export_requested(self, instance: ServerInstance) -> None:
+        """Zip a server folder so it can be imported into Prism / shared."""
+        import zipfile
+        src = Path(instance.path)
+        if not src.is_dir():
+            QMessageBox.warning(self, "Export for Prism",
+                                "This server's folder no longer exists.")
+            return
+        suggested = str(Path.home() / f"{instance.name}.zip")
+        dest, _ = QFileDialog.getSaveFileName(
+            self, "Export server as .zip", suggested, "Zip archives (*.zip)")
+        if not dest:
+            return
+        if not dest.lower().endswith(".zip"):
+            dest += ".zip"
+        skip = {".crucible", "crash-reports", "logs"}
+        try:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for f in src.rglob("*"):
+                        if f.is_dir():
+                            continue
+                        rel = f.relative_to(src)
+                        if rel.parts and rel.parts[0] in skip:
+                            continue
+                        zf.write(f, rel.as_posix())
+            finally:
+                QApplication.restoreOverrideCursor()
+        except Exception as e:  # noqa: BLE001 - surface export failure to user
+            QMessageBox.critical(self, "Export for Prism",
+                                 f"Could not export server:\n\n{e}")
+            return
+        QMessageBox.information(
+            self, "Export for Prism",
+            f"Exported to:\n{dest}\n\nIn Prism Launcher choose "
+            "Add Instance → Import from zip, and select this file.")
 
     def _on_status_changed(self, instance_id: str, status: str) -> None:
         self._sidebar.update_status(instance_id, status)

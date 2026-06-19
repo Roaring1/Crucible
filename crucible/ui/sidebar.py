@@ -6,11 +6,11 @@ Left sidebar: lists registered server instances with live status dots.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QFont
+from PyQt6.QtCore import Qt, QSize, QUrl, QMimeData, pyqtSignal
+from PyQt6.QtGui import QColor, QPainter, QFont, QDrag
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QLabel, QHBoxLayout, QMenu,
+    QPushButton, QLabel, QHBoxLayout, QMenu, QAbstractItemView,
 )
 
 from ..data.instance_model import ServerInstance
@@ -57,7 +57,22 @@ class InstanceItem(QListWidgetItem):
 
 
 class SidebarList(QListWidget):
-    """QListWidget that paints a colored status dot before each item name."""
+    """QListWidget that paints a colored status dot before each item name.
+
+    Drag & drop behaviour
+    ─────────────────────
+    * Internal drag  → reorder the server list (persisted by the window).
+    * External drop  → a dropped Prism instance / .mrpack / .zip / server
+      folder is imported (handled by the window).
+    * Drag *out*     → each row exposes its server folder as a file URL
+      (text/uri-list), so a server can be dragged into a file manager or
+      another launcher's import flow.
+    """
+
+    # Emitted after an internal reorder, with the new top-to-bottom id order.
+    order_changed = pyqtSignal(list)   # list[str] of instance ids
+    # Emitted when external file paths are dropped onto the list.
+    paths_dropped = pyqtSignal(list)   # list[str] of local paths
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -65,6 +80,69 @@ class SidebarList(QListWidget):
         self.setSpacing(0)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Enable drag-to-reorder + accept external file drops simultaneously.
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+
+    # Drag-out: expose the selected server's folder as a file URL so it can be
+    # dropped into a file manager / another launcher.
+    def startDrag(self, supportedActions) -> None:
+        item = self.currentItem()
+        inst = getattr(item, "instance", None)
+        if inst is None:
+            return
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(inst.path))])
+        mime.setText(str(inst.path))
+        # Internal-move marker so dropEvent can tell self-drags apart.
+        mime.setData("application/x-crucible-instance",
+                     str(inst.id).encode("utf-8"))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction,
+                  Qt.DropAction.MoveAction)
+
+    def _is_internal(self, event) -> bool:
+        return (event.source() is self
+                or event.mimeData().hasFormat("application/x-crucible-instance"))
+
+    def dragEnterEvent(self, event) -> None:
+        if self._is_internal(event) or event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        if self._is_internal(event) or event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:
+        # Internal reorder: let Qt move the row, then report the new order.
+        if self._is_internal(event):
+            super().dropEvent(event)
+            order = []
+            for row in range(self.count()):
+                it = self.item(row)
+                inst = getattr(it, "instance", None)
+                if inst is not None:
+                    order.append(inst.id)
+            self.order_changed.emit(order)
+            return
+        # External file drop → import.
+        if event.mimeData().hasUrls():
+            paths = [u.toLocalFile() for u in event.mimeData().urls()
+                     if u.toLocalFile()]
+            if paths:
+                event.acceptProposedAction()
+                self.paths_dropped.emit(paths)
+                return
+        event.ignore()
 
     def drawRow(self, painter: QPainter, option, index) -> None:
         super().drawRow(painter, option, index)
@@ -99,6 +177,11 @@ class Sidebar(QWidget):
     stop_requested    = pyqtSignal(object)  # ServerInstance
     restart_requested = pyqtSignal(object)  # ServerInstance
     remove_requested  = pyqtSignal(object)  # ServerInstance
+    fix_loading_requested = pyqtSignal(object)  # ServerInstance
+    export_requested  = pyqtSignal(object)  # ServerInstance
+    # Drag & drop
+    order_changed     = pyqtSignal(list)    # list[str] of instance ids (new order)
+    paths_dropped     = pyqtSignal(list)    # list[str] of dropped local paths
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -125,6 +208,12 @@ class Sidebar(QWidget):
         self._list.currentItemChanged.connect(self._on_selection_changed)
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._on_context_menu)
+        # Forward drag & drop signals upward.
+        self._list.order_changed.connect(self.order_changed)
+        self._list.paths_dropped.connect(self.paths_dropped)
+        self._list.setToolTip(
+            "Drag to reorder. Drop a Prism/.mrpack/.zip here to import. "
+            "Drag a server out to copy its folder.")
         layout.addWidget(self._list, stretch=1)
 
         # Add button
@@ -225,6 +314,9 @@ class Sidebar(QWidget):
         stop_act    = menu.addAction("■  Stop")
         restart_act = menu.addAction("↺  Restart")
         menu.addSeparator()
+        fixload_act = menu.addAction("🩺  Fix loading errors…")
+        export_act  = menu.addAction("📤  Export for Prism…")
+        menu.addSeparator()
         remove_act  = menu.addAction("🗑  Remove from Crucible…")
 
         running = (status == "running")
@@ -238,5 +330,9 @@ class Sidebar(QWidget):
             self.stop_requested.emit(inst)
         elif chosen == restart_act:
             self.restart_requested.emit(inst)
+        elif chosen == fixload_act:
+            self.fix_loading_requested.emit(inst)
+        elif chosen == export_act:
+            self.export_requested.emit(inst)
         elif chosen == remove_act:
             self.remove_requested.emit(inst)
