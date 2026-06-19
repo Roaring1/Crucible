@@ -22,7 +22,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 _API = "https://api.modrinth.com/v2"
-_UA = "Crucible/0.4.4 (Minecraft server manager)"
+_UA = "Crucible/0.4.6 (Minecraft server manager)"
+
+
+def humanize_count(n: int) -> str:
+    """Format a download/follow count like Modrinth/Prism: 754M, 134K, 1.2K."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return "0"
+    if n >= 1_000_000_000:
+        return f"{n / 1_000_000_000:.1f}B".replace(".0B", "B")
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K".replace(".0K", "K")
+    return str(n)
 
 
 class ModrinthError(Exception):
@@ -37,6 +52,34 @@ class ModHit:
     description: str
     downloads: int
     categories: list = field(default_factory=list)
+    author: str = ""
+    icon_url: str = ""
+    follows: int = 0
+    client_side: str = ""   # required / optional / unsupported / unknown
+    server_side: str = ""   # required / optional / unsupported / unknown
+    project_type: str = "mod"
+
+    @property
+    def is_client_only(self) -> bool:
+        """True if this mod does nothing on a dedicated server."""
+        return (self.server_side or "").lower() == "unsupported"
+
+    def server_label(self) -> str:
+        """Short server-compatibility tag for the UI."""
+        s = (self.server_side or "").lower()
+        if s == "unsupported":
+            return "Client-only"
+        if s == "required":
+            return "Server-required"
+        if s == "optional":
+            return "Server-ready"
+        return ""
+
+    def page_url(self) -> str:
+        return "https://modrinth.com/mod/" + (self.slug or self.project_id)
+
+    def human_downloads(self) -> str:
+        return humanize_count(self.downloads)
 
 
 @dataclass
@@ -68,14 +111,19 @@ def _get(url: str, timeout: float = 12.0):
 
 
 def search(query: str, *, loader: str = "", mc_version: str = "",
-           limit: int = 20) -> list:
+           limit: int = 20, index: str = "relevance") -> list:
+    query = (query or "").strip()
+    # With no search text, show the most popular compatible mods instead of an
+    # empty list -- gives the browser content the moment it opens.
+    if not query and index == "relevance":
+        index = "downloads"
     facets = [["project_type:mod"]]
     if loader and loader != "vanilla":
         facets.append([f"categories:{loader}"])
     if mc_version:
         facets.append([f"versions:{mc_version}"])
     params = {"query": query, "limit": str(limit),
-              "facets": json.dumps(facets), "index": "relevance"}
+              "facets": json.dumps(facets), "index": index}
     data = _get(f"{_API}/search?{urllib.parse.urlencode(params)}")
     hits = []
     for h in data.get("hits", []):
@@ -83,9 +131,35 @@ def search(query: str, *, loader: str = "", mc_version: str = "",
             project_id=h.get("project_id", ""), slug=h.get("slug", ""),
             title=h.get("title", "?"), description=h.get("description", ""),
             downloads=int(h.get("downloads", 0) or 0),
-            categories=list(h.get("categories", []) or []),
+            categories=list(h.get("display_categories")
+                             or h.get("categories", []) or []),
+            author=h.get("author", ""),
+            icon_url=h.get("icon_url", "") or "",
+            follows=int(h.get("follows", 0) or 0),
+            client_side=h.get("client_side", "") or "",
+            server_side=h.get("server_side", "") or "",
+            project_type=h.get("project_type", "mod") or "mod",
         ))
     return hits
+
+
+def browse_popular(*, loader: str = "", mc_version: str = "",
+                   limit: int = 30) -> list:
+    """Most-downloaded mods compatible with this server (no query)."""
+    return search("", loader=loader, mc_version=mc_version,
+                  limit=limit, index="downloads")
+
+
+def fetch_bytes(url: str, timeout: float = 15.0) -> bytes:
+    """Fetch raw bytes (used for mod icons). Raises ModrinthError on failure."""
+    if not url:
+        raise ModrinthError("No URL.")
+    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read()
+    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+        raise ModrinthError(f"Fetch failed: {e}") from e
 
 
 def _pick_primary(files: list):

@@ -104,6 +104,7 @@ class NewServerDialog(QDialog):
         self._cthread: QThread | None = None
         self._cworker: _CreateWorker | None = None
         self._busy = False
+        self._path_user_edited = False  # True once the user types/browses a folder
 
         self.setWindowTitle("Create a New Server")
         self.setMinimumWidth(560)
@@ -167,21 +168,27 @@ class NewServerDialog(QDialog):
         self._lver_row_label = QLabel("Loader version:")
         form.addRow(self._lver_row_label, self._lver_edit)
 
-        # Destination
+        # Display name first -- the folder is derived from it automatically.
+        self._name_edit = QLineEdit()
+        self._name_edit.setPlaceholderText("My Server")
+        self._name_edit.textChanged.connect(self._on_name_changed)
+        form.addRow("Display name:", self._name_edit)
+
+        # Destination folder, placed under the name and kept in sync with it
+        # until the user edits it themselves.
         dst_row = QHBoxLayout()
         self._path_edit = QLineEdit()
         self._path_edit.setPlaceholderText(str(Path.home() / "CrucibleServers" / "my-server"))
-        self._path_edit.textChanged.connect(self._auto_fill_name)
+        self._path_edit.textEdited.connect(self._on_path_edited)
         dst_row.addWidget(self._path_edit, stretch=1)
         browse = QPushButton("Browse…")
         browse.setFixedWidth(80)
         browse.clicked.connect(self._browse)
         dst_row.addWidget(browse)
+        self._path_hint = QLabel("Auto-named from the display name — edit if you want a different folder.")
+        self._path_hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         form.addRow("Folder:", dst_row)
-
-        self._name_edit = QLineEdit()
-        self._name_edit.setPlaceholderText("My Server")
-        form.addRow("Display name:", self._name_edit)
+        form.addRow("", self._path_hint)
 
         self._eula_check = QCheckBox(
             "I agree to the Minecraft EULA (minecraft.net/eula) — required to run"
@@ -293,6 +300,9 @@ class NewServerDialog(QDialog):
             return
         name = self._safe(name) or suggested
         self._path_edit.setText(str(Path(parent) / name))
+        # An explicit browse means "use this location" -- stop auto-deriving.
+        self._path_user_edited = True
+        self._path_hint.setText("Custom folder set.")
 
     @staticmethod
     def _safe(name: str) -> str:
@@ -300,9 +310,20 @@ class NewServerDialog(QDialog):
         cleaned = "".join(c for c in (name or "") if c.isalnum() or c in keep).strip()
         return cleaned.replace(" ", "-")
 
-    def _auto_fill_name(self, text: str) -> None:
-        if not self._name_edit.text():
-            self._name_edit.setText(Path(text).name)
+    def _on_path_edited(self, _text: str) -> None:
+        """User typed in the folder field -- stop auto-deriving it."""
+        self._path_user_edited = True
+        self._path_hint.setText("Custom folder set.")
+
+    def _on_name_changed(self, text: str) -> None:
+        """Keep the folder path in sync with the display name until edited."""
+        if self._path_user_edited:
+            return
+        safe = self._safe(text)
+        if safe:
+            self._path_edit.setText(str(Path.home() / "CrucibleServers" / safe))
+        else:
+            self._path_edit.clear()
 
     # ---- creation ----
     def _on_create(self) -> None:

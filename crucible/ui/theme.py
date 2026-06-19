@@ -122,7 +122,7 @@ QPushButton:pressed {{
 }}
 QPushButton:disabled {{
     background-color: {SURFACE0};
-    color: {SURFACE2};
+    color: {SUBTEXT};
     border-color: {SURFACE1};
 }}
 
@@ -131,17 +131,18 @@ QPushButton#PrimaryButton {{
     background-color: {ACCENT};
     color: {CRUST};
     border: none;
-    font-weight: 600;
+    font-weight: 700;
     padding: 4px 14px;
 }}
 QPushButton#PrimaryButton:hover {{
     background-color: {ACCENT_HO};
+    color: {CRUST};
 }}
 QPushButton#PrimaryButton:disabled {{
-    background-color: {SURFACE0};
-    color: {SURFACE2};
-    border: 1px solid {SURFACE1};
-    font-weight: 500;
+    background-color: {SURFACE1};
+    color: {TEXT};
+    border: 1px solid {SURFACE2};
+    font-weight: 600;
 }}
 
 /* Stop -- danger, filled red when enabled */

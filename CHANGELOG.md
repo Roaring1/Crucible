@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.4.6 — 2026-06-19
+
+### Added
+
+- **Mod browser reworked into a Prism-style UI** (`add_mod_dialog.py`): opens
+  to the most popular mods compatible with the server's MC version/loader
+  (`modrinth.browse_popular`), shows icons, author, download/follower counts,
+  and a detail panel with description, server-compatibility tag
+  (client-only / server-required / server-ready), and a live dependency
+  preview before installing. Icons and dependency resolution load on
+  background threads so the UI never blocks.
+- `crucible/mods/modrinth.py` gained `browse_popular()`, `fetch_bytes()`
+  (for icons), `humanize_count()` (754M / 134K style formatting), and richer
+  `ModHit` fields (`author`, `icon_url`, `follows`, `client_side`,
+  `server_side`).
+
+### Changed
+
+- **New Server dialog**: the destination folder now auto-derives from the
+  display name as you type, until you manually edit the folder field or use
+  Browse… (`new_server_dialog.py`) — previously the name was guessed from the
+  folder, which was backwards for the common case.
+- Disabled-button contrast improved in the theme (was unreadably dim).
+
 ## v0.4.5 — 2026-06-19
 
 ### Fixed
