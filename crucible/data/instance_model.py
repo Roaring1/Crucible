@@ -342,18 +342,52 @@ class ServerInstance:
                 pass
         return "25565"
 
-    def tps_command(self) -> str | None:
-        """Console command to query TPS for this server's loader, or None.
+    def _mc_version_tuple(self) -> tuple[int, ...]:
+        """Best-effort parse of the Minecraft version into a comparable tuple.
 
-        Vanilla/Fabric/Quilt have no built-in TPS command, so polling them just
-        spams "Unknown or incomplete command". Forge/NeoForge use ``forge tps``;
-        Paper-family servers use ``tps``. Returning None means "don't poll".
+        Pulls the first dotted numeric run out of the version string, so
+        "1.21.1", "MC 1.21.1" and "1.20" all work. Returns an empty tuple when
+        the version is unknown/unparseable (so comparisons stay False-safe).
+        """
+        import re as _re
+        raw = (self.minecraft_version or "") or (self.version or "")
+        m = _re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", raw)
+        if not m:
+            return ()
+        return tuple(int(g) for g in m.groups() if g is not None)
+
+    def tps_command(self) -> str | None:
+        """Console command to query tick performance for this server, or None.
+
+        The correct command depends on BOTH the Minecraft version and loader:
+
+        * Minecraft 1.21+ ships a built-in vanilla ``tick query`` command that
+          reports MSPT / tick-rate on every loader (vanilla, Fabric, Forge,
+          NeoForge, …). We prefer it because NeoForge 1.21 no longer understands
+          the old ``forge tps`` command — sending it just spammed
+          "Unknown or incomplete command" every poll.
+        * Older Forge uses ``forge tps``; older NeoForge uses ``neoforge tps``.
+        * Paper-family servers use ``tps`` across versions.
+
+        Returning None means "this server has no TPS command — don't poll it".
         """
         loader = (self.loader or "").strip().lower()
-        if loader in ("forge", "neoforge"):
-            return "forge tps"
+        mc = self._mc_version_tuple()
+
+        # Paper-family keeps /tps across versions and lacks the vanilla /tick cmd.
         if loader in ("paper", "purpur", "spigot", "bukkit", "folia"):
             return "tps"
+
+        # Minecraft 1.21+ has the vanilla /tick command on every loader.
+        if mc >= (1, 21):
+            return "tick query"
+
+        if loader == "neoforge":
+            return "neoforge tps"
+        if loader == "forge":
+            return "forge tps"
+
+        # Vanilla/Fabric/Quilt below 1.21 have no built-in TPS command.
         return None
 
     def readiness(self) -> list[dict]:

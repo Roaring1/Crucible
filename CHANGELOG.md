@@ -1,5 +1,76 @@
 # Changelog
 
+## v0.5.1 — 2026-06-21
+
+Follow-up to the v0.5.0 release: audited the v0.5.0 fixes (all confirmed good)
+and added the quality-of-life tools you actually reach for while running a
+modded server.
+
+### Added
+
+- **Console search (Ctrl+F).** A find bar with next/previous, wrap-around, and
+  live incremental matching — invaluable for hunting a stack trace or a specific
+  mod ID in a noisy modpack log. Esc closes it.
+- **"Hide TPS poll output" toggle (on by default).** The focused-only TPS poll
+  runs every 30s; its responses (`tick query` / `tps` / `Mean tick time`) are
+  now parsed for the readout but kept *out* of the console so they don't bury
+  real log lines. Untick to see them.
+- **Copy log button.** Copies the whole console buffer to the clipboard — handy
+  for sharing a crash when asking for help.
+- **Player "Quick effects" menu.** Right-click an online player → *Quick effects*:
+  Heal, Feed, Fire resistance, Night vision, Water breathing, and Clear all
+  effects — the everyday admin actions, one click away (particles hidden).
+
+### Verified
+
+- Re-audited every v0.5.0 change line by line: the NeoForge/1.21 `tick query`
+  TPS fix, Minecraft-style Tab completion, recently-played persistence, teleport
+  dialog, and focused-only polling are all correct and intact.
+
+## v0.5.0 — 2026-06-21  (RELEASE)
+
+The server is confirmed working end-to-end (Create+ 1.21.1 NeoForge boots and
+plays). This is the first build tagged as a RELEASE.
+
+### Fixed
+
+- **NeoForge 1.21 no longer spams "Unknown or incomplete command".** The
+  background TPS poll was always sending `forge tps`, which NeoForge 1.21
+  doesn't understand — so the console logged an error every 30 seconds. The TPS
+  command is now chosen by *both* Minecraft version and loader:
+  - Minecraft **1.21+** uses the built-in vanilla `tick query` (works on every
+    loader: vanilla, Fabric, Forge, NeoForge).
+  - Older Forge uses `forge tps`; older NeoForge uses `neoforge tps`.
+  - Paper-family servers keep `tps`.
+  Vanilla/Fabric below 1.21 are still left alone (no command exists).
+
+### Added
+
+- **Minecraft-style Tab autocomplete in the console.** Press Tab to complete the
+  command under the cursor and Tab/Shift+Tab to cycle matches, 1:1 with the
+  in-game feel. Completes command names, subcommands (e.g. `tick → query`,
+  `gamemode → creative`, `forge/neoforge → tps`), dimensions after `in`, and the
+  names of online players for player-targeting commands. ↑/↓ history still works.
+- **"Recently played" player state.** Players who leave (or who were online when
+  the server stops) are kept in a dim *recently played* section instead of just
+  disappearing, with "last seen" times. Persisted per-server so it survives app
+  restarts. Right-click → *Forget* to remove one.
+- **Player teleport dialog.** Right-click a player → *Teleport…* to send them to
+  X/Y/Z in a chosen dimension (Overworld / Nether / End / current) or directly
+  to another online player.
+- **Player info / stats.** Right-click → *Player info / stats…* shows first/last
+  seen, sessions, tracked playtime, plus world stats (play time, deaths, mob &
+  player kills, jumps, damage, distance) read on demand from the world save.
+- **More detail when focused:** the console TPS readout now also shows MSPT when
+  the server reports it.
+
+### Changed
+
+- **Stop gathering info nobody's looking at.** TPS is now polled *only* while the
+  server is running **and** the Console tab is focused; switching tabs stops it.
+  The System tab was already focus-gated. Player stats are read only when you
+  open the info dialog — nothing is collected in the background that isn't used.
+
 ## v0.4.9 — 2026-06-19
 
 ### Fixed

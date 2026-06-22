@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 _API = "https://api.modrinth.com/v2"
-_UA = "Crucible/0.4.9 (Minecraft server manager)"
+_UA = "Crucible/0.5.1 (Minecraft server manager)"
 
 
 def humanize_count(n: int) -> str:

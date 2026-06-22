@@ -65,6 +65,12 @@ _RE_LEAVE = re.compile(
 )
 
 # /forge tps output: "Overall: Mean tick time: 50.123 ms; Mean TPS: 19.975"
+# Vanilla /tick query (Minecraft 1.21+):
+#   "Target tick rate: 20.0 per second."
+#   "Average time per tick: 0.8ms (Target: 50.0ms)"
+_RE_FORGE_MSPT  = re.compile(r"Mean tick time:\s*([\d.]+)\s*ms")
+_RE_TICK_TARGET = re.compile(r"Target tick rate:\s*([\d.]+)")
+_RE_TICK_MSPT   = re.compile(r"Average time per tick:\s*([\d.]+)\s*ms")
 # Also matches per-dimension lines
 _RE_TPS = re.compile(r"Mean TPS:\s*([\d.]+)")
 
@@ -85,7 +91,8 @@ class LogWatcher(QObject):
     # Signals
 
     new_lines       = pyqtSignal(list)   # list[str] — raw log lines, newest last
-    tps_update      = pyqtSignal(float)  # TPS value parsed from /forge tps output
+    tps_update      = pyqtSignal(float)  # TPS value (forge tps / neoforge tps / vanilla tick query)
+    mspt_update     = pyqtSignal(float)  # milliseconds-per-tick (extra detail when available)
     player_joined   = pyqtSignal(str)    # player name
     player_left     = pyqtSignal(str)    # player name
     server_started  = pyqtSignal(float)  # startup time in seconds
@@ -102,6 +109,7 @@ class LogWatcher(QObject):
         self._watcher         = QFileSystemWatcher()
         self._poll_timer: QTimer | None = None
         self._active          = False
+        self._target_tps      = 20.0   # updated from vanilla /tick query output
 
     # Lifecycle
 
@@ -227,7 +235,30 @@ class LogWatcher(QObject):
             return
 
         if m := _RE_TPS.search(line):
+            fm = _RE_FORGE_MSPT.search(line)
+            if fm:
+                try:
+                    self.mspt_update.emit(float(fm.group(1)))
+                except ValueError:
+                    pass
             self.tps_update.emit(float(m.group(1)))
+            return
+
+        # Vanilla /tick query (Minecraft 1.21+) — works on every loader.
+        if m := _RE_TICK_TARGET.search(line):
+            try:
+                self._target_tps = float(m.group(1)) or 20.0
+            except ValueError:
+                self._target_tps = 20.0
+            return
+        if m := _RE_TICK_MSPT.search(line):
+            try:
+                mspt = float(m.group(1))
+            except ValueError:
+                return
+            self.mspt_update.emit(mspt)
+            if mspt > 0:
+                self.tps_update.emit(min(self._target_tps, 1000.0 / mspt))
             return
 
         if m := _RE_JOIN.search(line):

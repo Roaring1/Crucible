@@ -238,6 +238,8 @@ class InstancePanel(QWidget):
         self._tabs.addTab(self._backup,  "💾  Backups")
         self._tabs.addTab(self._players, "👥  Players")
         self._tabs.addTab(self._system,  "📊  System")
+        # Poll TPS only while the Console tab is focused (see _update_tps_polling).
+        self._tabs.currentChanged.connect(self._on_tab_changed)
 
         layout.addWidget(self._tabs, stretch=1)
 
@@ -322,7 +324,7 @@ class InstancePanel(QWidget):
         self._ensure_watchdog()
         if status == "running":
             self._watchdog.watch(instance, instance.auto_restart)
-            self._tps_timer.start()
+            self._update_tps_polling()
 
         # Load tabs
         self._setup.load(instance)
@@ -455,7 +457,7 @@ class InstancePanel(QWidget):
         if self._instance:
             self._update_status_display("running")
             self.status_changed.emit(self._instance.id, "running")
-            self._tps_timer.start()
+            self._update_tps_polling()
             if self._watchdog:
                 self._watchdog.watch(self._instance, self._instance.auto_restart)
 
@@ -482,6 +484,33 @@ class InstancePanel(QWidget):
                 self.status_changed.emit(self._instance.id, "running")
 
     # Auto-TPS
+
+    def _console_is_focused(self) -> bool:
+        """True when the Console tab is the visible/active tab in this panel."""
+        return self.isVisible() and self._tabs.currentWidget() is self._console
+
+    def _update_tps_polling(self) -> None:
+        """Poll TPS only while the server runs AND the Console tab is focused.
+
+        This keeps us from pointlessly sending /tick (or /tps) — and spamming the
+        log — when the user isn't even looking at the console. The System tab is
+        already focus-gated the same way via its show/hide events.
+        """
+        want = (
+            self._current_status == "running"
+            and self._instance is not None
+            and self._instance.tps_command() is not None
+            and self._console_is_focused()
+        )
+        if want:
+            if not self._tps_timer.isActive():
+                self._tps_timer.start()
+                self._auto_tps()   # take an immediate first sample
+        else:
+            self._tps_timer.stop()
+
+    def _on_tab_changed(self, _index: int) -> None:
+        self._update_tps_polling()
 
     def _auto_tps(self) -> None:
         """Periodically ask the server for TPS data, if its loader supports it.

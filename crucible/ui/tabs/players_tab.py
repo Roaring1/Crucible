@@ -28,6 +28,8 @@ from PyQt6.QtWidgets import (
     QHeaderView, QAbstractItemView,
     QLineEdit, QPushButton, QMessageBox,
     QMenu, QInputDialog,
+    QDialog, QComboBox, QRadioButton, QButtonGroup,
+    QFormLayout, QDialogButtonBox,
 )
 
 from ...data.instance_model import ServerInstance
@@ -87,6 +89,103 @@ class _AvatarFetcher(QObject):
                     self.fetched.emit(self._name, pix)
 
 
+# Teleport dialog
+
+class _TeleportDialog(QDialog):
+    """Teleport a player to coordinates (optionally in a chosen dimension) or to
+    another online player — covers end/nether/overworld/dimension select."""
+
+    _DIMS = [
+        ("(current dimension)", ""),
+        ("Overworld", "minecraft:overworld"),
+        ("Nether", "minecraft:the_nether"),
+        ("End", "minecraft:the_end"),
+    ]
+
+    def __init__(self, name: str, online_players: list[str], parent=None):
+        super().__init__(parent)
+        self._name = name
+        self.setWindowTitle(f"Teleport {name}")
+        self.setModal(True)
+        self.setMinimumWidth(360)
+        self._build_ui(online_players)
+
+    def _build_ui(self, online_players: list[str]) -> None:
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+        lay.setContentsMargins(16, 14, 16, 14)
+
+        lay.addWidget(QLabel(f"Where should {self._name} go?"))
+
+        self._coord_radio  = QRadioButton("To coordinates")
+        self._coord_radio.setChecked(True)
+        self._player_radio = QRadioButton("To another player")
+        grp = QButtonGroup(self)
+        grp.addButton(self._coord_radio)
+        grp.addButton(self._player_radio)
+
+        lay.addWidget(self._coord_radio)
+
+        form = QFormLayout()
+        self._dim_combo = QComboBox()
+        for label, _dimid in self._DIMS:
+            self._dim_combo.addItem(label)
+        form.addRow("Dimension:", self._dim_combo)
+
+        self._x = QLineEdit("~")
+        self._y = QLineEdit("~")
+        self._z = QLineEdit("~")
+        coord_row = QHBoxLayout()
+        for axis, field in (("X", self._x), ("Y", self._y), ("Z", self._z)):
+            coord_row.addWidget(QLabel(axis))
+            field.setFixedWidth(70)
+            coord_row.addWidget(field)
+        coord_w = QWidget()
+        coord_w.setLayout(coord_row)
+        form.addRow("Coords:", coord_w)
+        lay.addLayout(form)
+
+        lay.addWidget(self._player_radio)
+        self._target_combo = QComboBox()
+        others = [p for p in online_players if p != self._name]
+        self._target_combo.addItems(others)
+        self._target_combo.setEnabled(False)
+        lay.addWidget(self._target_combo)
+        if not others:
+            self._player_radio.setEnabled(False)
+
+        self._coord_radio.toggled.connect(self._sync_enabled)
+        self._sync_enabled()
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    def _sync_enabled(self) -> None:
+        coords = self._coord_radio.isChecked()
+        self._dim_combo.setEnabled(coords)
+        for field in (self._x, self._y, self._z):
+            field.setEnabled(coords)
+        self._target_combo.setEnabled(not coords)
+
+    def command(self) -> str | None:
+        if self._player_radio.isChecked():
+            target = self._target_combo.currentText().strip()
+            if not target:
+                return None
+            return f"tp {self._name} {target}"
+        x = self._x.text().strip() or "~"
+        y = self._y.text().strip() or "~"
+        z = self._z.text().strip() or "~"
+        dim = self._DIMS[self._dim_combo.currentIndex()][1]
+        if dim:
+            return f"execute in {dim} run tp {self._name} {x} {y} {z}"
+        return f"tp {self._name} {x} {y} {z}"
+
+
 # Main tab
 
 class PlayersTab(QWidget):
@@ -97,6 +196,9 @@ class PlayersTab(QWidget):
         self._instance: ServerInstance | None = None
         self._watcher:  LogWatcher | None     = None
         self._online:   set[str]              = set()
+        self._seen:     dict[str, dict]       = {}     # name -> {first_seen,last_seen,…}
+        self._seen_path: Path | None          = None
+        self._join_times: dict[str, float]    = {}     # name -> join epoch (this run)
         self._avatars:  dict[str, QPixmap]    = {}
         self._avatar_threads:  list[QThread]        = []
         self._avatar_fetchers: list[_AvatarFetcher] = []
@@ -154,6 +256,8 @@ class PlayersTab(QWidget):
     def load(self, instance: ServerInstance) -> None:
         self._instance = instance
         self._online.clear()
+        self._join_times.clear()
+        self._load_seen()
         self._refresh_online_list()
         self._whitelist_w.load(instance.path, "whitelist.json")
         self._ops_w.load(instance.path,       "ops.json")
@@ -183,6 +287,8 @@ class PlayersTab(QWidget):
     @pyqtSlot(str)
     def _on_joined(self, name: str) -> None:
         self._online.add(name)
+        self._join_times[name] = time.time()
+        self._record_seen(name, joined=True)
         self._refresh_online_list()
         if name not in self._avatars:
             self._fetch_avatar(name)
@@ -190,13 +296,102 @@ class PlayersTab(QWidget):
     @pyqtSlot(str)
     def _on_left(self, name: str) -> None:
         self._online.discard(name)
+        self._record_seen(name, joined=False)
         self._refresh_online_list()
 
     @pyqtSlot()
     def _on_server_stopped(self) -> None:
-        """Clear online list on server stop or log rotation (restart)."""
+        """Server stopped/restarted — move everyone online into the 'played' state."""
+        for name in list(self._online):
+            self._record_seen(name, joined=False)
         self._online.clear()
         self._refresh_online_list()
+
+    # Recently-played ("played" state) persistence
+
+    def _load_seen(self) -> None:
+        self._seen = {}
+        if self._instance is None:
+            self._seen_path = None
+            return
+        self._seen_path = Path(self._instance.path) / ".crucible" / "players_seen.json"
+        try:
+            if self._seen_path.exists():
+                data = json.loads(self._seen_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    self._seen = {k: v for k, v in data.items() if isinstance(v, dict)}
+        except (json.JSONDecodeError, OSError):
+            self._seen = {}
+
+    def _save_seen(self) -> None:
+        if self._seen_path is None:
+            return
+        try:
+            self._seen_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._seen_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self._seen, indent=2, ensure_ascii=False),
+                           encoding="utf-8")
+            tmp.replace(self._seen_path)
+        except OSError:
+            pass
+
+    def _record_seen(self, name: str, *, joined: bool) -> None:
+        now = time.time()
+        rec = self._seen.get(name) or {}
+        rec.setdefault("first_seen", now)
+        rec["last_seen"] = now
+        if joined:
+            rec["sessions"] = int(rec.get("sessions", 0)) + 1
+        else:
+            jt = self._join_times.pop(name, None)
+            if jt is not None:
+                rec["seconds_played"] = float(rec.get("seconds_played", 0.0)) + max(0.0, now - jt)
+        self._seen[name] = rec
+        self._save_seen()
+
+    def _avatar_for(self, name: str) -> QPixmap | None:
+        pix = self._avatars.get(name)
+        if pix is not None and not pix.isNull():
+            return pix
+        cache = _AVATAR_CACHE_DIR / f"{name}.png"
+        if cache.exists():
+            p = QPixmap(str(cache))
+            if not p.isNull():
+                self._avatars[name] = p
+                return p
+        return None
+
+    @staticmethod
+    def _ago(ts) -> str:
+        if not ts:
+            return ""
+        delta = max(0, int(time.time() - float(ts)))
+        if delta < 60:
+            return "just now"
+        if delta < 3600:
+            return f"{delta // 60}m ago"
+        if delta < 86400:
+            return f"{delta // 3600}h ago"
+        return f"{delta // 86400}d ago"
+
+    @staticmethod
+    def _fmt_time(ts) -> str:
+        try:
+            import datetime as _dt
+            return _dt.datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M")
+        except (ValueError, OSError, OverflowError):
+            return "—"
+
+    @staticmethod
+    def _fmt_duration(seconds) -> str:
+        s = int(float(seconds))
+        h, rem = divmod(s, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h}h {m}m"
+        if m:
+            return f"{m}m {s}s"
+        return f"{s}s"
 
     # Avatar fetching
 
@@ -233,8 +428,8 @@ class PlayersTab(QWidget):
         item = self._online_list.currentItem()
         if item is None:
             return None
-        name = item.text().strip()
-        return name or None
+        name = item.data(Qt.ItemDataRole.UserRole)
+        return str(name) if name else None
 
     def _send(self, command: str) -> bool:
         """Send a console command for the current instance via tmux."""
@@ -250,25 +445,55 @@ class PlayersTab(QWidget):
         if not name:
             return
 
+        online = name in self._online
+
         menu = QMenu(self)
+        hdr = menu.addAction(name if online else f"{name}  (offline)")
+        hdr.setEnabled(False)
+        menu.addSeparator()
+
+        menu.addAction("Player info / stats…", lambda: self._show_player_stats(name))
+        menu.addSeparator()
+
         menu.addAction(f"Make {name} an operator", lambda: self._send(f"op {name}"))
         menu.addAction(f"Remove operator from {name}", lambda: self._send(f"deop {name}"))
         menu.addSeparator()
 
         gm = menu.addMenu("Gamemode")
+        gm.setEnabled(online)
         for mode in ("survival", "creative", "adventure", "spectator"):
             gm.addAction(mode.capitalize(),
                          lambda m=mode: self._send(f"gamemode {m} {name}"))
 
-        menu.addAction("Teleport to spawn",
-                       lambda: self._send(f"spawnpoint {name}") or
-                       self._send(f"tp {name} @e[type=minecraft:player,limit=1]"))
-        menu.addAction("Give item…", lambda: self._give_item(name))
-        menu.addAction("Whisper…", lambda: self._whisper(name))
+        fx = menu.addMenu("Quick effects")
+        fx.setEnabled(online)
+        # (label, command) -- hidden particles (last arg 'true') keep it clean.
+        for label, cmd in (
+            ("Heal",                  f"effect give {name} minecraft:instant_health 1 4 true"),
+            ("Feed (saturation)",     f"effect give {name} minecraft:saturation 1 10 true"),
+            ("Fire resistance (5m)",  f"effect give {name} minecraft:fire_resistance 300 0 true"),
+            ("Night vision (5m)",     f"effect give {name} minecraft:night_vision 300 0 true"),
+            ("Water breathing (5m)",  f"effect give {name} minecraft:water_breathing 300 0 true"),
+            ("Clear all effects",     f"effect clear {name}"),
+        ):
+            fx.addAction(label, lambda c=cmd: self._send(c))
+
+        tp_act = menu.addAction("Teleport…", lambda: self._teleport_dialog(name))
+        tp_act.setEnabled(online)
+        give_act = menu.addAction("Give item…", lambda: self._give_item(name))
+        give_act.setEnabled(online)
+        whisper_act = menu.addAction("Whisper…", lambda: self._whisper(name))
+        whisper_act.setEnabled(online)
         menu.addSeparator()
-        menu.addAction("Kick…", lambda: self._kick(name))
+        kick_act = menu.addAction("Kick…", lambda: self._kick(name))
+        kick_act.setEnabled(online)
         menu.addAction("Ban…", lambda: self._ban(name))
         menu.addAction("Pardon (unban)", lambda: self._send(f"pardon {name}"))
+
+        if not online and name in self._seen:
+            menu.addSeparator()
+            menu.addAction("Forget (remove from recently played)",
+                           lambda: self._forget_player(name))
 
         menu.exec(self._online_list.mapToGlobal(pos)
                   if hasattr(pos, "x") else self._online_list.cursor().pos())
@@ -297,21 +522,143 @@ class PlayersTab(QWidget):
         ) == QMessageBox.StandardButton.Yes:
             self._send(f"ban {name}")
 
+    def _forget_player(self, name: str) -> None:
+        self._seen.pop(name, None)
+        self._save_seen()
+        self._refresh_online_list()
+
+    def _teleport_dialog(self, name: str) -> None:
+        dlg = _TeleportDialog(name, sorted(self._online), self)
+        if dlg.exec():
+            cmd = dlg.command()
+            if cmd:
+                self._send(cmd)
+
+    def _show_player_stats(self, name: str) -> None:
+        lines = [f"Player: {name}", ""]
+        rec = self._seen.get(name)
+        if rec:
+            if rec.get("first_seen"):
+                lines.append(f"First seen:  {self._fmt_time(rec['first_seen'])}")
+            if rec.get("last_seen"):
+                lines.append(f"Last seen:   {self._fmt_time(rec['last_seen'])}"
+                             f"  ({self._ago(rec['last_seen'])})")
+            if rec.get("sessions"):
+                lines.append(f"Sessions:    {int(rec['sessions'])}")
+            if rec.get("seconds_played"):
+                lines.append("Tracked playtime (this app): "
+                             f"{self._fmt_duration(rec['seconds_played'])}")
+            lines.append("")
+
+        stats = self._read_world_stats(name)
+        if stats:
+            lines.append("World stats:")
+            lines.extend(f"  {label}: {value}" for label, value in stats)
+        else:
+            lines.append("World stats: not available yet "
+                         "(no saved stats for this player, or stats are off).")
+
+        QMessageBox.information(self, f"{name} — info", "\n".join(lines))
+
+    def _uuid_for(self, name: str) -> str | None:
+        if self._instance is None:
+            return None
+        base = Path(self._instance.path)
+        for fn in ("usercache.json", "whitelist.json", "ops.json"):
+            f = base / fn
+            try:
+                if f.exists():
+                    for e in json.loads(f.read_text(encoding="utf-8")):
+                        if isinstance(e, dict) and \
+                                e.get("name", "").lower() == name.lower():
+                            uid = e.get("uuid")
+                            if uid:
+                                return str(uid)
+            except (json.JSONDecodeError, OSError):
+                continue
+        return None
+
+    def _read_world_stats(self, name: str) -> list[tuple[str, str]]:
+        if self._instance is None:
+            return []
+        uid = self._uuid_for(name)
+        if not uid:
+            return []
+        base = Path(self._instance.path)
+        candidates = list(self._instance.get_world_names()) + ["world"]
+        stats_file = None
+        for w in candidates:
+            cand = base / w / "stats" / f"{uid}.json"
+            if cand.exists():
+                stats_file = cand
+                break
+        if stats_file is None:
+            return []
+        try:
+            data = json.loads(stats_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+        custom = (data.get("stats", {}) or {}).get("minecraft:custom", {}) or {}
+        out: list[tuple[str, str]] = []
+        play = custom.get("minecraft:play_time") or custom.get("minecraft:play_one_minute")
+        if play is not None:
+            out.append(("Play time", self._fmt_duration(float(play) / 20.0)))
+        for key, label in (
+            ("minecraft:deaths", "Deaths"),
+            ("minecraft:mob_kills", "Mob kills"),
+            ("minecraft:player_kills", "Player kills"),
+            ("minecraft:jump", "Jumps"),
+        ):
+            if key in custom:
+                out.append((label, str(custom[key])))
+        for key, label in (
+            ("minecraft:damage_dealt", "Damage dealt"),
+            ("minecraft:damage_taken", "Damage taken"),
+        ):
+            if key in custom:
+                out.append((label, f"{float(custom[key]) / 10.0:.1f} hearts"))
+        walk = custom.get("minecraft:walk_one_cm")
+        if walk is not None:
+            out.append(("Distance walked", f"{float(walk) / 100000.0:.1f} km"))
+        return out
+
     def _refresh_online_list(self) -> None:
         self._online_list.clear()
-        if not self._online:
-            item = QListWidgetItem("  No players online")
-            item.setForeground(QColor(theme.SURFACE2))
-            item.setFlags(Qt.ItemFlag.NoItemFlags)
-            self._online_list.addItem(item)
-            return
-        for name in sorted(self._online):
-            item = QListWidgetItem(f"  {name}")
-            item.setForeground(QColor(theme.GREEN))
-            pix = self._avatars.get(name)
-            if pix and not pix.isNull():
-                item.setIcon(QIcon(pix))
-            self._online_list.addItem(item)
+
+        # Online players (green, with avatar).
+        if self._online:
+            for name in sorted(self._online):
+                item = QListWidgetItem(f"  {name}")
+                item.setForeground(QColor(theme.GREEN))
+                item.setData(Qt.ItemDataRole.UserRole, name)
+                pix = self._avatar_for(name)
+                if pix is not None:
+                    item.setIcon(QIcon(pix))
+                self._online_list.addItem(item)
+        else:
+            empty = QListWidgetItem("  No players online")
+            empty.setForeground(QColor(theme.SURFACE2))
+            empty.setFlags(Qt.ItemFlag.NoItemFlags)
+            self._online_list.addItem(empty)
+
+        # Recently played — players we've seen before who are now offline.
+        offline = [n for n in self._seen if n not in self._online]
+        if offline:
+            offline.sort(key=lambda n: self._seen[n].get("last_seen", 0), reverse=True)
+            sep = QListWidgetItem("  — recently played —")
+            sep.setForeground(QColor(theme.SURFACE2))
+            sep.setFlags(Qt.ItemFlag.NoItemFlags)
+            self._online_list.addItem(sep)
+            for name in offline[:12]:
+                ago = self._ago(self._seen[name].get("last_seen"))
+                label = f"  {name}   ·   {ago}" if ago else f"  {name}"
+                item = QListWidgetItem(label)
+                item.setForeground(QColor(theme.SUBTEXT))
+                item.setData(Qt.ItemDataRole.UserRole, name)
+                pix = self._avatar_for(name)
+                if pix is not None:
+                    item.setIcon(QIcon(pix))
+                self._online_list.addItem(item)
 
 
 # Per-file list widget
