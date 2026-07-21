@@ -273,7 +273,12 @@ class ConfigTab(QWidget):
 
             self._table.setRowHeight(row, 30)
 
-        self._table.setSortingEnabled(True)
+        # Keep click-to-sort DISABLED: boolean values live in QComboBox cell
+        # widgets that do NOT move when a QTableWidget sorts, while _save()
+        # reads them by row index — a header-click sort would desync the combos
+        # from their keys and save a value under the wrong key. Rows are already
+        # deterministically ordered by _sort_key above.
+        self._table.setSortingEnabled(False)
         self._apply_filter(self._filter_edit.text())
 
     def _apply_filter(self, text: str) -> None:
