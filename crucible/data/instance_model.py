@@ -42,6 +42,27 @@ _START_SCRIPT_NAMES = [
     "run-server.sh",
 ]
 
+# Crucible itself writes a "start.sh" placeholder into freshly-imported Prism
+# packs that have no dedicated server jar yet (see importers/prism.py). That
+# placeholder is a real, executable file, so a naive "does start.sh exist"
+# check reports the server as installed even though it will immediately exit
+# 2 the moment it's actually run. Every copy of Crucible's placeholder embeds
+# this exact fallback-error string in its source (in the dead code past the
+# `exec` calls that fire once a real jar/loader shows up); no pack-provided
+# launcher (GTNH's ServerStart.sh, a hand-installed start.sh, etc.) contains
+# it, so it's a reliable signature for "this is just Crucible's stub".
+_PLACEHOLDER_START_SH_MARKER = "Crucible could not find a runnable server jar/args file."
+
+
+def _is_placeholder_start_script(path: Path) -> bool:
+    """True if `path` is Crucible's own generated start.sh stub rather than
+    a real pack-provided launcher."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return _PLACEHOLDER_START_SH_MARKER in text
+
 
 # World / dimension folder naming (used by World Backup & Swap).
 #
@@ -597,13 +618,21 @@ class ServerInstance:
 
         launcher = self.has_server_launcher()
         script = self.get_startscript()
+        is_placeholder = (
+            script is not None
+            and script.name == "start.sh"
+            and _is_placeholder_start_script(script)
+        )
+        script_ok = script is not None and not is_placeholder
         items.append({
             "key": "launcher", "label": "Server program is installed",
-            "ok": launcher or script is not None,
-            "detail": (str(script) if script else
-                       "Found server jar/loader" if launcher else
+            "ok": launcher or script_ok,
+            "detail": ("Found server jar/loader" if launcher else
+                       str(script) if script_ok else
+                       "start.sh here is only Crucible's placeholder — no server "
+                       "jar/loader has been installed yet" if is_placeholder else
                        "No server jar/loader found — install the dedicated server"),
-            "fix": None if (launcher or script) else "install_server",
+            "fix": None if (launcher or script_ok) else "install_server",
         })
 
         mods = self.get_mod_count()

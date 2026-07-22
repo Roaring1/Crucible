@@ -569,6 +569,34 @@ class SetupTab(QWidget):
                     "on your PATH, which wasn't found. Vanilla and Fabric don't need it.",
                 )
                 return
+
+        # Heavily-customized packs on Minecraft 1.12.2 and earlier (GT New
+        # Horizons foremost among them) often ship their own patched Forge
+        # build that differs from the plain public Forge releases Crucible
+        # can fetch automatically. Installing the generic build for these
+        # would produce a server that looks installed but is subtly
+        # incompatible with the pack's mods, so warn before proceeding
+        # instead of silently doing the wrong thing.
+        is_legacy_forge = loader == "forge" and inst._mc_version_tuple() and inst._mc_version_tuple() < (1, 13)
+        if is_legacy_forge:
+            resp = QMessageBox.warning(
+                self, "Heads up: modified packs need their own server build",
+                f"Minecraft {mc} predates Forge's modern installer layout. Crucible's "
+                "automatic installer can only fetch the plain public Forge build for "
+                "this version — heavily modified packs (GT New Horizons and similar) "
+                "usually patch Forge themselves and publish their own ready-made "
+                "'Server Pack' download that matches their mods exactly.\n\n"
+                "If this pack has an official Server Pack download, get that instead "
+                "and extract it into this folder for guaranteed compatibility — "
+                "Crucible's generic installer here is a fallback for plain/lightly "
+                "modified Forge packs.\n\n"
+                "Continue with Crucible's generic Forge installer anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                return
+
         resp = QMessageBox.question(
             self, "Install server program",
             f"Download the {loader} dedicated server for Minecraft {mc} into this "
