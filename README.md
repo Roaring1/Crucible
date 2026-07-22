@@ -103,6 +103,8 @@ Crucible modifies server files only for explicit actions such as setup/import, c
 
 ## Changelog
 
+**v0.6.3** -- fixes a possible "stuck on STARTING..." GUI status via a tmux-pane-tail fallback that shares the exact same startup-detection pattern as the log watcher; adds an in-app server memory (Java heap -Xms/-Xmx) editor to the Setup tab that preserves all other java_args flags and warns before over-allocating RAM
+
 **v0.6.2** -- fixes the GTNH reboot-wrapper false "Stop looks like a restart" report; Stop now sends Ctrl-C to interrupt startserver-java9.sh/.bat's own 12-second auto-reboot countdown, and the watchdog now detects a real java crash even when that wrapper script keeps the tmux session alive
 
 **v0.6.1** -- corrective runtime-truth release; working tmux console/whitelist/stop targeting, uncertainty-safe status, unmanaged-process detection, and non-destructive stop timeouts

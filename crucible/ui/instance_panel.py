@@ -31,8 +31,17 @@ from ..data.instance_model import ServerInstance
 from ..process.tmux_manager import TmuxManager
 from ..process.log_watcher import LogWatcher
 from ..process.watchdog import Watchdog
+from ..process.startup_patterns import RE_SERVER_DONE
 from . import theme
 from .tabs import ConsoleTab, ModsTab, NotesTab, InfoTab, ConfigTab, BackupTab, PlayersTab, SetupTab, SystemTab
+
+# Fallback "Done (Xs)!" detector used only while "starting", read straight off
+# the tmux pane. Shares the exact pattern with log_watcher's log-file parsing
+# (via startup_patterns) so a startup line still promotes the status to
+# "running" even if log-file parsing misses it (wrong log path for an unusual
+# loader/modpack, permissions, rotation edge cases, etc.), and the two
+# detection paths can never drift apart.
+_RE_DONE_FALLBACK = RE_SERVER_DONE
 
 # How often to auto-query TPS when server is running (ms)
 _TPS_POLL_MS = 30_000
@@ -223,7 +232,7 @@ class InstancePanel(QWidget):
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
 
-        self._setup   = SetupTab()
+        self._setup   = SetupTab(self._manager)
         self._console = ConsoleTab()
         self._mods    = ModsTab()
         self._notes   = NotesTab(self._manager)
@@ -758,7 +767,7 @@ class InstancePanel(QWidget):
         self._transition_polling = True
         expecting = self._current_status
 
-        def _done(is_running: bool | None, _msg: str) -> None:
+        def _done(is_running: bool | None, tail: str) -> None:
             self._transition_polling = False
             # Bail out if the user switched servers or the state already moved.
             if self._instance is not inst or self._current_status != expecting:
@@ -772,8 +781,30 @@ class InstancePanel(QWidget):
                 self.status_changed.emit(inst.id, "stopped")
                 if self._info in self._loaded_tabs:
                     self._info.load(inst, "stopped")
+                return
+            if expecting == "starting" and tail:
+                # Fallback: read "Done (Xs)!" straight off the pane. Normally
+                # the log watcher promotes "starting" -> "running" first, but
+                # this covers cases where log-file parsing misses the line
+                # (wrong log path for the loader/modpack, permissions, a log
+                # rotated right at boot, etc.) so the UI never gets stuck.
+                m = _RE_DONE_FALLBACK.search(tail)
+                if m:
+                    self._on_log_server_started(float(m.group(1)))
 
-        self._run_tmux(lambda: (self._tmux.probe_running(inst), ""), _done)
+        def _check() -> tuple[bool | None, str]:
+            running = self._tmux.probe_running(inst)
+            tail = ""
+            # Only pay for a pane capture while genuinely waiting on "Done":
+            # this is the fallback path for when log-file parsing misses it.
+            if running and expecting == "starting":
+                try:
+                    tail = self._tmux.capture_pane_tail(inst)
+                except Exception:
+                    tail = ""
+            return running, tail
+
+        self._run_tmux(_check, _done)
 
     def _set_buttons_enabled(self, enabled: bool) -> None:
         for btn in (self._btn_start, self._btn_stop,

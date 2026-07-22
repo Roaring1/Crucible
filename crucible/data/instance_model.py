@@ -8,6 +8,7 @@ and JSON serialization.
 
 from __future__ import annotations
 
+import re
 import shutil
 import uuid
 from dataclasses import dataclass, field
@@ -340,6 +341,58 @@ class ServerInstance:
             except OSError:
                 pass
         return "25565"
+
+    # Memory (Xms/Xmx) — used by the GUI Setup tab's in-app memory editor and
+    # the CLI. Parses/rewrites only the -Xms/-Xmx tokens inside java_args,
+    # preserving every other flag (IPv4 stack flags, GC tuning, etc.) exactly.
+
+    _RE_XMS = re.compile(r"-Xms(\d+)([kKmMgG])")
+    _RE_XMX = re.compile(r"-Xmx(\d+)([kKmMgG])")
+
+    @staticmethod
+    def _mem_token_to_mb(value: int, unit: str) -> int:
+        unit = unit.lower()
+        if unit == "g":
+            return value * 1024
+        if unit == "k":
+            return max(1, value // 1024)
+        return value  # "m"
+
+    def get_memory_mb(self) -> tuple[int | None, int | None]:
+        """Return (xms_mb, xmx_mb) parsed from java_args, or None for either
+        that isn't present / isn't parseable."""
+        args = self.java_args or ""
+        xms = xmx = None
+        m = self._RE_XMS.search(args)
+        if m:
+            xms = self._mem_token_to_mb(int(m.group(1)), m.group(2))
+        m = self._RE_XMX.search(args)
+        if m:
+            xmx = self._mem_token_to_mb(int(m.group(1)), m.group(2))
+        return xms, xmx
+
+    def set_memory_mb(self, xms_mb: int, xmx_mb: int) -> None:
+        """Rewrite (or insert) the -Xms/-Xmx tokens in java_args in MB units,
+        leaving every other flag untouched. Raises ValueError for nonsensical
+        input so callers never silently write a broken launch command."""
+        xms_mb = int(xms_mb)
+        xmx_mb = int(xmx_mb)
+        if xms_mb <= 0 or xmx_mb <= 0:
+            raise ValueError("Memory values must be positive.")
+        if xms_mb > xmx_mb:
+            raise ValueError("Minimum memory (-Xms) cannot exceed maximum memory (-Xmx).")
+        args = self.java_args or ""
+        xms_tok = f"-Xms{xms_mb}M"
+        xmx_tok = f"-Xmx{xmx_mb}M"
+        if self._RE_XMS.search(args):
+            args = self._RE_XMS.sub(xms_tok, args, count=1)
+        else:
+            args = (xms_tok + " " + args).strip()
+        if self._RE_XMX.search(args):
+            args = self._RE_XMX.sub(xmx_tok, args, count=1)
+        else:
+            args = (args + " " + xmx_tok).strip()
+        self.java_args = args
 
     def _mc_version_tuple(self) -> tuple[int, ...]:
         """Best-effort parse of the Minecraft version into a comparable tuple.

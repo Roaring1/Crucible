@@ -41,12 +41,16 @@ from PyQt6.QtCore import (
 
 from ..data.instance_model import ServerInstance
 from .log_tail import LogTailReader
+from .startup_patterns import RE_SERVER_DONE
 
 
 # Regex patterns for log line parsing
 
-# "Done (67.412s)!" -- server finished starting (handles integer seconds too)
-_RE_DONE = re.compile(r"Done \(([\d.]+)s\)!")
+# "Done (67.412s)!" -- server finished starting (handles integer seconds too).
+# Shared with InstancePanel's tmux-pane-capture fallback via startup_patterns
+# so the two detection paths can never drift apart. Keep the _RE_DONE name as
+# a module-level alias for backwards compatibility with anything importing it.
+_RE_DONE = RE_SERVER_DONE
 
 # "Stopping the server"
 _RE_STOPPING = re.compile(r"Stopping the server")

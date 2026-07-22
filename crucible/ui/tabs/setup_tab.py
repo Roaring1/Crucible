@@ -22,9 +22,12 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QFrame, QScrollArea, QApplication, QMessageBox,
+    QSpinBox,
 )
 
+from ...data.instance_manager import InstanceManager
 from ...data.instance_model import ServerInstance
+from ...process.resource_monitor import system_memory_mb
 from .. import theme
 
 
@@ -53,12 +56,16 @@ class _ServerInstallWorker(QObject):
 class SetupTab(QWidget):
     """Friendly readiness checklist + quick actions for one instance."""
 
-    def __init__(self, parent=None):
+    def __init__(self, manager: InstanceManager | None = None, parent=None):
         super().__init__(parent)
+        self._manager: InstanceManager | None = manager
         self._instance: ServerInstance | None = None
         self._install_thread: QThread | None = None
         self._install_worker: _ServerInstallWorker | None = None
         self._ip_request_generation = 0
+        self._xms_spin: QSpinBox | None = None
+        self._xmx_spin: QSpinBox | None = None
+        self._mem_status: QLabel | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -208,10 +215,129 @@ class SetupTab(QWidget):
 
         self._layout.addWidget(card)
 
+        # Server performance (memory) section
+        self._add_memory_section(inst)
+
         # Download-from-pack section (only when an index exists)
         self._maybe_add_download_section()
 
         self._layout.addStretch()
+
+    def _add_memory_section(self, inst: ServerInstance) -> None:
+        """In-app editor for the server's -Xms/-Xmx JVM memory flags.
+
+        Reads/writes ServerInstance.java_args via get_memory_mb()/set_memory_mb(),
+        which preserve every other flag (IPv4 stack flags, @java9args.txt, GC
+        tuning, etc.) exactly. Changing this only affects the NEXT server start
+        -- it never touches a currently-running JVM's actual heap size.
+        """
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {theme.SURFACE1};")
+        self._layout.addWidget(sep)
+
+        head = QLabel("🧠  Server memory (Java heap)")
+        head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
+        self._layout.addWidget(head)
+
+        _, total_mb = system_memory_mb()
+        total_gb_text = f"{total_mb / 1024:.0f} GB" if total_mb else "unknown"
+        info = QLabel(
+            f"This machine has {total_gb_text} of RAM. Minimum (-Xms) and maximum "
+            "(-Xmx) memory the server's Java process may use. Takes effect the "
+            "NEXT time you start this server -- it does not resize memory for an "
+            "already-running server."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
+        self._layout.addWidget(info)
+
+        xms_mb, xmx_mb = inst.get_memory_mb()
+        row = QHBoxLayout()
+        row.setSpacing(10)
+
+        row.addWidget(QLabel("Min (Xms):"))
+        self._xms_spin = QSpinBox()
+        self._xms_spin.setRange(512, 1_048_576)
+        self._xms_spin.setSingleStep(512)
+        self._xms_spin.setSuffix(" MB")
+        self._xms_spin.setValue(xms_mb if xms_mb else 2048)
+        row.addWidget(self._xms_spin)
+
+        row.addWidget(QLabel("Max (Xmx):"))
+        self._xmx_spin = QSpinBox()
+        self._xmx_spin.setRange(512, 1_048_576)
+        self._xmx_spin.setSingleStep(512)
+        self._xmx_spin.setSuffix(" MB")
+        self._xmx_spin.setValue(xmx_mb if xmx_mb else 4096)
+        row.addWidget(self._xmx_spin)
+
+        save_btn = QPushButton("Save memory settings")
+        save_btn.clicked.connect(self._save_memory)
+        row.addWidget(save_btn)
+        row.addStretch()
+        self._layout.addLayout(row)
+
+        self._mem_status = QLabel("")
+        self._mem_status.setWordWrap(True)
+        self._mem_status.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
+        self._layout.addWidget(self._mem_status)
+
+        if xms_mb is None and xmx_mb is None:
+            self._mem_status.setText(
+                "⚠ Could not find -Xms/-Xmx in this server's Java arguments -- "
+                "showing defaults. Saving will add them."
+            )
+            self._mem_status.setStyleSheet(f"color: {theme.YELLOW}; font-size: 11px;")
+
+    def _save_memory(self) -> None:
+        inst = self._instance
+        if inst is None or self._xms_spin is None or self._xmx_spin is None:
+            return
+        xms_mb = self._xms_spin.value()
+        xmx_mb = self._xmx_spin.value()
+
+        _, total_mb = system_memory_mb()
+        if total_mb and xmx_mb > total_mb:
+            resp = QMessageBox.warning(
+                self, "Memory exceeds installed RAM",
+                f"-Xmx {xmx_mb} MB is more than the {total_mb:.0f} MB of RAM this "
+                "machine has. The server would likely fail to start or the OS "
+                "would heavily swap.\n\nSave anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                return
+        elif total_mb and xmx_mb > total_mb * 0.85:
+            QMessageBox.information(
+                self, "High memory allocation",
+                f"-Xmx {xmx_mb} MB uses most of this machine's {total_mb:.0f} MB "
+                "of RAM, leaving little for the OS, Crucible itself, and other "
+                "programs. Consider leaving at least 10-15% of RAM free.",
+            )
+
+        try:
+            inst.set_memory_mb(xms_mb, xmx_mb)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid memory settings", str(exc))
+            return
+
+        if self._manager is not None:
+            try:
+                self._manager.update_instance(inst)
+            except Exception as exc:
+                QMessageBox.warning(
+                    self, "Memory settings",
+                    f"Updated in memory, but could not save to disk:\n{exc}",
+                )
+                return
+
+        if self._mem_status is not None:
+            self._mem_status.setText(
+                f"✓ Saved. Will apply next time this server starts "
+                f"(-Xms{xms_mb}M -Xmx{xmx_mb}M)."
+            )
+            self._mem_status.setStyleSheet(f"color: {theme.GREEN}; font-size: 11px;")
 
     def _make_fix_button(self, fix: str) -> QPushButton | None:
         if fix == "accept_eula":

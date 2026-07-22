@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.6.3 — 2026-07-21 — starting-status fallback detection + in-app memory editor
+- Fix GUI status potentially getting stuck on "STARTING..." indefinitely if log-file-based "Done" detection missed the startup line. While status is `starting` and the tmux session is confirmed alive, the panel now also captures the live tmux pane tail and searches it for the same `Done (Xs)!` pattern used by the log watcher (shared from a new Qt-free `crucible/process/startup_patterns.py` module so the two detection paths can never drift apart); a match promotes `starting` -> `running` immediately even if the log-file watcher missed it.
+- Add `TmuxManager.capture_pane_tail()` as a public, bounded (200 lines / 8000 chars) way to read the current pane's recent output for this fallback check.
+- Add an in-app **server memory (Java heap) editor** to the Setup tab: shows this machine's total RAM, lets you set `-Xms`/`-Xmx` in MB, and saves by rewriting only those two flags inside `java_args` -- every other flag (`@java9args.txt`, IPv4 stack flags, GC tuning, etc.) is preserved exactly. Warns if the requested `-Xmx` exceeds or is close to the machine's installed RAM, and rejects `-Xms` > `-Xmx` or non-positive values before saving. Takes effect on the next server start; does not resize an already-running JVM's heap.
+- Add `ServerInstance.get_memory_mb()` / `set_memory_mb()` helpers (`crucible/data/instance_model.py`) backing the new editor, with support for existing `K`/`M`/`G`-suffixed values and for java_args that have no `-Xms`/`-Xmx` tokens yet.
+- Expand the suite from 71 to 78 tests, covering the new memory parsing/rewriting logic (unit conversion, flag preservation, insertion when absent, min > max, and non-positive validation).
+
 ## v0.6.2 — 2026-07-21 — GTNH reboot-wrapper crash/stop detection
 - Root cause of "Stop looks like it's being restarted": GTNH's own `startserver-java9.sh`/`.bat` wrap java in a `while true` loop that auto-reboots java ~12 seconds after ANY exit (crash or graceful stop) unless Ctrl-C is sent during the countdown. Because `probe_running()` only checked `tmux has-session` (which the wrapper keeps alive forever), Crucible could never see this.
 - Add `TmuxManager.pane_current_command()` and `TmuxManager.is_java_foreground()` to inspect the tmux pane's actual foreground process instead of only the session's existence.

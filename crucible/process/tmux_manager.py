@@ -320,6 +320,16 @@ class TmuxManager:
         except ValueError:
             return -1
 
+    def capture_pane_tail(self, instance: ServerInstance, max_lines: int = 200, max_chars: int = 8000) -> str:
+        """Public wrapper around _read_capture for a live instance's session.
+
+        Used as a fallback signal (e.g. detecting the "Done (Xs)!" startup
+        line directly from the pane) when a log-file-based check might be
+        unreliable -- wrong log path, permissions, or an unusual logging
+        config for a given modpack/loader.
+        """
+        return self._read_capture(self.session_name(instance), max_lines=max_lines, max_chars=max_chars)
+
     def _read_capture(self, session: str, max_lines: int = 40, max_chars: int = 4000) -> str:
         result = self._run(
             ["tmux", "capture-pane", "-p", "-t", "=" + session + ":", "-S", f"-{max_lines}"],

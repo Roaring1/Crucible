@@ -12,6 +12,7 @@ from crucible.importers.downloader import DownloadItem, _safe_destination, _down
 from crucible.importers.prism import _extract_archive
 from crucible.process.tmux_manager import TmuxManager
 from crucible.process.command_intent import lifecycle_intent
+from crucible.process.startup_patterns import RE_SERVER_DONE
 
 
 class IdentityTests(unittest.TestCase):
@@ -42,6 +43,55 @@ class IdentityTests(unittest.TestCase):
             m.add_instance(str(b), "same")
 
 
+
+
+class MemorySettingsTests(unittest.TestCase):
+    def test_get_memory_mb_parses_default_java_args(self):
+        inst = ServerInstance("/tmp/a", "a")
+        self.assertEqual(inst.get_memory_mb(), (2048, 4096))
+
+    def test_get_memory_mb_handles_missing_tokens(self):
+        inst = ServerInstance("/tmp/a", "a", java_args="-Dfoo=bar -jar server.jar nogui")
+        self.assertEqual(inst.get_memory_mb(), (None, None))
+
+    def test_get_memory_mb_handles_kilobyte_and_megabyte_units(self):
+        inst = ServerInstance("/tmp/a", "a", java_args="-Xms1048576K -Xmx2048M")
+        self.assertEqual(inst.get_memory_mb(), (1024, 2048))
+
+    def test_set_memory_mb_preserves_other_flags(self):
+        inst = ServerInstance(
+            "/tmp/a", "a",
+            java_args=(
+                "-Dfml.readTimeout=180 -Xms6G -Xmx6G @java9args.txt "
+                "-jar lwjgl3ify-forgePatches.jar nogui"
+            ),
+        )
+        inst.set_memory_mb(4096, 10240)
+        self.assertEqual(
+            inst.java_args,
+            "-Dfml.readTimeout=180 -Xms4096M -Xmx10240M @java9args.txt "
+            "-jar lwjgl3ify-forgePatches.jar nogui",
+        )
+        self.assertEqual(inst.get_memory_mb(), (4096, 10240))
+
+    def test_set_memory_mb_inserts_missing_tokens(self):
+        inst = ServerInstance("/tmp/a", "a", java_args="-jar server.jar nogui")
+        inst.set_memory_mb(1024, 2048)
+        self.assertIn("-Xms1024M", inst.java_args)
+        self.assertIn("-Xmx2048M", inst.java_args)
+        self.assertIn("-jar server.jar nogui", inst.java_args)
+
+    def test_set_memory_mb_rejects_xms_greater_than_xmx(self):
+        inst = ServerInstance("/tmp/a", "a")
+        with self.assertRaisesRegex(ValueError, "cannot exceed"):
+            inst.set_memory_mb(8192, 4096)
+
+    def test_set_memory_mb_rejects_non_positive_values(self):
+        inst = ServerInstance("/tmp/a", "a")
+        with self.assertRaises(ValueError):
+            inst.set_memory_mb(0, 4096)
+        with self.assertRaises(ValueError):
+            inst.set_memory_mb(-1024, 4096)
 
 
 class CommandIntentTests(unittest.TestCase):
@@ -138,6 +188,33 @@ class ArchiveSafetyTests(unittest.TestCase):
         self.assertTrue(any("unsafe" in x for x in warnings))
 
 
+class StartupDetectionConsistencyTests(unittest.TestCase):
+    """The pane-capture fallback must never drift from the log watcher's
+    "Done (Xs)!" pattern, or the two detection paths could disagree about
+    whether the server has actually finished booting."""
+
+    def test_fallback_pattern_matches_real_forge_startup_line(self):
+        line = '[12:34:56] [Server thread/INFO] [FML]: Done (42.123s)! For help, type "help"'
+        m = RE_SERVER_DONE.search(line)
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), "42.123")
+
+    def test_log_watcher_and_panel_import_the_same_shared_pattern_object(self):
+        """log_watcher._RE_DONE and instance_panel._RE_DONE_FALLBACK must both
+        be aliases of startup_patterns.RE_SERVER_DONE (checked via source
+        text, since importing those PyQt6-backed modules isn't reliable in a
+        headless test environment)."""
+        import re as _re
+        from pathlib import Path as _Path
+        repo_root = _Path(__file__).resolve().parent.parent
+        log_watcher_src = (repo_root / "crucible" / "process" / "log_watcher.py").read_text()
+        panel_src = (repo_root / "crucible" / "ui" / "instance_panel.py").read_text()
+        self.assertRegex(log_watcher_src, r"_RE_DONE\s*=\s*RE_SERVER_DONE")
+        self.assertRegex(panel_src, r"_RE_DONE_FALLBACK\s*=\s*RE_SERVER_DONE")
+        self.assertIn("from .startup_patterns import RE_SERVER_DONE", log_watcher_src)
+        self.assertIn("from ..process.startup_patterns import RE_SERVER_DONE", panel_src)
+
+
 class TmuxCommandTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
@@ -152,6 +229,18 @@ class TmuxCommandTests(unittest.TestCase):
         ) as run:
             self.assertTrue(self.tm.is_running(self.inst))
         self.assertEqual(run.call_args.args[0], ["tmux", "has-session", "-t", "=gtnh"])
+
+    def test_capture_pane_tail_reads_exact_session_target(self):
+        import subprocess
+        with patch.object(
+            self.tm, "_run",
+            return_value=subprocess.CompletedProcess([], 0, "Done (12.3s)!\n", ""),
+        ) as run:
+            out = self.tm.capture_pane_tail(self.inst, max_lines=200)
+        self.assertIn("Done (12.3s)!", out)
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[:4], ["tmux", "capture-pane", "-p", "-t"])
+        self.assertEqual(cmd[4], "=gtnh:")
 
     def test_console_input_is_literal_then_enter(self):
         import subprocess
