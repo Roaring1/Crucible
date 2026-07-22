@@ -99,6 +99,14 @@ class WorldTab(QWidget):
         self._stats_thread: QThread | None = None
         self._stats_worker: _WorldStatsWorker | None = None
         self._stats_generation = 0
+        # If a refresh is requested (load(), Refresh button, or a completed
+        # backup/swap/reset/wipe) while a previous world-size scan is still
+        # running, we must NOT touch self._stats_thread until that scan's own
+        # `finished` signal fires -- overwriting the reference while its
+        # QThread is still alive is exactly the "QThread: Destroyed while
+        # thread is still running" abort. Instead we stash the newest
+        # requested args here and let _stats_thread_finished start it.
+        self._stats_pending: tuple[Path, list[Path]] | None = None
         self._dims_expanded = False
         self._build_ui()
 
@@ -389,11 +397,22 @@ class WorldTab(QWidget):
     def _start_stats_worker(self, world_root: Path, pre_swap_dirs: list[Path]) -> None:
         if not world_root.is_dir() and not pre_swap_dirs:
             return
-        self._stats_generation += 1
-        generation = self._stats_generation
         inst = self._instance
         if inst is None:
             return
+
+        # NEVER overwrite self._stats_thread while its QThread is still
+        # alive -- load(), the Refresh button, and post-op refreshes can all
+        # reach this method, and dropping the last Python reference to a
+        # still-running QThread is a fatal "Destroyed while thread is still
+        # running" abort. Queue this request instead; _stats_thread_finished
+        # will start it the moment the in-flight scan actually finishes.
+        if self._stats_thread is not None and self._stats_thread.isRunning():
+            self._stats_pending = (world_root, pre_swap_dirs)
+            return
+
+        self._stats_generation += 1
+        generation = self._stats_generation
 
         thread = QThread()
         worker = _WorldStatsWorker(inst, pre_swap_dirs)
@@ -416,6 +435,10 @@ class WorldTab(QWidget):
         if self._stats_thread is thread:
             self._stats_thread = None
             self._stats_worker = None
+            if self._stats_pending is not None:
+                world_root, pre_swap_dirs = self._stats_pending
+                self._stats_pending = None
+                self._start_stats_worker(world_root, pre_swap_dirs)
 
     def _on_stats_done(self, generation: int, size: int, presafe_total: int) -> None:
         if generation != self._stats_generation or self._instance is None or self._manager is None:
