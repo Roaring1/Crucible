@@ -99,6 +99,38 @@ _DUP_RE = re.compile(r"(duplicate mods?|found a duplicate mod)", re.IGNORECASE)
 
 _QUARANTINE_LOG = ".crucible/quarantine.json"
 
+_MAX_CRASH_TEXT_BYTES = 16 * 1024 * 1024
+_MAX_JAR_METADATA_BYTES = 4 * 1024 * 1024
+_MAX_QUARANTINE_LOG_BYTES = 4 * 1024 * 1024
+
+
+def read_diagnostic_text(path: str | Path, limit: int | None = None) -> str:
+    if limit is None:
+        limit = _MAX_CRASH_TEXT_BYTES
+    if limit <= 0:
+        raise ValueError("diagnostic read limit must be positive")
+    p = Path(path)
+    size = p.stat().st_size
+    with p.open("rb") as fh:
+        if size > limit:
+            fh.seek(-limit, 2)
+            raw = b"[... earlier log content omitted by Crucible ...]\n" + fh.read(limit)
+        else:
+            raw = fh.read(limit + 1)
+    return raw.decode("utf-8", "replace")
+
+
+def _read_zip_text(zf: zipfile.ZipFile, name: str) -> str:
+    info = zf.getinfo(name)
+    if info.file_size > _MAX_JAR_METADATA_BYTES:
+        raise ValueError(f"JAR metadata member too large: {name}")
+    with zf.open(info) as fh:
+        raw = fh.read(_MAX_JAR_METADATA_BYTES + 1)
+    if len(raw) > _MAX_JAR_METADATA_BYTES:
+        raise ValueError(f"JAR metadata member too large: {name}")
+    return raw.decode("utf-8", "replace")
+
+
 
 @dataclass
 class LoadIssue:
@@ -189,7 +221,7 @@ def latest_crash_text(server_path: str | Path) -> tuple[str | None, str | None]:
             candidates.append(p)
     for p in candidates:
         try:
-            return p.read_text(encoding="utf-8", errors="replace"), str(p)
+            return read_diagnostic_text(p), str(p)
         except OSError:
             continue
     return None, None
@@ -293,8 +325,7 @@ def jar_modids(jar_path: str | Path) -> set[str]:
             names = set(zf.namelist())
             if "fabric.mod.json" in names:
                 try:
-                    data = json.loads(
-                        zf.read("fabric.mod.json").decode("utf-8", "replace"))
+                    data = json.loads(_read_zip_text(zf, "fabric.mod.json"))
                     if isinstance(data, dict) and data.get("id"):
                         ids.add(str(data["id"]).lower())
                 except Exception:
@@ -302,7 +333,7 @@ def jar_modids(jar_path: str | Path) -> set[str]:
             for toml_name in ("META-INF/neoforge.mods.toml", "META-INF/mods.toml"):
                 if toml_name in names:
                     try:
-                        raw = zf.read(toml_name).decode("utf-8", "replace")
+                        raw = _read_zip_text(zf, toml_name)
                         for m in _TOML_MODID_RE.finditer(raw):
                             ids.add(m.group(1).lower())
                     except Exception:
@@ -317,8 +348,7 @@ def jar_is_client_only(jar_path: str | Path) -> bool:
     try:
         with zipfile.ZipFile(jar_path, "r") as zf:
             if "fabric.mod.json" in zf.namelist():
-                data = json.loads(
-                    zf.read("fabric.mod.json").decode("utf-8", "replace"))
+                data = json.loads(_read_zip_text(zf, "fabric.mod.json"))
                 if isinstance(data, dict):
                     return str(data.get("environment", "")).lower() == "client"
     except Exception:
@@ -387,6 +417,8 @@ def _record_quarantine(server_path: Path, entries: list[dict]) -> None:
     existing: list = []
     if log.is_file():
         try:
+            if log.stat().st_size > _MAX_QUARANTINE_LOG_BYTES:
+                raise ValueError("quarantine log is too large")
             existing = json.loads(log.read_text(encoding="utf-8"))
             if not isinstance(existing, list):
                 existing = []

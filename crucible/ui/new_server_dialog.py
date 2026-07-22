@@ -105,6 +105,8 @@ class NewServerDialog(QDialog):
         self._cworker: _CreateWorker | None = None
         self._busy = False
         self._path_user_edited = False  # True once the user types/browses a folder
+        self._close_requested = False
+        self._accept_after_create = False
 
         self.setWindowTitle("Create a New Server")
         self.setMinimumWidth(560)
@@ -175,6 +177,7 @@ class NewServerDialog(QDialog):
         self._refresh_btn = QPushButton("↻")
         self._refresh_btn.setFixedWidth(34)
         self._refresh_btn.setToolTip("Refresh the version list")
+        self._refresh_btn.setAccessibleName("Refresh Minecraft version list")
         self._refresh_btn.clicked.connect(self._reload_versions)
         ver_row.addWidget(self._refresh_btn)
         form.addRow("Minecraft version:", ver_row)
@@ -260,22 +263,25 @@ class NewServerDialog(QDialog):
         self._lver_row_label.setVisible(show_lver)
 
     def _reload_versions(self) -> None:
-        if self._busy:
+        if self._busy or (self._vthread is not None and self._vthread.isRunning()):
             return
         self._ver_status.setText("Loading versions…")
         self._refresh_btn.setEnabled(False)
+        self._snap_check.setEnabled(False)
         self._vthread = QThread(self)
         self._vworker = _VersionWorker(self._snap_check.isChecked())
         self._vworker.moveToThread(self._vthread)
         self._vthread.started.connect(self._vworker.run)
         self._vworker.finished.connect(self._on_versions_loaded)
+        self._vworker.finished.connect(self._vthread.quit)
+        self._vthread.finished.connect(self._version_thread_finished)
         self._vthread.start()
 
     def _on_versions_loaded(self, versions, latest) -> None:
         if self._vthread is not None:
             self._vthread.quit()
-            self._vthread.wait(3000)
         self._refresh_btn.setEnabled(True)
+        self._snap_check.setEnabled(True)
         current = self._ver_combo.currentText().strip()
         self._ver_combo.clear()
         if not versions:
@@ -388,6 +394,7 @@ class NewServerDialog(QDialog):
             pass
 
         self._busy = True
+        self._cancel_event.clear()
         self._create_btn.setEnabled(False)
         self._loader_combo.setEnabled(False)
         self._ver_combo.setEnabled(False)
@@ -404,12 +411,13 @@ class NewServerDialog(QDialog):
         self._cthread.started.connect(self._cworker.run)
         self._cworker.log.connect(lambda m: self._log.appendPlainText(m))
         self._cworker.finished.connect(self._on_created)
+        self._cworker.finished.connect(self._cthread.quit)
+        self._cthread.finished.connect(self._create_thread_finished)
         self._cthread.start()
 
     def _on_created(self, result) -> None:
         if self._cthread is not None:
             self._cthread.quit()
-            self._cthread.wait(5000)
         self._bar.hide()
         self._busy = False
         path, name, mc, loader, lver = self._pending
@@ -443,7 +451,7 @@ class NewServerDialog(QDialog):
             return
 
         if result.ok:
-            self.accept()
+            self._accept_after_create = True
         else:
             # Folder registered but server program not installed (e.g. offline).
             QMessageBox.warning(
@@ -453,23 +461,54 @@ class NewServerDialog(QDialog):
                 f"{result.failed_reason}\n\n"
                 "You can retry from the instance's Setup tab when you're online.",
             )
-            self.accept()
+            self._accept_after_create = True
+
+    def _version_thread_finished(self) -> None:
+        self._vthread = None
+        self._vworker = None
+        self._finish_deferred_close()
+
+    def _create_thread_finished(self) -> None:
+        self._cthread = None
+        self._cworker = None
+        if self._close_requested:
+            self._finish_deferred_close()
+        elif self._accept_after_create:
+            super().accept()
+
+    def _finish_deferred_close(self) -> None:
+        if self._close_requested and not self._workers_running():
+            super().reject()
+
+    def _workers_running(self) -> bool:
+        return bool(
+            (self._cthread is not None and self._cthread.isRunning())
+            or (self._vthread is not None and self._vthread.isRunning())
+        )
 
     def _on_cancel(self) -> None:
-        if self._busy:
+        if self._workers_running():
+            self._close_requested = True
             self._cancel_event.set()
-            self._log.appendPlainText("Cancelling…")
             self._cancel_btn.setEnabled(False)
+            if self._busy:
+                self._log.appendPlainText(
+                    "Cancelling… this window will close when the worker exits safely."
+                )
+            else:
+                self._ver_status.setText("Closing after version lookup finishes…")
             return
         self.reject()
 
+    def reject(self) -> None:
+        if self._workers_running():
+            self._on_cancel()
+            return
+        super().reject()
+
     def closeEvent(self, event) -> None:  # noqa: N802
-        if self._busy:
-            self._cancel_event.set()
-            if self._cthread is not None:
-                self._cthread.quit()
-                self._cthread.wait(5000)
-        if self._vthread is not None and self._vthread.isRunning():
-            self._vthread.quit()
-            self._vthread.wait(2000)
-        event.accept()
+        if self._workers_running():
+            self._on_cancel()
+            event.ignore()
+            return
+        super().closeEvent(event)

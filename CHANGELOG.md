@@ -1,6 +1,10 @@
 # Changelog
 
 ## v0.6.0 — deep reliability and safety audit
+- Prompt to save/discard/cancel unsaved server.properties edits before reload, switch, or removal.
+- Block instance switching during active work and safely roll the sidebar selection back.
+- Make recursive server deletion transactional, rollback-capable, and unavailable while running.
+- Bound crash reports, JAR metadata, registry files, quarantine history, and player JSON reads.
 
 - Detect immediate start-script failure without an unbounded duplicate log.
 - Prevent config boolean/key desynchronization and fix Prism export crash.
@@ -9,6 +13,21 @@
 - Reject ambiguous IDs, invalid/duplicate tmux sessions, and unsafe recursive deletes.
 - Never fabricate player UUIDs; use the running Minecraft server to resolve profiles.
 - Remove generated package metadata/patch artifacts and add regression tests.
+- Move server installation and Prism/archive imports off the GUI thread.
+- Force exact tmux session targets and send console commands as literal text.
+- Fix KDE Konsole/terminal attach argument handling.
+- Run periodic tmux health checks off the GUI thread.
+- Isolate backup completion from rapid instance switching.
+- Defer dialog close/accept until every worker thread has actually exited.
+- Replace the duplicated legacy installer with a staged, smoke-tested, rollback-safe updater.
+- Add a verified one-line downloader with exact release assets, SHA-256 checks, and safe ZIP validation.
+- Package the application icon explicitly and add release-script regression tests.
+- Preserve watchdog crash counts across automatic restarts and reset only after stable uptime.
+- Require repeated tmux misses before declaring a crash and enforce the configured loop limit.
+- Bound log, public-IP, and avatar reads; publish avatar cache files atomically.
+- Prevent closing dialogs/app while live workers could be destroyed.
+- Route Prism export through the privacy-safe client exporter (never worlds/admin files).
+- Bound archive expansion/network downloads and require verified HTTPS.
 
 ## v0.5.1 — 2026-06-21
 

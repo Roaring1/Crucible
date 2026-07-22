@@ -125,6 +125,7 @@ class AddModDialog(QDialog):
         self._item_by_pid = {}           # project_id -> QListWidgetItem
         self._pixmaps = {}               # project_id -> QPixmap (cache)
         self._threads = []               # [(QThread, worker), ...]
+        self._close_requested = False
         self._icon_worker = None
         self._sel_pid = None             # currently selected project id
         self._resolved = {}              # project_id -> [ModFile, ...]
@@ -217,9 +218,9 @@ class AddModDialog(QDialog):
         self._install_btn.setEnabled(False)
         self._install_btn.clicked.connect(self._do_install)
         btns.addWidget(self._install_btn)
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        btns.addWidget(close_btn)
+        self._close_btn = QPushButton("Close")
+        self._close_btn.clicked.connect(self.reject)
+        btns.addWidget(self._close_btn)
         root.addLayout(btns)
 
     def _build_detail(self) -> QWidget:
@@ -293,8 +294,7 @@ class AddModDialog(QDialog):
         self._threads.append(pair)
         for sig in quit_signals:
             sig.connect(thread.quit)
-        thread.finished.connect(
-            lambda: self._threads.remove(pair) if pair in self._threads else None)
+        thread.finished.connect(lambda: self._thread_finished(pair))
         thread.start()
         return worker
 
@@ -571,7 +571,36 @@ class AddModDialog(QDialog):
         pix.fill(Qt.GlobalColor.transparent)
         return QIcon(pix)
 
-    def closeEvent(self, event):
+    def _thread_finished(self, pair) -> None:
+        if pair in self._threads:
+            self._threads.remove(pair)
+        self._finish_requested_close()
+
+    def _workers_running(self) -> bool:
+        return any(thread.isRunning() for thread, _worker in self._threads)
+
+    def _request_close(self) -> None:
         if self._icon_worker is not None:
             self._icon_worker.cancel()
+        if self._workers_running():
+            self._close_requested = True
+            self._close_btn.setEnabled(False)
+            self._status.setText(
+                "Closing after the current network/install operation exits safely…"
+            )
+            return
+        super().reject()
+
+    def _finish_requested_close(self) -> None:
+        if self._close_requested and not self._workers_running():
+            super().reject()
+
+    def reject(self) -> None:
+        self._request_close()
+
+    def closeEvent(self, event):
+        if self._workers_running():
+            self._request_close()
+            event.ignore()
+            return
         super().closeEvent(event)

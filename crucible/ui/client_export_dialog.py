@@ -35,8 +35,11 @@ class _ExportWorker(QObject):
 
     def run(self):
         inst, out, fmt, cfg = self._a
-        self.done.emit(client_export.export(inst, out, fmt=fmt,
-                                            include_config=cfg))
+        try:
+            result = client_export.export(inst, out, fmt=fmt, include_config=cfg)
+        except Exception as exc:
+            result = client_export.ExportResult(error=f"Unexpected export error: {exc}")
+        self.done.emit(result)
 
 
 class ClientExportDialog(QDialog):
@@ -45,6 +48,7 @@ class ClientExportDialog(QDialog):
         self._instance = instance
         self._thread = None
         self._worker = None
+        self._busy = False
         self.setWindowTitle("Create client instance")
         self.resize(470, 250)
         self._build_ui()
@@ -86,9 +90,9 @@ class ClientExportDialog(QDialog):
         self._export_btn.setObjectName("PrimaryButton")
         self._export_btn.clicked.connect(self._do_export)
         btns.addWidget(self._export_btn)
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        btns.addWidget(close_btn)
+        self._close_btn = QPushButton("Close")
+        self._close_btn.clicked.connect(self.reject)
+        btns.addWidget(self._close_btn)
         lay.addLayout(btns)
 
     def _do_export(self):
@@ -99,7 +103,9 @@ class ClientExportDialog(QDialog):
             self, "Save client instance", str(Path.home() / default), f"*.{ext}")
         if not out:
             return
+        self._busy = True
         self._export_btn.setEnabled(False)
+        self._close_btn.setEnabled(False)
         self._status.setText("Building\u2026")
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         self._thread = QThread()
@@ -109,11 +115,13 @@ class ClientExportDialog(QDialog):
         self._thread.started.connect(self._worker.run)
         self._worker.done.connect(self._on_done)
         self._worker.done.connect(self._thread.quit)
+        self._worker.done.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._thread_finished)
         self._thread.start()
 
     def _on_done(self, res):
         QApplication.restoreOverrideCursor()
-        self._export_btn.setEnabled(True)
         if res.ok:
             self._status.setText("\u2713 " + res.summary())
             QMessageBox.information(self, "Client instance",
@@ -122,3 +130,22 @@ class ClientExportDialog(QDialog):
         else:
             self._status.setText("\u26a0 " + res.summary())
             QMessageBox.warning(self, "Client instance", res.summary())
+    def _thread_finished(self):
+        self._thread = None
+        self._worker = None
+        self._busy = False
+        self._export_btn.setEnabled(True)
+        self._close_btn.setEnabled(True)
+
+    def reject(self):
+        if self._busy:
+            self._status.setText("Export is still running — wait for it to finish before closing.")
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self._busy:
+            self._status.setText("Export is still running — wait for it to finish before closing.")
+            event.ignore()
+            return
+        super().closeEvent(event)

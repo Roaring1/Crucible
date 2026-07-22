@@ -90,7 +90,10 @@ def public_host(timeout: float = 5.0) -> str:
                 "https://icanhazip.com"):
         try:
             with urllib.request.urlopen(url, timeout=timeout) as r:
-                ip = r.read().decode().strip()
+                data = r.read(129)
+                if len(data) > 128:
+                    continue
+                ip = data.decode("ascii", "strict").strip()
             if ip and ip.count(".") == 3 and all(
                 p.isdigit() and 0 <= int(p) <= 255 for p in ip.split(".")
             ):

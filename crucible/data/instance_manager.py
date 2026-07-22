@@ -19,8 +19,30 @@ from .instance_model import ServerInstance
 CONFIG_DIR     = Path.home() / ".config" / "crucible"
 REGISTRY_FILE  = CONFIG_DIR / "instances.json"
 REGISTRY_VERSION = 1
+_MAX_REGISTRY_BYTES = 16 * 1024 * 1024
 
 _SESSION_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+
+
+def validate_delete_target(path: str, *, home: Path | None = None) -> Path:
+    """Return a resolved recursive-delete target or raise ValueError."""
+    if not path or not path.strip():
+        raise ValueError("delete path is empty")
+    expanded = Path(path).expanduser()
+    if expanded.is_symlink():
+        raise ValueError("refusing to recursively delete a symbolic link")
+    try:
+        resolved = expanded.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"delete path cannot be resolved: {exc}") from exc
+    home = (home or Path.home()).expanduser().resolve()
+    if resolved in {Path("/"), home, home.parent} or len(resolved.parts) < 4:
+        raise ValueError("refusing to recursively delete an unusually broad path")
+    if not resolved.is_dir():
+        raise ValueError("delete target is not a directory")
+    if resolved.is_mount():
+        raise ValueError("refusing to recursively delete a mount point")
+    return resolved
 
 
 def validate_session_name(name: str) -> str:
@@ -61,7 +83,9 @@ class InstanceManager:
             return
 
         try:
-            raw  = self.registry_file.read_text(encoding="utf-8")
+            if self.registry_file.stat().st_size > _MAX_REGISTRY_BYTES:
+                raise OSError("registry exceeds 16 MiB safety limit")
+            raw = self.registry_file.read_text(encoding="utf-8")
             data = json.loads(raw)
             if not isinstance(data, dict):
                 raise TypeError("registry root must be a JSON object")

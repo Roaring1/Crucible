@@ -18,16 +18,17 @@ pushes updates to sidebar and instance panel.
 from __future__ import annotations
 
 import shutil
+import uuid
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QMainWindow, QSplitter, QStatusBar, QLabel,
-    QMessageBox, QApplication,
+    QMessageBox,
 )
 
-from ..data.instance_manager import InstanceManager
+from ..data.instance_manager import InstanceManager, validate_delete_target
 from ..data.instance_model import ServerInstance
 from ..process.tmux_manager import TmuxManager
 from . import theme
@@ -38,13 +39,27 @@ from .add_dialog import AddInstanceDialog
 HEALTH_CHECK_INTERVAL_MS = 5_000
 
 
+class _HealthWorker(QObject):
+    finished = pyqtSignal(object)
+
+    def __init__(self, tmux: TmuxManager, instances: list[ServerInstance]):
+        super().__init__()
+        self._tmux = tmux
+        self._instances = list(instances)
+
+    def run(self) -> None:
+        self.finished.emit(self._tmux.status_map(self._instances))
+
+
 class MainWindow(QMainWindow):
     """Crucible main window."""
 
     def __init__(self, manager: InstanceManager):
         super().__init__()
         self._manager = manager
-        self._tmux    = TmuxManager()
+        self._tmux = TmuxManager()
+        self._health_thread: QThread | None = None
+        self._health_worker: _HealthWorker | None = None
 
         self.setWindowTitle("Crucible — Minecraft Server Manager")
         self.resize(1200, 760)
@@ -108,7 +123,8 @@ class MainWindow(QMainWindow):
     # Population
 
     def _populate_sidebar(self) -> None:
-        status_map = self._tmux.status_map(self._manager.instances)
+        initial = "stopped" if self._tmux.tmux_available() else "tmux_missing"
+        status_map = {inst.id: initial for inst in self._manager.instances}
         self._sidebar.populate(self._manager.instances, status_map)
         self._update_status_bar()
 
@@ -119,18 +135,33 @@ class MainWindow(QMainWindow):
         self._health_timer.setInterval(HEALTH_CHECK_INTERVAL_MS)
         self._health_timer.timeout.connect(self._health_check)
         self._health_timer.start()
+        self._health_check()
 
     def _health_check(self) -> None:
-        status_map = self._tmux.status_map(self._manager.instances)
-        self._sidebar.update_all_statuses(status_map)
+        if self._health_thread is not None and self._health_thread.isRunning():
+            return
+        self._health_thread = QThread()
+        self._health_worker = _HealthWorker(self._tmux, self._manager.instances)
+        self._health_worker.moveToThread(self._health_thread)
+        self._health_thread.started.connect(self._health_worker.run)
+        self._health_worker.finished.connect(self._apply_health_status)
+        self._health_worker.finished.connect(self._health_thread.quit)
+        self._health_worker.finished.connect(self._health_worker.deleteLater)
+        self._health_thread.finished.connect(self._health_thread.deleteLater)
+        self._health_thread.finished.connect(self._health_thread_finished)
+        self._health_thread.start()
 
-        # Update panel if the selected instance changed status
+    @pyqtSlot(object)
+    def _apply_health_status(self, status_map) -> None:
+        self._sidebar.update_all_statuses(status_map)
         selected = self._sidebar.selected_instance()
         if selected:
-            new_status = status_map.get(selected.id, "stopped")
-            self._panel.update_status(new_status)
-
+            self._panel.update_status(status_map.get(selected.id, "stopped"))
         self._update_status_bar()
+
+    def _health_thread_finished(self) -> None:
+        self._health_thread = None
+        self._health_worker = None
 
     # Status bar
 
@@ -149,7 +180,9 @@ class MainWindow(QMainWindow):
     # Event handlers
 
     def _on_instance_selected(self, instance: ServerInstance) -> None:
-        self._panel.load(instance)
+        previous_id = self._panel.current_instance_id()
+        if not self._panel.load(instance) and previous_id:
+            QTimer.singleShot(0, lambda: self._sidebar.select_by_id(previous_id))
 
     def _on_add_requested(self) -> None:
         dlg = AddInstanceDialog(self._manager, self)
@@ -246,68 +279,109 @@ class MainWindow(QMainWindow):
         self._sidebar.update_status(instance_id, status)
 
     def _on_remove_requested(self, instance) -> None:
+        status = self._sidebar.status_for(instance.id)
+        if status in {"running", "starting", "stopping"}:
+            QMessageBox.warning(
+                self, "Stop the server first",
+                f"{instance.name} is currently {status}. Stop it completely before "
+                "removing it from Crucible or deleting its files.",
+            )
+            return
         box = QMessageBox(self)
         box.setWindowTitle("Remove Instance")
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setText(f"Remove \"{instance.name}\" from Crucible?")
+        box.setText(f'Remove "{instance.name}" from Crucible?')
         box.setInformativeText(
-            "\u2022 Remove from list keeps the server files on disk "
-            "(you can re-add them later).\n"
-            "\u2022 Delete files too permanently removes the entire server "
-            f"folder:\n   {instance.path}\n\nThis cannot be undone.")
-        box.addButton("Remove from list",
-                                   QMessageBox.ButtonRole.AcceptRole)
-        delete_btn = box.addButton("Delete files too",
-                                   QMessageBox.ButtonRole.DestructiveRole)
+            "• Remove from list keeps every server file on disk.\n"
+            "• Delete server files permanently removes worlds, mods, and configs "
+            f"from:\n   {instance.path}\n\n"
+            "Backups in ~/.local/share/crucible-backups are kept."
+        )
+        remove_btn = box.addButton("Remove from list", QMessageBox.ButtonRole.AcceptRole)
+        delete_btn = box.addButton("Delete server files", QMessageBox.ButtonRole.DestructiveRole)
         cancel_btn = box.addButton(QMessageBox.StandardButton.Cancel)
         box.setDefaultButton(cancel_btn)
         box.exec()
         clicked = box.clickedButton()
-
         if clicked is cancel_btn or clicked is None:
             return
-
-        path = getattr(instance, "path", "") or ""
-
-        if clicked is delete_btn:
-            resolved = Path(path).expanduser().resolve() if path else None
-            forbidden = {Path("/"), Path.home(), Path.home().parent}
-            if resolved is None or resolved in forbidden or len(resolved.parts) < 4:
+        if not self._panel.prepare_to_remove(instance):
+            return
+        original_index = next(
+            (i for i, item in enumerate(self._manager.instances) if item.id == instance.id),
+            len(self._manager.instances),
+        )
+        if clicked is remove_btn:
+            try:
+                self._manager.remove_instance(instance.id)
+            except Exception as exc:
+                QMessageBox.critical(self, "Remove failed", f"Could not update the instance registry:\n{exc}")
+                return
+            self._sidebar.remove_instance(instance.id)
+        elif clicked is delete_btn:
+            try:
+                target = validate_delete_target(instance.path)
+            except ValueError as exc:
                 QMessageBox.critical(
                     self, "Unsafe delete blocked",
-                    f"Crucible refused to recursively delete this unusually broad path:\n\n{path}\n\n"
-                    "Remove the instance from the list instead and inspect the path manually.",
+                    f"Crucible refused to recursively delete:\n\n{instance.path}\n\n"
+                    f"{exc}\n\nRemove it from the list instead and inspect the path manually.",
                 )
                 return
-            # Second confirmation for the irreversible option.
             confirm = QMessageBox.warning(
-                self, "Delete files from disk",
-                f"Permanently delete ALL files for \"{instance.name}\"?\n\n"
-                f"{path}\n\nThis includes worlds, configs and backups. "
-                "This cannot be undone.",
+                self, "Permanently delete server files",
+                f'Permanently delete all server files for "{instance.name}"?\n\n'
+                f"{target}\n\nWorlds, mods, and configs will be deleted. External "
+                "Crucible backups are kept. This cannot be undone.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel,
             )
             if confirm != QMessageBox.StandardButton.Yes:
                 return
-
-        # Always unregister first so the registry never points at deleted files.
-        self._manager.remove_instance(instance.id)
-        self._sidebar.remove_instance(instance.id)
-
-        if clicked is delete_btn and path:
+            quarantine = target.with_name(f".{target.name}.crucible-delete-{uuid.uuid4().hex}")
             try:
-                shutil.rmtree(path, ignore_errors=False)
-            except OSError as e:
+                target.rename(quarantine)
+            except OSError as exc:
+                QMessageBox.critical(self, "Delete failed", f"Could not safely stage the server folder for deletion:\n{exc}")
+                return
+            try:
+                self._manager.remove_instance(instance.id)
+            except Exception as exc:
+                if all(item.id != instance.id for item in self._manager.instances):
+                    self._manager.instances.insert(original_index, instance)
+                    try:
+                        self._manager.save()
+                    except OSError:
+                        pass
+                try:
+                    quarantine.rename(target)
+                except OSError:
+                    pass
+                QMessageBox.critical(self, "Delete cancelled", f"Could not update the registry, so Crucible restored the folder:\n{exc}")
+                return
+            try:
+                shutil.rmtree(quarantine, ignore_errors=False)
+            except OSError as exc:
+                try:
+                    if quarantine.exists() and not target.exists():
+                        quarantine.rename(target)
+                except OSError:
+                    pass
+                if all(item.id != instance.id for item in self._manager.instances):
+                    self._manager.instances.insert(original_index, instance)
+                    try:
+                        self._manager.save()
+                    except OSError:
+                        pass
                 QMessageBox.critical(
-                    self, "Delete failed",
-                    f"Removed \"{instance.name}\" from the list, but the files "
-                    f"could not be fully deleted:\n\n{e}\n\n"
-                    "You may need to delete the folder manually.")
-            else:
-                self.statusBar().showMessage(
-                    f"Deleted \"{instance.name}\" and its files from disk", 5000)
-
+                    self, "Delete incomplete",
+                    f"Deletion failed and Crucible restored the instance where possible:\n{exc}\n\nInspect: {target}",
+                )
+                return
+            self._sidebar.remove_instance(instance.id)
+            self.statusBar().showMessage(f'Deleted "{instance.name}" server files; external backups kept', 5000)
+        if self._sidebar.selected_instance() is None:
+            self._panel.clear()
         self._update_status_bar()
 
     # Drag and drop import
@@ -329,45 +403,42 @@ class MainWindow(QMainWindow):
             self._import_dropped_path(Path(p))
 
     def _import_dropped_path(self, path: Path) -> None:
-        """Import a dropped Prism instance folder, pack archive, or server dir."""
+        """Import a dropped Prism/archive through the async Add Server flow."""
         if not path.exists():
             return
-        name = path.stem if path.is_file() else path.name
         archive = path.is_file() and path.suffix.lower() in (".zip", ".mrpack")
         is_prism = path.is_dir() and (
-            (path / "mmc-pack.json").exists() or (path / "instance.cfg").exists())
+            (path / "mmc-pack.json").exists() or (path / "instance.cfg").exists()
+        )
         is_server = path.is_dir() and (
             (path / "server.properties").exists()
             or (path / "eula.txt").exists()
-            or (path / "mods").is_dir())
+            or (path / "mods").is_dir()
+        )
 
+        if archive or is_prism:
+            dlg = AddInstanceDialog(self._manager, self)
+            QTimer.singleShot(0, lambda: dlg.begin_import_source(str(path)))
+            if dlg.exec() and dlg.result_instance is not None:
+                inst = dlg.result_instance
+                status = self._tmux.get_status(inst)
+                self._sidebar.add_instance(inst, status)
+                self._sidebar.select_by_id(inst.id)
+                self._update_status_bar()
+            return
+
+        if not is_server:
+            QMessageBox.information(
+                self, "Drag and drop",
+                "Drop a Prism/MultiMC instance folder, a .zip/.mrpack modpack, "
+                "or a Minecraft server folder to import it.",
+            )
+            return
         try:
-            if archive or is_prism:
-                from ..importers.prism import import_prism_source
-                target = Path.home() / "CrucibleServers" / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-                try:
-                    import_prism_source(str(path), str(target))
-                finally:
-                    QApplication.restoreOverrideCursor()
-                inst = self._manager.add_instance(str(target), name)
-            elif is_server:
-                inst = self._manager.add_instance(str(path), name)
-            else:
-                QMessageBox.information(
-                    self, "Drag and drop",
-                    "Drop a Prism/MultiMC instance folder, a .zip/.mrpack "
-                    "modpack, or a Minecraft server folder to import it.")
-                return
-        except ValueError as e:
-            QMessageBox.warning(self, "Import failed", str(e))
+            inst = self._manager.add_instance(str(path), path.name)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Import failed", str(exc))
             return
-        except Exception as e:  # noqa: BLE001 - surface import failure to user
-            QMessageBox.critical(self, "Import failed",
-                                 f"Could not import \"{name}\":\n\n{e}")
-            return
-
         status = self._tmux.get_status(inst)
         self._sidebar.add_instance(inst, status)
         self._sidebar.select_by_id(inst.id)
@@ -385,5 +456,14 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self._health_timer.stop()
+        if self._health_thread is not None and self._health_thread.isRunning():
+            self._health_thread.quit()
+            if not self._health_thread.wait(3000):
+                QMessageBox.information(
+                    self, "Health check finishing",
+                    "Wait a moment for the tmux health check to finish, then close again.",
+                )
+                event.ignore()
+                return
         self._panel.shutdown()
         super().closeEvent(event)

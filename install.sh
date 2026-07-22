@@ -1,367 +1,194 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────────────────────
-# Crucible v0.6.0 — Install Script
-# Target: Nobara 41–43 / Fedora (dnf) · Python 3.11+
-#
-# Works from ANYWHERE — Downloads, Desktop, /tmp, it doesn't matter.
-# The script copies itself to the right place; you can delete the zip after.
-#
-# Usage after extracting the zip:
-#   bash crucible_v0_3_4/install.sh
-#
-# Or the one-liner (requires curl):
-#   bash <(curl -sL https://raw.githubusercontent.com/Roaring1/Crucible/main/get-crucible.sh)
-# ─────────────────────────────────────────────────────────────────────────────
+# Crucible v0.6.0 installer — Nobara/Fedora, Python 3.11+
+set -Eeuo pipefail
 
-set -euo pipefail
-
+VERSION="0.6.0"
 BOLD="\033[1m"; GREEN="\033[32m"; YELLOW="\033[33m"
 RED="\033[31m"; CYAN="\033[36m"; DIM="\033[2m"; RESET="\033[0m"
+ok()   { printf '  %b✓%b  %s\n' "$GREEN" "$RESET" "$*"; }
+warn() { printf '  %b⚠%b  %s\n' "$YELLOW" "$RESET" "$*"; }
+err()  { printf '  %b✗%b  %s\n' "$RED" "$RESET" "$*" >&2; }
+info() { printf '  %b·%b  %s\n' "$CYAN" "$RESET" "$*"; }
+step() { printf '\n%b── %s%b\n' "$BOLD" "$*" "$RESET"; }
 
-ok()   { echo -e "  ${GREEN}✓${RESET}  $*"; }
-warn() { echo -e "  ${YELLOW}⚠${RESET}  $*"; }
-err()  { echo -e "  ${RED}✗${RESET}  $*" >&2; }
-info() { echo -e "  ${CYAN}·${RESET}  $*"; }
-step() { echo -e "\n${BOLD}── $*${RESET}"; }
-
-# Where the source lives RIGHT NOW (wherever the zip was extracted)
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Where it will live permanently (hidden, out of the way)
-APP_HOME="$HOME/.local/share/crucible"
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+APP_PARENT="$HOME/.local/share"
+APP_HOME="$APP_PARENT/crucible"
 LOCAL_BIN="$HOME/.local/bin"
 APPS_DIR="$HOME/.local/share/applications"
-# Backups live OUTSIDE APP_HOME so reinstalls can never delete them
+ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
 BACKUP_HOME="$HOME/.local/share/crucible-backups"
+STAGE=""
+OLD_APP=""
+COMMITTED=0
 
-echo -e ""
-echo -e "${BOLD}${CYAN}  ╔════════════════════════════════════╗"
-echo -e "  ║   C R U C I B L E   v0.6.0        ║"
-echo -e "  ║   GTNH Server Manager              ║"
-echo -e "  ║   Nobara 41–43  ·  Python 3.11+    ║"
-echo -e "  ╚════════════════════════════════════╝${RESET}"
-echo -e ""
+cleanup() {
+    local code=$?
+    if [[ -n "$STAGE" && -d "$STAGE" ]]; then
+        rm -rf -- "$STAGE"
+    fi
+    if [[ $code -ne 0 && $COMMITTED -eq 0 && -n "$OLD_APP" && -d "$OLD_APP" ]]; then
+        rm -rf -- "$APP_HOME"
+        mv -- "$OLD_APP" "$APP_HOME" || true
+        ln -sfn "$APP_HOME/bin/crucible" "$LOCAL_BIN/crucible" || true
+        warn "Restored the previous Crucible installation after failure."
+    fi
+    return "$code"
+}
+trap cleanup EXIT
+
+printf '\n%bCrucible v%s — safe installer / updater%b\n\n' "$BOLD$CYAN" "$VERSION" "$RESET"
 info "Source: $HERE"
-info "Will install to: $APP_HOME"
-echo -e ""
+info "Install location: $APP_HOME"
 
-# ── Python ────────────────────────────────────────────────────────────────────
-step "1 / 5  Python"
+[[ -f "$HERE/pyproject.toml" && -f "$HERE/crucible/__init__.py" ]] || {
+    err "This folder is not a complete Crucible source package."
+    exit 1
+}
+[[ -f "$HERE/crucible/assets/crucible.png" ]] || {
+    err "Required icon is missing: crucible/assets/crucible.png"
+    exit 1
+}
 
+step "1 / 6  Python"
 PYTHON=""
-for c in python3.12 python3.11 python3; do
-    if command -v "$c" &>/dev/null; then
-        _maj=$("$c" -c "import sys; print(sys.version_info.major)")
-        _min=$("$c" -c "import sys; print(sys.version_info.minor)")
-        if [[ "$_maj" -ge 3 && "$_min" -ge 11 ]]; then
-            PYTHON="$c"; ok "Using $c  ($("$c" --version))"; break
-        fi
+for candidate in python3.13 python3.12 python3.11 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'; then
+        PYTHON="$candidate"
+        break
     fi
 done
+[[ -n "$PYTHON" ]] || {
+    err "Python 3.11 or newer is required. On Nobara/Fedora: sudo dnf install python3"
+    exit 1
+}
+ok "Using $($PYTHON --version 2>&1)"
 
-[[ -z "$PYTHON" ]] && { err "Python 3.11+ required.  sudo dnf install python3.12"; exit 1; }
-
-# ── pip ───────────────────────────────────────────────────────────────────────
-step "2 / 5  pip"
-"$PYTHON" -m pip --version &>/dev/null || { warn "Installing pip…"; sudo dnf install -y python3-pip; }
-ok "pip ready"
-
-# ── PyQt6 ────────────────────────────────────────────────────────────────────
-step "3 / 5  PyQt6"
-if "$PYTHON" -c "import PyQt6" &>/dev/null 2>&1; then
-    ok "PyQt6 already installed"
-else
-    info "Installing PyQt6…"
-    sudo dnf install -y python3-pyqt6 &>/dev/null 2>&1 \
-        && ok "Installed python3-pyqt6 via dnf" \
-        || { "$PYTHON" -m pip install --user PyQt6 && ok "Installed PyQt6 via pip"; }
-fi
-
-# ── Install Crucible ──────────────────────────────────────────────────────────
-step "4 / 5  Installing Crucible"
-
-# Remove any existing install (editable or otherwise)
-"$PYTHON" -m pip uninstall -y crucible &>/dev/null 2>&1 || true
-
-# Migrate backups from the old location (inside APP_HOME) to the safe location
-if [[ -d "$APP_HOME/backups" && ! -d "$BACKUP_HOME" ]]; then
-    info "Migrating backups from old location to $BACKUP_HOME …"
-    mv "$APP_HOME/backups" "$BACKUP_HOME"
-    ok "Backups migrated to $BACKUP_HOME"
-fi
-
-# Copy source to its permanent home
-if [[ -d "$APP_HOME" ]]; then
-    warn "Replacing existing install at $APP_HOME"
-    rm -rf "$APP_HOME"
-fi
-cp -r "$HERE" "$APP_HOME"
-ok "Source copied to $APP_HOME"
-
-# Ensure the backup directory exists (safe location, never wiped by installs)
-mkdir -p "$BACKUP_HOME"
-ok "Backup store confirmed at $BACKUP_HOME"
-
-# Install for real — not editable, so the zip/extracted folder is now disposable
-"$PYTHON" -m pip install --user --quiet "$APP_HOME"
-ok "Crucible v0.6.0 installed"
-
-# PATH guard
-if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
-    warn "~/.local/bin not in PATH yet — adding to ~/.bashrc"
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-    export PATH="$LOCAL_BIN:$PATH"
-    ok "Added to ~/.bashrc  (takes effect on next login / source ~/.bashrc)"
-else
-    ok "PATH is good"
-fi
-
-# ── Desktop launcher ──────────────────────────────────────────────────────────
-step "5 / 5  App launcher entry"
-mkdir -p "$APPS_DIR"
-
-# Install icon into the XDG icon theme dirs so KDE's icon-only task manager
-# and app search can find it regardless of where the app itself is installed.
-ICON_SRC="$APP_HOME/crucible/assets/crucible.png"
-ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
-mkdir -p "$ICON_DIR"
-cp "$ICON_SRC" "$ICON_DIR/crucible.png"
-# Refresh icon cache if gtk-update-icon-cache is available (KDE also reads this)
-if command -v gtk-update-icon-cache &>/dev/null; then
-    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
-fi
-
-cat > "$APPS_DIR/crucible.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=Crucible
-GenericName=GTNH Server Manager
-Comment=GT: New Horizons Server Manager
-Exec=$LOCAL_BIN/crucible gui
-Terminal=false
-Categories=Game;Utility;
-Keywords=GTNH;Minecraft;Server;Manager;
-# StartupWMClass must match app.setDesktopFileName() value in __main__.py
-StartupWMClass=crucible
-StartupNotify=true
-# Use icon name (installed above) rather than absolute path —
-# this is what KDE's task manager and app search index
-Icon=crucible
-EOF
-
-ok "Added to app launcher  (search 'Crucible' in KDE)"
-
-# ── tmux check ────────────────────────────────────────────────────────────────
-echo ""
-if command -v tmux &>/dev/null; then
-    ok "tmux $(tmux -V) found"
-else
-    warn "tmux not found — install with: sudo dnf install tmux"
-fi
-
-# ── Done ──────────────────────────────────────────────────────────────────────
-echo -e ""
-echo -e "${BOLD}${GREEN}┌─────────────────────────────────────────────────────┐"
-echo -e "│   Done!  Crucible v0.6.0 is installed.              │"
-echo -e "└─────────────────────────────────────────────────────┘${RESET}"
-echo -e ""
-echo -e "  ${BOLD}Launch:${RESET}  search 'Crucible' in your app launcher"
-echo -e "           ${DIM}or${RESET}  ${CYAN}crucible gui${RESET}  in a terminal"
-echo -e ""
-echo -e "  ${BOLD}First time?${RESET}  Click  ${CYAN}+ Add Server${RESET}  in the GUI"
-echo -e "               ${DIM}and browse to your GTNH server folder${RESET}"
-echo -e ""
-echo -e "  ${DIM}Backups are stored safely at: $BACKUP_HOME${RESET}"
-echo -e "  ${DIM}They will never be deleted by future reinstalls.${RESET}"
-echo -e ""
-echo -e "  ${DIM}You can now safely delete the zip and extracted folder.${RESET}"
-echo -e "  ${DIM}Crucible lives at: $APP_HOME${RESET}"
-echo -e ""
-
-# ── Offer to auto-delete the extraction folder ────────────────────────────────
-# Only offer if HERE is somewhere throwaway (not already in APP_HOME)
-if [[ "$HERE" != "$APP_HOME"* ]]; then
-    PARENT="$(dirname "$HERE")"
-    echo -e "  ${DIM}Extracted folder:  $HERE${RESET}"
-    read -rp "  Delete it now? [Y/n]: " _ans
-    _ans="${_ans:-Y}"
-    if [[ "$_ans" =~ ^[Yy]$ ]]; then
-        rm -rf "$HERE"
-        # Also remove parent if it's now empty (e.g. a temp unzip dir)
-        rmdir "$PARENT" 2>/dev/null || true
-        ok "Cleaned up extraction folder"
+step "2 / 6  System dependencies"
+if ! "$PYTHON" -m venv --help >/dev/null 2>&1; then
+    if command -v dnf >/dev/null 2>&1; then
+        info "Installing Python virtual-environment support…"
+        sudo dnf install -y python3
     else
-        info "Kept at $HERE — you can delete it any time."
+        err "Python's venv module is required. Install the Python venv package for this distribution."
+        exit 1
+    fi
+fi
+if ! "$PYTHON" -c 'import PyQt6' >/dev/null 2>&1; then
+    if command -v dnf >/dev/null 2>&1; then
+        info "Installing Fedora/Nobara PyQt6 package…"
+        sudo dnf install -y python3-pyqt6
+    else
+        warn "System PyQt6 not found; the isolated environment will install it with pip."
+    fi
+fi
+if ! command -v tmux >/dev/null 2>&1; then
+    if command -v dnf >/dev/null 2>&1; then
+        info "Installing tmux…"
+        sudo dnf install -y tmux
+    else
+        warn "tmux is required to run servers; install it with your package manager."
     fi
 fi
 
-echo -e ""
+step "3 / 6  Stage and validate"
+mkdir -p -- "$APP_PARENT" "$LOCAL_BIN" "$APPS_DIR" "$ICON_DIR" "$BACKUP_HOME"
+STAGE="$(mktemp -d "$APP_PARENT/.crucible-stage.XXXXXX")"
+mkdir -p -- "$STAGE/app/source"
+# Copy only distributable source. This never copies a checkout's .git directory,
+# caches, build output, or a previous virtual environment.
+tar -C "$HERE" \
+    --exclude='./.git' --exclude='./.mypy_cache' --exclude='./.ruff_cache' \
+    --exclude='./.pytest_cache' --exclude='./build' --exclude='./dist' \
+    --exclude='./*.egg-info' --exclude='__pycache__' --exclude='*.pyc' \
+    -cf - . | tar -C "$STAGE/app/source" -xf -
 
-
+"$PYTHON" -m venv --system-site-packages "$STAGE/app/venv"
+VENV_PY="$STAGE/app/venv/bin/python"
+VENV_PIP="$STAGE/app/venv/bin/pip"
+if ! "$VENV_PY" -c 'import PyQt6' >/dev/null 2>&1; then
+    info "Installing PyQt6 into Crucible's isolated environment…"
+    "$VENV_PIP" install --disable-pip-version-check 'PyQt6>=6.5'
+fi
+mkdir -p "$STAGE/app/bin"
+cat > "$STAGE/app/bin/crucible" <<'EOF'
+#!/usr/bin/env bash
 set -euo pipefail
+APP_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export PYTHONPATH="$APP_ROOT/source${PYTHONPATH:+:$PYTHONPATH}"
+exec "$APP_ROOT/venv/bin/python" -m crucible "$@"
+EOF
+chmod 0755 "$STAGE/app/bin/crucible"
+"$VENV_PY" -m compileall -q "$STAGE/app/source/crucible"
+"$STAGE/app/bin/crucible" --help >/dev/null
+PYTHONPATH="$STAGE/app/source${PYTHONPATH:+:$PYTHONPATH}" \
+    "$VENV_PY" -c 'import PyQt6; import crucible; print(crucible.__version__)' \
+    | grep -Fx "$VERSION" >/dev/null
+ok "Staged copy passed import, compile, and CLI smoke tests"
 
-BOLD="\033[1m"; GREEN="\033[32m"; YELLOW="\033[33m"
-RED="\033[31m"; CYAN="\033[36m"; DIM="\033[2m"; RESET="\033[0m"
-
-ok()   { echo -e "  ${GREEN}✓${RESET}  $*"; }
-warn() { echo -e "  ${YELLOW}⚠${RESET}  $*"; }
-err()  { echo -e "  ${RED}✗${RESET}  $*" >&2; }
-info() { echo -e "  ${CYAN}·${RESET}  $*"; }
-step() { echo -e "\n${BOLD}── $*${RESET}"; }
-
-# Where the source lives RIGHT NOW (wherever the zip was extracted)
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Where it will live permanently (hidden, out of the way)
-APP_HOME="$HOME/.local/share/crucible"
-LOCAL_BIN="$HOME/.local/bin"
-APPS_DIR="$HOME/.local/share/applications"
-
-echo -e ""
-echo -e "${BOLD}${CYAN}  ╔════════════════════════════════════╗"
-echo -e "  ║   C R U C I B L E   v0.3.3        ║"
-echo -e "  ║   GTNH Server Manager              ║"
-echo -e "  ║   Nobara 41–43  ·  Python 3.11+    ║"
-echo -e "  ╚════════════════════════════════════╝${RESET}"
-echo -e ""
-info "Source: $HERE"
-info "Will install to: $APP_HOME"
-echo -e ""
-
-# ── Python ────────────────────────────────────────────────────────────────────
-step "1 / 5  Python"
-
-PYTHON=""
-for c in python3.12 python3.11 python3; do
-    if command -v "$c" &>/dev/null; then
-        _maj=$("$c" -c "import sys; print(sys.version_info.major)")
-        _min=$("$c" -c "import sys; print(sys.version_info.minor)")
-        if [[ "$_maj" -ge 3 && "$_min" -ge 11 ]]; then
-            PYTHON="$c"; ok "Using $c  ($("$c" --version))"; break
-        fi
-    fi
-done
-
-[[ -z "$PYTHON" ]] && { err "Python 3.11+ required.  sudo dnf install python3.12"; exit 1; }
-
-# ── pip ───────────────────────────────────────────────────────────────────────
-step "2 / 5  pip"
-"$PYTHON" -m pip --version &>/dev/null || { warn "Installing pip…"; sudo dnf install -y python3-pip; }
-ok "pip ready"
-
-# ── PyQt6 ────────────────────────────────────────────────────────────────────
-step "3 / 5  PyQt6"
-if "$PYTHON" -c "import PyQt6" &>/dev/null 2>&1; then
-    ok "PyQt6 already installed"
-else
-    info "Installing PyQt6…"
-    sudo dnf install -y python3-pyqt6 &>/dev/null 2>&1 \
-        && ok "Installed python3-pyqt6 via dnf" \
-        || { "$PYTHON" -m pip install --user PyQt6 && ok "Installed PyQt6 via pip"; }
+step "4 / 6  Preserve data and replace atomically"
+# Backups are outside APP_HOME. Copy any legacy in-tree backups without
+# overwriting files already migrated by an earlier release.
+if [[ -d "$APP_HOME/backups" ]]; then
+    cp -a -n "$APP_HOME/backups/." "$BACKUP_HOME/" || true
+    ok "Legacy backups copied to $BACKUP_HOME"
 fi
-
-# ── Install Crucible ──────────────────────────────────────────────────────────
-step "4 / 5  Installing Crucible"
-
-# Remove any existing install (editable or otherwise)
-"$PYTHON" -m pip uninstall -y crucible &>/dev/null 2>&1 || true
-
-# Copy source to its permanent home (independent of where you extracted the zip)
-if [[ -d "$APP_HOME" ]]; then
-    warn "Replacing existing install at $APP_HOME"
-    rm -rf "$APP_HOME"
+if [[ -e "$APP_HOME" ]]; then
+    OLD_APP="$APP_PARENT/.crucible-previous.$$"
+    mv -- "$APP_HOME" "$OLD_APP"
 fi
-cp -r "$HERE" "$APP_HOME"
-ok "Source copied to $APP_HOME"
-
-# Install for real — not editable, so the zip/extracted folder is now disposable
-"$PYTHON" -m pip install --user --quiet "$APP_HOME"
-ok "Crucible v0.3.3 installed"
-
-# PATH guard
-if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
-    warn "~/.local/bin not in PATH yet — adding to ~/.bashrc"
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-    export PATH="$LOCAL_BIN:$PATH"
-    ok "Added to ~/.bashrc  (takes effect on next login / source ~/.bashrc)"
-else
-    ok "PATH is good"
+if ! mv -- "$STAGE/app" "$APP_HOME"; then
+    err "Could not publish the staged installation."
+    [[ -n "$OLD_APP" && -d "$OLD_APP" ]] && mv -- "$OLD_APP" "$APP_HOME"
+    exit 1
 fi
+# Smoke-test the final path before deleting the rollback copy.
+"$APP_HOME/bin/crucible" --help >/dev/null
+ln -sfn "$APP_HOME/bin/crucible" "$LOCAL_BIN/.crucible.new"
+mv -Tf "$LOCAL_BIN/.crucible.new" "$LOCAL_BIN/crucible"
+ok "Crucible v$VERSION published"
 
-# ── Desktop launcher ──────────────────────────────────────────────────────────
-step "5 / 5  App launcher entry"
-mkdir -p "$APPS_DIR"
-
-# Install icon into the XDG icon theme dirs so KDE's icon-only task manager
-# and app search can find it regardless of where the app itself is installed.
-ICON_SRC="$APP_HOME/crucible/assets/crucible.png"
-ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
-mkdir -p "$ICON_DIR"
-cp "$ICON_SRC" "$ICON_DIR/crucible.png"
-# Refresh icon cache if gtk-update-icon-cache is available (KDE also reads this)
-if command -v gtk-update-icon-cache &>/dev/null; then
-    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
-fi
-
+step "5 / 6  Desktop integration"
+cp -- "$APP_HOME/source/crucible/assets/crucible.png" "$ICON_DIR/crucible.png"
 cat > "$APPS_DIR/crucible.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Crucible
-GenericName=GTNH Server Manager
-Comment=GT: New Horizons Server Manager
-Exec=$LOCAL_BIN/crucible gui
+GenericName=Minecraft Server Manager
+Comment=Manage Minecraft dedicated servers
+Exec=$APP_HOME/bin/crucible gui
+TryExec=$APP_HOME/bin/crucible
 Terminal=false
 Categories=Game;Utility;
-Keywords=GTNH;Minecraft;Server;Manager;
-# StartupWMClass must match app.setDesktopFileName() value in __main__.py
+Keywords=Minecraft;Server;GTNH;Manager;
 StartupWMClass=crucible
 StartupNotify=true
-# Use icon name (installed above) rather than absolute path —
-# this is what KDE's task manager and app search index
 Icon=crucible
 EOF
+chmod 0644 "$APPS_DIR/crucible.desktop"
+command -v gtk-update-icon-cache >/dev/null 2>&1 && \
+    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+command -v update-desktop-database >/dev/null 2>&1 && \
+    update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
+ok "KDE application entry and icon installed"
 
-ok "Added to app launcher  (search 'Crucible' in KDE)"
-
-# ── tmux check ────────────────────────────────────────────────────────────────
-echo ""
-if command -v tmux &>/dev/null; then
-    ok "tmux $(tmux -V) found"
-else
-    warn "tmux not found — install with: sudo dnf install tmux"
-fi
-
-# ── Done ──────────────────────────────────────────────────────────────────────
-echo -e ""
-echo -e "${BOLD}${GREEN}┌─────────────────────────────────────────────────────┐"
-echo -e "│   Done!  Crucible is installed.                     │"
-echo -e "└─────────────────────────────────────────────────────┘${RESET}"
-echo -e ""
-echo -e "  ${BOLD}Launch:${RESET}  search 'Crucible' in your app launcher"
-echo -e "           ${DIM}or${RESET}  ${CYAN}crucible gui${RESET}  in a terminal"
-echo -e ""
-echo -e "  ${BOLD}First time?${RESET}  Click  ${CYAN}+ Add Server${RESET}  in the GUI"
-echo -e "               ${DIM}and browse to your GTNH server folder${RESET}"
-echo -e ""
-echo -e "  ${DIM}You can now safely delete the zip and extracted folder.${RESET}"
-echo -e "  ${DIM}Crucible lives at: $APP_HOME${RESET}"
-echo -e ""
-
-# ── Offer to auto-delete the extraction folder ────────────────────────────────
-# Only offer if HERE is somewhere throwaway (not already in APP_HOME)
-if [[ "$HERE" != "$APP_HOME"* ]]; then
-    PARENT="$(dirname "$HERE")"
-    echo -e "  ${DIM}Extracted folder:  $HERE${RESET}"
-    read -rp "  Delete it now? [Y/n]: " _ans
-    _ans="${_ans:-Y}"
-    if [[ "$_ans" =~ ^[Yy]$ ]]; then
-        rm -rf "$HERE"
-        # Also remove parent if it's now empty (e.g. a temp unzip dir)
-        rmdir "$PARENT" 2>/dev/null || true
-        ok "Cleaned up extraction folder"
-    else
-        info "Kept at $HERE — you can delete it any time."
+step "6 / 6  PATH and final check"
+if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
+    if ! grep -Fqx 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.bashrc" 2>/dev/null; then
+        printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$HOME/.bashrc"
     fi
+    warn "Added ~/.local/bin to ~/.bashrc; it applies in new terminals."
+fi
+[[ -x "$APP_HOME/bin/crucible" ]] || { err "Final launcher check failed"; exit 1; }
+command -v tmux >/dev/null 2>&1 && ok "tmux $(tmux -V)" || warn "Install tmux before starting a server."
+COMMITTED=1
+if [[ -n "$OLD_APP" && -d "$OLD_APP" ]]; then
+    rm -rf -- "$OLD_APP"
+    OLD_APP=""
 fi
 
-echo -e ""
+printf '\n%bCrucible v%s is installed.%b\n' "$BOLD$GREEN" "$VERSION" "$RESET"
+printf '  Launch from KDE, or run: %s\n' "$LOCAL_BIN/crucible gui"
+printf '  Backups: %s\n' "$BACKUP_HOME"
+printf '  Installed source: %s\n' "$APP_HOME/source"
+printf '  This installer never deletes the folder it was launched from.\n\n'

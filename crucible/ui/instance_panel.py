@@ -83,6 +83,7 @@ class InstancePanel(QWidget):
         self._watcher:  LogWatcher | None     = None
         self._w_thread: QThread | None        = None
         self._current_status: str             = "stopped"
+        self._ip_request_generation: int       = 0
         self._watchdog:       Watchdog | None = None
         self._wd_thread:      QThread | None  = None
 
@@ -245,39 +246,46 @@ class InstancePanel(QWidget):
         self._set_buttons_enabled(False)
 
     def _copy_external_ip(self) -> None:
-        """Fetch the external IP (using ipify) and copy it to clipboard."""
-        import urllib.request
+        """Fetch the public IP without letting a stale result target another server."""
+        inst = self._instance
+        if inst is None:
+            return
+        self._ip_request_generation += 1
+        generation = self._ip_request_generation
+        instance_id = inst.id
+        try:
+            port = inst.server_port()
+        except Exception:
+            port = "25565"
         self._btn_ip.setText("…")
         self._btn_ip.setEnabled(False)
-        def _fetch():
-            try:
-                with urllib.request.urlopen("https://api.ipify.org", timeout=5) as r:
-                    return r.read().decode().strip()
-            except Exception:
-                return None
-        # Run in a thread so we don't block the UI
+
         import threading
         def _worker():
-            ip = _fetch()
+            try:
+                from ..data.netinfo import public_host
+                ip = public_host(timeout=5) or ""
+            except Exception:
+                ip = ""
             from PyQt6.QtCore import QMetaObject, Q_ARG
-            QMetaObject.invokeMethod(self, "_on_ip_fetched",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, ip or ""))
+            QMetaObject.invokeMethod(
+                self, "_on_ip_fetched", Qt.ConnectionType.QueuedConnection,
+                Q_ARG(int, generation), Q_ARG(str, instance_id),
+                Q_ARG(str, ip), Q_ARG(str, port),
+            )
         threading.Thread(target=_worker, daemon=True).start()
 
-    @pyqtSlot(str)
-    def _on_ip_fetched(self, ip: str) -> None:
+    @pyqtSlot(int, str, str, str)
+    def _on_ip_fetched(self, generation: int, instance_id: str,
+                       ip: str, port: str) -> None:
+        if (
+            generation != self._ip_request_generation
+            or self._instance is None
+            or self._instance.id != instance_id
+        ):
+            return
         self._btn_ip.setEnabled(True)
         if ip:
-            # Read server port via the model helper (guards a missing instance
-            # and an unreadable/absent server.properties internally).
-            port = "25565"
-            try:
-                if self._instance is not None:
-                    port = self._instance.server_port()
-            except Exception:
-                port = "25565"
-            # Always include the port so a non-default port isn't silently lost.
             addr = f"{ip}:{port}"
             try:
                 QApplication.clipboard().setText(addr)
@@ -285,15 +293,23 @@ class InstancePanel(QWidget):
                 pass
             self._btn_ip.setText("✓  Copied!")
             self._btn_ip.setToolTip(f"Copied {addr} to clipboard")
-            # Reset label after 2s
-            QTimer.singleShot(2000, lambda: self._btn_ip.setText("⧉  Copy IP"))
         else:
             self._btn_ip.setText("✗  Failed")
             self._btn_ip.setToolTip(
                 "Could not fetch your public IP (no internet?). "
                 "Players on your LAN can still use your local IP."
             )
-            QTimer.singleShot(2000, lambda: self._btn_ip.setText("⧉  Copy IP"))
+        QTimer.singleShot(
+            2000, lambda: self._reset_ip_button(generation, instance_id)
+        )
+
+    def _reset_ip_button(self, generation: int, instance_id: str) -> None:
+        if (
+            generation == self._ip_request_generation
+            and self._instance is not None
+            and self._instance.id == instance_id
+        ):
+            self._btn_ip.setText("⧉  Copy IP")
 
     def _show_empty(self) -> None:
         self._name_label.setText("No server selected")
@@ -304,11 +320,25 @@ class InstancePanel(QWidget):
 
     # Public API
 
-    def load(self, instance: ServerInstance) -> None:
-        """Switch the panel to display the given instance."""
+    def load(self, instance: ServerInstance) -> bool:
+        """Switch panels safely; return False when the old view must remain."""
+        if self._instance is not None and self._instance.id == instance.id:
+            return True
+        if self._instance is not None and self.has_active_operations():
+            QMessageBox.information(
+                self, "Operation in progress",
+                "Wait for the current start, stop, restart, backup, setup, or mod "
+                "operation to finish before switching servers.",
+            )
+            return False
+        if self._instance is not None and not self._config.confirm_discard_or_save():
+            return False
         self._notes.flush()
         self._stop_watcher()
         self._tps_timer.stop()
+        self._ip_request_generation += 1
+        self._btn_ip.setEnabled(True)
+        self._btn_ip.setText("⧉  Copy IP")
 
         self._instance = instance
         self._name_label.setText(instance.name)
@@ -336,7 +366,37 @@ class InstancePanel(QWidget):
         self._system.load(instance)
 
         # Start log watcher
+        self._tabs.setEnabled(True)
         self._start_watcher(instance)
+        return True
+
+    def current_instance_id(self) -> str | None:
+        return self._instance.id if self._instance is not None else None
+
+    def prepare_to_remove(self, instance: ServerInstance) -> bool:
+        if self._instance is None or self._instance.id != instance.id:
+            return True
+        if self.has_active_operations():
+            QMessageBox.information(
+                self, "Operation in progress",
+                "Wait for the current operation to finish before removing this server.",
+            )
+            return False
+        if not self._config.confirm_discard_or_save():
+            return False
+        self._notes.flush()
+        return True
+
+    def clear(self) -> None:
+        if self._instance is not None:
+            self.watchdog_unwatch_requested.emit(self._instance.id)
+        self._notes.flush()
+        self._stop_watcher()
+        self._tps_timer.stop()
+        self._ip_request_generation += 1
+        self._instance = None
+        self._tabs.setEnabled(False)
+        self._show_empty()
 
     def update_status(self, status: str) -> None:
         """
@@ -368,17 +428,20 @@ class InstancePanel(QWidget):
 
     def _do_start_for(self, instance: ServerInstance) -> None:
         if self._instance is None or self._instance.id != instance.id:
-            self.load(instance)
+            if not self.load(instance):
+                return
         self._do_start()
 
     def _do_stop_for(self, instance: ServerInstance) -> None:
         if self._instance is None or self._instance.id != instance.id:
-            self.load(instance)
+            if not self.load(instance):
+                return
         self._do_stop()
 
     def _do_restart_for(self, instance: ServerInstance) -> None:
         if self._instance is None or self._instance.id != instance.id:
-            self.load(instance)
+            if not self.load(instance):
+                return
         self._do_restart()
 
     # Watchdog lifecycle
@@ -749,7 +812,9 @@ class InstancePanel(QWidget):
         tmux_busy = any(t.isRunning() for t in self._worker_threads)
         backup_thread = getattr(self._backup, "_thread", None)
         backup_busy = bool(backup_thread and backup_thread.isRunning())
-        return tmux_busy or backup_busy
+        setup_busy = self._setup.has_active_operation()
+        mods_busy = self._mods.has_active_operation()
+        return tmux_busy or backup_busy or setup_busy or mods_busy
 
     def shutdown(self) -> None:
         """Stop worker-owned timers in their own threads, then join threads."""

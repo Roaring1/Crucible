@@ -26,17 +26,18 @@ from .. import theme
 
 class _InspectWorker(QObject):
     """Reads mod metadata from jar files in a background thread."""
-    done = pyqtSignal(int, object)  # (row_index, ModEntry)
+    done = pyqtSignal(int, int, object)  # (generation, row_index, ModEntry)
 
-    def __init__(self, manager: ModManager, jobs: list[tuple[int, ModEntry]]):
+    def __init__(self, manager: ModManager, jobs: list[tuple[int, ModEntry]], generation: int):
         super().__init__()
         self._manager = manager
-        self._jobs    = jobs
+        self._jobs = jobs
+        self._generation = generation
 
     def run(self) -> None:
         for row, mod in self._jobs:
             self._manager.inspect_jar(mod)
-            self.done.emit(row, mod)
+            self.done.emit(self._generation, row, mod)
         self.thread().quit()  # signal the QThread event loop to exit
 
 
@@ -75,6 +76,8 @@ class ModsTab(QWidget):
         self._worker:  _InspectWorker | None = None
         self._net_thread: QThread | None     = None
         self._net_worker: _NetWorker | None  = None
+        self._inspect_generation = 0
+        self._inspect_pending = False
 
         self._build_ui()
         self.setAcceptDrops(True)
@@ -125,6 +128,7 @@ class ModsTab(QWidget):
         refresh_btn = QPushButton("↻")
         refresh_btn.setFixedWidth(36)
         refresh_btn.setToolTip("Refresh mod list")
+        refresh_btn.setAccessibleName("Refresh mod list")
         refresh_btn.clicked.connect(self.refresh)
         toolbar.addWidget(refresh_btn)
 
@@ -215,6 +219,7 @@ class ModsTab(QWidget):
     def refresh(self) -> None:
         if self._manager is None:
             return
+        self._inspect_generation += 1
         self._mods = self._manager.list_mods()
         self._populate_table(self._mods)
         self._apply_filter(self._filter.text())
@@ -246,6 +251,7 @@ class ModsTab(QWidget):
                 cb = QCheckBox()
                 cb.setChecked(mod.enabled)
                 cb.setToolTip("Enable / disable this mod")
+                cb.setAccessibleName(f"Enable {mod.display_name}")
                 cb_container = QWidget()
                 cb_layout = QHBoxLayout(cb_container)
                 cb_layout.addWidget(cb)
@@ -547,44 +553,47 @@ class ModsTab(QWidget):
         if added:
             self.refresh()
 
+    def has_active_operation(self) -> bool:
+        return bool(self._net_thread and self._net_thread.isRunning())
+
     # Background jar inspection
 
     def _start_inspect_pass(self) -> None:
-        """Kick off background jar inspection to fill in mod names/versions."""
+        """Inspect current rows; stale worker results can never retarget a new table."""
         if self._manager is None or not self._mods:
             return
-        # Quit any still-alive previous thread before starting a new one.
-        # Without this, _InspectWorker.run() finishing but thread.quit() not yet
-        # processed makes isRunning() return True and the guard below returns early,
-        # so mod names/versions are never populated after the first instance load.
-        if self._thread is not None:
-            if self._thread.isRunning():
-                self._thread.quit()
-                self._thread.wait(500)
-            self._thread = None
-            self._worker = None
-
+        if self._thread is not None and self._thread.isRunning():
+            self._inspect_pending = True
+            return
         jobs = [
             (i, mod) for i, mod in enumerate(self._mods)
             if not mod.name and not mod.version
         ]
         if not jobs:
             return
-
-        self._thread = QThread()
-        self._worker = _InspectWorker(self._manager, jobs)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_inspect_result)
+        generation = self._inspect_generation
+        thread = QThread()
+        worker = _InspectWorker(self._manager, jobs, generation)
+        self._thread = thread
+        self._worker = worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_inspect_result)
 
         def _cleanup():
-            self._thread = None
-            self._worker = None
-        self._thread.finished.connect(_cleanup)
+            if self._thread is thread:
+                self._thread = None
+                self._worker = None
+            pending = self._inspect_pending
+            self._inspect_pending = False
+            if pending:
+                self._start_inspect_pass()
+        thread.finished.connect(_cleanup)
+        thread.start()
 
-        self._thread.start()
-
-    def _on_inspect_result(self, row: int, mod: ModEntry) -> None:
+    def _on_inspect_result(self, generation: int, row: int, mod: ModEntry) -> None:
+        if generation != self._inspect_generation:
+            return
         if row < self._table.rowCount():
             name_item = self._table.item(row, self._COL_NAME)
             ver_item  = self._table.item(row, self._COL_VERSION)

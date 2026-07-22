@@ -38,6 +38,18 @@ from .. import theme
 
 _AVATAR_CACHE_DIR = Path.home() / ".local" / "share" / "crucible" / "avatars"
 _AVATAR_MAX_AGE_S = 7 * 24 * 3600
+_MAX_AVATAR_BYTES = 2 * 1024 * 1024
+_MAX_PLAYER_JSON_BYTES = 16 * 1024 * 1024
+
+
+def _read_json_file(path: Path):
+    if path.stat().st_size > _MAX_PLAYER_JSON_BYTES:
+        raise OSError(f"JSON file exceeds 16 MiB safety limit: {path}")
+    with path.open("rb") as fh:
+        raw = fh.read(_MAX_PLAYER_JSON_BYTES + 1)
+    if len(raw) > _MAX_PLAYER_JSON_BYTES:
+        raise OSError(f"JSON file exceeds 16 MiB safety limit: {path}")
+    return json.loads(raw.decode("utf-8"))
 
 
 # Avatar fetcher
@@ -74,11 +86,18 @@ class _AvatarFetcher(QObject):
             import urllib.request
             url = "https://minotar.net/avatar/%s/20" % self._name
             with urllib.request.urlopen(url, timeout=8) as resp:
-                data = resp.read()
-            cache.write_bytes(data)
+                data = resp.read(_MAX_AVATAR_BYTES + 1)
+            if len(data) > _MAX_AVATAR_BYTES:
+                raise ValueError("avatar response exceeded 2 MiB")
             pix = QPixmap()
             pix.loadFromData(data)
             if not pix.isNull():
+                partial = cache.with_suffix(cache.suffix + ".partial")
+                try:
+                    partial.write_bytes(data)
+                    partial.replace(cache)
+                finally:
+                    partial.unlink(missing_ok=True)
                 self.fetched.emit(self._name, pix)
         except Exception:
             # Offline / minotar down -- try stale cache
@@ -316,7 +335,7 @@ class PlayersTab(QWidget):
         self._seen_path = Path(self._instance.path) / ".crucible" / "players_seen.json"
         try:
             if self._seen_path.exists():
-                data = json.loads(self._seen_path.read_text(encoding="utf-8"))
+                data = _read_json_file(self._seen_path)
                 if isinstance(data, dict):
                     self._seen = {k: v for k, v in data.items() if isinstance(v, dict)}
         except (json.JSONDecodeError, OSError):
@@ -567,7 +586,7 @@ class PlayersTab(QWidget):
             f = base / fn
             try:
                 if f.exists():
-                    for e in json.loads(f.read_text(encoding="utf-8")):
+                    for e in _read_json_file(f):
                         if isinstance(e, dict) and \
                                 e.get("name", "").lower() == name.lower():
                             uid = e.get("uuid")
@@ -594,7 +613,7 @@ class PlayersTab(QWidget):
         if stats_file is None:
             return []
         try:
-            data = json.loads(stats_file.read_text(encoding="utf-8"))
+            data = _read_json_file(stats_file)
         except (json.JSONDecodeError, OSError):
             return []
         custom = (data.get("stats", {}) or {}).get("minecraft:custom", {}) or {}
@@ -719,7 +738,7 @@ class _PlayerListWidget(QWidget):
             self._status.setText(f"{filename} not found")
             return
         try:
-            self._data = json.loads(self._path.read_text(encoding="utf-8"))
+            self._data = _read_json_file(self._path)
         except (json.JSONDecodeError, OSError):
             self._data = []
         self._refresh_table()
@@ -736,6 +755,7 @@ class _PlayerListWidget(QWidget):
             rm = QPushButton("×")
             rm.setFixedWidth(28)
             rm.setObjectName("DangerButton")
+            rm.setAccessibleName(f"Remove {name} from {self._filename}")
             rm.clicked.connect(lambda _=False, r=row: self._remove_player(r))
             self._table.setCellWidget(row, 2, rm)
             self._table.setRowHeight(row, 30)
@@ -763,7 +783,15 @@ class _PlayerListWidget(QWidget):
             return
         self._name_input.clear()
         self._status.setText(f"Sent: {command} {name} — refreshing…")
-        QTimer.singleShot(1500, lambda: self.load(self._instance, self._filename))
+        instance = self._instance
+        filename = self._filename
+        QTimer.singleShot(
+            1500, lambda: self._reload_if_current(instance, filename)
+        )
+
+    def _reload_if_current(self, instance: ServerInstance, filename: str) -> None:
+        if self._instance is instance and self._filename == filename:
+            self.load(instance, filename)
 
     def _remove_player(self, row: int) -> None:
         if 0 <= row < len(self._data):

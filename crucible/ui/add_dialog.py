@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog,
@@ -22,6 +22,28 @@ from ..data.instance_manager import InstanceManager
 from ..data.instance_model import ServerInstance
 from ..importers.prism import import_prism_source
 from . import theme
+
+
+class _PrismImportWorker(QObject):
+    finished = pyqtSignal(object, str)
+
+    def __init__(self, source: str, target: str, download_mods: bool):
+        super().__init__()
+        self._source = source
+        self._target = target
+        self._download_mods = download_mods
+
+    def run(self) -> None:
+        try:
+            info = import_prism_source(
+                self._source,
+                self._target,
+                overwrite=True,
+                download_mods=self._download_mods,
+            )
+            self.finished.emit(info, "")
+        except Exception as exc:
+            self.finished.emit(None, str(exc))
 
 
 class AddInstanceDialog(QDialog):
@@ -36,6 +58,10 @@ class AddInstanceDialog(QDialog):
         super().__init__(parent)
         self._manager = manager
         self.result_instance: ServerInstance | None = None
+        self._import_thread: QThread | None = None
+        self._import_worker: _PrismImportWorker | None = None
+        self._import_pending: tuple[str, str, bool] | None = None
+        self._import_result: tuple[object, str] | None = None
         self.setWindowTitle("Add Server Instance")
         self.setMinimumWidth(560)
         self.setModal(True)
@@ -266,23 +292,55 @@ class AddInstanceDialog(QDialog):
         cleaned = "".join(c for c in (name or "") if c.isalnum() or c in keep).strip()
         return cleaned.replace(" ", "-")
 
+    def begin_import_source(self, source: str) -> None:
+        """Public drag/drop entry point; prompts for destination then imports."""
+        self._finish_prism_import(source)
+
     def _finish_prism_import(self, source: str) -> None:
+        if self._import_thread is not None and self._import_thread.isRunning():
+            return
         suggested = Path(source).stem or Path(source).name or "Prism Server"
         target = self._choose_prism_target(suggested)
         if not target:
             return
 
         want_download = self._dl_check.isChecked()
+        self._import_pending = (source, target, want_download)
+        self.setEnabled(False)
+        self._warn_label.setText(
+            "Importing… Large packs can take a while. This window will stay open "
+            "until file copying finishes safely."
+        )
+        self._warn_label.show()
+
+        self._import_thread = QThread()
+        self._import_worker = _PrismImportWorker(source, target, want_download)
+        self._import_worker.moveToThread(self._import_thread)
+        self._import_thread.started.connect(self._import_worker.run)
+        self._import_worker.finished.connect(self._on_prism_imported)
+        self._import_worker.finished.connect(self._import_thread.quit)
+        self._import_worker.finished.connect(self._import_worker.deleteLater)
+        self._import_thread.finished.connect(self._import_thread.deleteLater)
+        self._import_thread.finished.connect(self._import_thread_finished)
+        self._import_thread.start()
+
+    @pyqtSlot(object, str)
+    def _on_prism_imported(self, info, error: str) -> None:
+        self._import_result = (info, error)
+
+    def _complete_prism_import(self, info, error: str) -> None:
+        pending = self._import_pending
+        if error or info is None or pending is None:
+            self._warn_label.hide()
+            QMessageBox.critical(self, "Prism Import Failed", error or "Import failed")
+            return
+        source, target, want_download = pending
         try:
-            info = import_prism_source(
-                source, target, overwrite=True, download_mods=want_download
-            )
             name = info.name or Path(target).name
-            version = info.version_label
             inst = self._manager.add_instance(
                 target,
                 name,
-                version,
+                info.version_label,
                 pack_source=info.source_type,
                 minecraft_version=info.minecraft_version,
                 loader=info.loader,
@@ -297,20 +355,26 @@ class AddInstanceDialog(QDialog):
         self._name_edit.setText(inst.name)
         self._ver_edit.setText(inst.version)
         self.result_instance = inst
-
-        # Offer the download dialog if the pack only shipped an index and the
-        # user did not already opt into auto-download.
         if not want_download:
             self._maybe_offer_download(target, inst.name)
 
         warnings = info.warnings + inst.validate()
         if warnings:
-            self._warn_label.setText(
-                "⚠  Imported with warnings:\n• " + "\n• ".join(warnings)
-            )
-            self._warn_label.show()
-            return
-        self.accept()
+            text = "Import complete, with warnings:\n• " + "\n• ".join(warnings)
+        else:
+            text = "✓ Import complete. Click OK to add this server to the sidebar."
+        self._warn_label.setText(text)
+        self._warn_label.show()
+
+    def _import_thread_finished(self) -> None:
+        result = self._import_result
+        self._import_thread = None
+        self._import_worker = None
+        self._import_result = None
+        self.setEnabled(True)
+        if result is not None:
+            self._complete_prism_import(*result)
+        self._import_pending = None
 
     def _maybe_offer_download(self, target: str, server_name: str) -> None:
         try:
@@ -401,3 +465,18 @@ class AddInstanceDialog(QDialog):
 
         self.result_instance = inst
         self.accept()
+    def _import_running(self) -> bool:
+        return bool(self._import_thread and self._import_thread.isRunning())
+
+    def reject(self) -> None:
+        if self._import_running():
+            self._warn_label.setText("Import is still copying files — wait for it to finish before closing.")
+            return
+        super().reject()
+
+    def closeEvent(self, event) -> None:
+        if self._import_running():
+            self._warn_label.setText("Import is still copying files — wait for it to finish before closing.")
+            event.ignore()
+            return
+        super().closeEvent(event)

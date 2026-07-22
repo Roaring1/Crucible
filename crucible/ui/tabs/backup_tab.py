@@ -46,6 +46,8 @@ class BackupTab(QWidget):
         self._manager:  BackupManager | None  = None
         self._thread:   QThread | None        = None
         self._worker:   BackupWorker | None   = None
+        self._active_manager: BackupManager | None = None
+        self._backup_result: tuple[str, str] | None = None
         self._build_ui()
 
     # UI
@@ -174,6 +176,7 @@ class BackupTab(QWidget):
             del_btn = QPushButton("×")
             del_btn.setFixedWidth(28)
             del_btn.setObjectName("DangerButton")
+            del_btn.setAccessibleName(f"Delete backup {entry.filename}")
             del_btn.clicked.connect(
                 lambda _checked=False, e=entry: self._confirm_delete(e)
             )
@@ -206,37 +209,47 @@ class BackupTab(QWidget):
         self._progress_lbl.show()
         self._progress.show()
 
+        self._active_manager = self._manager
+        self._backup_result = None
         self._thread = QThread()
-        self._worker = BackupWorker(self._manager)
+        self._worker = BackupWorker(self._active_manager)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._progress.setValue)
         self._worker.finished.connect(self._on_done)
         self._worker.failed.connect(self._on_failed)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.failed.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._thread_finished)
         self._thread.start()
 
-    def _on_done(self, _path: str) -> None:
-        self._progress_lbl.hide()
-        self._progress.hide()
-        self._backup_btn.setEnabled(True)
-        if self._thread:
-            self._thread.quit()
-            self._thread.wait()
-        self._thread = None
-        self._worker = None
-        self._manager.prune_old(self._prune_spin.value())
-        self._refresh()
+    def _on_done(self, path: str) -> None:
+        self._backup_result = ("done", path)
 
     def _on_failed(self, error: str) -> None:
+        self._backup_result = ("failed", error)
+
+    def _thread_finished(self) -> None:
+        result = self._backup_result
+        active_manager = self._active_manager
+        self._thread = None
+        self._worker = None
+        self._active_manager = None
+        self._backup_result = None
         self._progress_lbl.hide()
         self._progress.hide()
         self._backup_btn.setEnabled(True)
-        if self._thread:
-            self._thread.quit()
-            self._thread.wait()
-        self._thread = None
-        self._worker = None
-        QMessageBox.critical(self, "Backup Failed", error)
+
+        if result and result[0] == "done" and active_manager is not None:
+            active_manager.prune_old(self._prune_spin.value())
+        elif result and result[0] == "failed":
+            QMessageBox.critical(self, "Backup Failed", result[1])
+        # Refresh whichever server is currently selected; never apply the old
+        # manager's rows to a newly selected instance.
+        self._refresh()
 
     def _confirm_delete(self, entry: BackupEntry) -> None:
         reply = QMessageBox.question(

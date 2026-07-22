@@ -125,6 +125,10 @@ class DownloadModsDialog(QDialog):
         self._worker.progress.connect(self._on_progress)
         self._worker.log.connect(self._append)
         self._worker.finished.connect(self._on_finished)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._thread_finished)
         self._thread.start()
 
     def _append(self, msg: str) -> None:
@@ -147,9 +151,6 @@ class DownloadModsDialog(QDialog):
     def _on_finished(self, result) -> None:
         self._result = result
         self._done = True
-        if self._thread is not None:
-            self._thread.quit()
-            self._thread.wait(5000)
         if result is not None:
             self._append("")
             self._append("Result: " + result.summary())
@@ -162,25 +163,34 @@ class DownloadModsDialog(QDialog):
             self._append("Download did not complete.")
         self._cancel_btn.setText("Cancel")
         self._cancel_btn.setEnabled(False)
+
+    def _thread_finished(self) -> None:
+        self._thread = None
+        self._worker = None
         self._close_btn.setEnabled(True)
         self._close_btn.setDefault(True)
+
+    def reject(self) -> None:
+        if not self._done and self._thread is not None and self._thread.isRunning():
+            self._on_cancel()
+            self._append("Close requested — waiting for the current network read to stop safely.")
+            return
+        super().reject()
 
     @property
     def result(self):
         return self._result
 
-    def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
-        # Don't allow closing mid-download without confirming.
+    def closeEvent(self, event) -> None:  # noqa: N802
         if not self._done and self._thread is not None and self._thread.isRunning():
             resp = QMessageBox.question(
                 self, "Stop download?",
-                "A download is still running. Stop it and close?",
+                "A download is still running. Request cancellation? The window will "
+                "stay open until the current network read exits safely.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
-            if resp != QMessageBox.StandardButton.Yes:
-                event.ignore()
-                return
-            self._cancel_event.set()
-            self._thread.quit()
-            self._thread.wait(5000)
-        event.accept()
+            if resp == QMessageBox.StandardButton.Yes:
+                self._on_cancel()
+            event.ignore()
+            return
+        super().closeEvent(event)

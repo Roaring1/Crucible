@@ -108,6 +108,8 @@ class ModpackDialog(QDialog):
         self._ithread: QThread | None = None
         self._iworker: _PackInstallWorker | None = None
         self._busy = False
+        self._close_requested = False
+        self._accept_requested = False
 
         self.setWindowTitle("Install a modpack")
         self.setMinimumSize(900, 600)
@@ -195,9 +197,9 @@ class ModpackDialog(QDialog):
         thread.started.connect(worker.run)
         for sig in quit_signals:
             sig.connect(thread.quit)
-        thread.finished.connect(lambda: self._threads.remove((thread, worker))
-                                if (thread, worker) in self._threads else None)
-        self._threads.append((thread, worker))
+        pair = (thread, worker)
+        thread.finished.connect(lambda: self._thread_finished(pair))
+        self._threads.append(pair)
         thread.start()
         return worker
 
@@ -367,6 +369,9 @@ class ModpackDialog(QDialog):
         w.log.connect(self._on_log)
         w.finished.connect(self._on_installed)
         w.finished.connect(self._ithread.quit)
+        w.finished.connect(w.deleteLater)
+        self._ithread.finished.connect(self._ithread.deleteLater)
+        self._ithread.finished.connect(self._install_thread_finished)
         self._ithread.start()
 
     def _on_log(self, msg):
@@ -415,7 +420,7 @@ class ModpackDialog(QDialog):
                 self, "Modpack installed",
                 f"{name} was reinstalled into a folder that is already in your "
                 f"server list.\n\n{result.summary()}")
-            self.accept()
+            self._accept_requested = True
             return
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(
@@ -427,12 +432,48 @@ class ModpackDialog(QDialog):
         QMessageBox.information(
             self, "Modpack installed",
             f"{name} is ready to run.\n\n{result.summary()}")
-        self.accept()
+        self._accept_requested = True
+
+    def _thread_finished(self, pair) -> None:
+        if pair in self._threads:
+            self._threads.remove(pair)
+        self._finish_requested_close()
+
+    def _install_thread_finished(self) -> None:
+        self._ithread = None
+        self._iworker = None
+        self._finish_requested_close()
+
+    def _workers_running(self) -> bool:
+        background = any(thread.isRunning() for thread, _worker in self._threads)
+        installing = bool(self._ithread and self._ithread.isRunning())
+        return background or installing
+
+    def _finish_requested_close(self) -> None:
+        if self._workers_running():
+            return
+        if self._close_requested:
+            super().reject()
+        elif self._accept_requested:
+            super().accept()
+
+    def reject(self) -> None:
+        if self._workers_running():
+            self._close_requested = True
+            self._cancel_event.set()
+            if self._icon_worker is not None:
+                self._icon_worker.cancel()
+            self._status.setText(
+                "Closing after the current network/install operation exits safely…"
+            )
+            return
+        super().reject()
 
     def closeEvent(self, event):
-        self._cancel_event.set()
-        if self._icon_worker is not None:
-            self._icon_worker.cancel()
+        if self._workers_running():
+            self.reject()
+            event.ignore()
+            return
         super().closeEvent(event)
 
 

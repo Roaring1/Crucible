@@ -276,6 +276,12 @@ class Sidebar(QWidget):
         if item := self._items.get(instance_id):
             self._list.setCurrentItem(item)
 
+    def status_for(self, instance_id: str) -> str:
+        item = self._items.get(instance_id)
+        if item is None:
+            return "unknown"
+        return str(item.data(Qt.ItemDataRole.UserRole + 1) or "unknown")
+
     def selected_instance(self) -> ServerInstance | None:
         item = self._list.currentItem()
         if isinstance(item, InstanceItem):

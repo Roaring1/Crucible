@@ -73,12 +73,16 @@ class TmuxManager:
         """Return the tmux session name for this instance."""
         return instance.tmux_session
 
+    def _target(self, instance: ServerInstance) -> str:
+        """Force exact tmux target matching (never an accidental prefix match)."""
+        return "=" + self.session_name(instance)
+
     # Status checks
 
     def is_running(self, instance: ServerInstance) -> bool:
         """Return True if a tmux session exists for this instance."""
         result = self._run(
-            ["tmux", "has-session", "-t", self.session_name(instance)]
+            ["tmux", "has-session", "-t", self._target(instance)]
         )
         return result.returncode == 0
 
@@ -100,10 +104,10 @@ class TmuxManager:
         """
         Return all active tmux session names.
         If SESSION_PREFIX is set, only sessions starting with that string are returned.
-        Not used by status_map() (which calls is_running() per instance).
+        Used by status_map() so a health pass requires only one tmux process.
         Useful for debugging or CLI summary commands.
         """
-        result = self._run(["tmux", "list-sessions", "-F", "#{session_name}"])
+        result = self._run(["tmux", "list-sessions", "-F", "#{session_name}"], timeout=2)
         if result.returncode != 0:
             return []
         sessions = [s.strip() for s in result.stdout.splitlines() if s.strip()]
@@ -211,7 +215,7 @@ class TmuxManager:
 
     def _read_capture(self, session: str, max_lines: int = 40, max_chars: int = 4000) -> str:
         result = self._run(
-            ["tmux", "capture-pane", "-p", "-t", session, "-S", f"-{max_lines}"],
+            ["tmux", "capture-pane", "-p", "-t", "=" + session, "-S", f"-{max_lines}"],
             timeout=2,
         )
         if result.returncode != 0:
@@ -302,7 +306,7 @@ class TmuxManager:
     def _force_kill(self, instance: ServerInstance) -> tuple[bool, str]:
         """Kill the tmux session immediately."""
         session = self.session_name(instance)
-        result  = self._run(["tmux", "kill-session", "-t", session])
+        result  = self._run(["tmux", "kill-session", "-t", "=" + session])
         if result.returncode == 0:
             return True, f"Session '{session}' force-killed"
         return False, f"kill-session failed: {result.stderr.strip()}"
@@ -317,13 +321,15 @@ class TmuxManager:
         Returns True on success.
         """
         session = self.session_name(instance)
-        result  = self._run([
-            "tmux", "send-keys",
-            "-t", session,
-            command,
-            "Enter",
+        literal = self._run([
+            "tmux", "send-keys", "-t", "=" + session, "-l", "--", command,
         ])
-        return result.returncode == 0
+        if literal.returncode != 0:
+            return False
+        enter = self._run([
+            "tmux", "send-keys", "-t", "=" + session, "Enter",
+        ])
+        return enter.returncode == 0
 
     def attach(
         self,
@@ -344,17 +350,18 @@ class TmuxManager:
         if not self.is_running(instance):
             return False, "Server is not running — nothing to attach to"
 
-        session    = self.session_name(instance)
-        attach_cmd = f"tmux attach -t {session}"
+        session = self.session_name(instance)
+        target = "=" + session
+        attach_cmd = f"tmux attach -t {shlex.quote(target)}"
 
-        # Terminal -> [command, ...] mapping
-        # Each command opens a new window running attach_cmd
+        # Pass executable/arguments as separate argv entries. Konsole/xterm do
+        # not execute a single string containing spaces as a shell command.
         terminal_cmds: dict[str, list[str]] = {
-            "konsole":        ["konsole", "-e", attach_cmd],
-            "kitty":          ["kitty", "--", "bash", "-c", attach_cmd],
-            "alacritty":      ["alacritty", "-e", "bash", "-c", attach_cmd],
-            "gnome-terminal": ["gnome-terminal", "--", "bash", "-c", attach_cmd],
-            "xterm":          ["xterm", "-e", attach_cmd],
+            "konsole":        ["konsole", "-e", "tmux", "attach", "-t", target],
+            "kitty":          ["kitty", "--", "tmux", "attach", "-t", target],
+            "alacritty":      ["alacritty", "-e", "tmux", "attach", "-t", target],
+            "gnome-terminal": ["gnome-terminal", "--", "tmux", "attach", "-t", target],
+            "xterm":          ["xterm", "-e", "tmux", "attach", "-t", target],
         }
 
         if terminal == "auto":
@@ -394,17 +401,11 @@ class TmuxManager:
     def status_map(
         self, instances: list[ServerInstance]
     ) -> dict[str, Literal["running", "stopped"]]:
-        """
-        Return {instance.id: status} for all instances.
-
-        Uses is_running() (tmux has-session -t <name>) per instance rather than
-        list_sessions() + prefix filtering.  list_sessions() only returns sessions
-        whose name starts with SESSION_PREFIX ('gtnh-'), so a session named 'gtnh'
-        (no dash — the common manual-start convention) would always appear stopped.
-        """
+        """Return all statuses from one tmux query using exact session names."""
         if not self.tmux_available():
             return {i.id: "stopped" for i in instances}
+        sessions = set(self.list_sessions())
         return {
-            i.id: ("running" if self.is_running(i) else "stopped")
+            i.id: ("running" if self.session_name(i) in sessions else "stopped")
             for i in instances
         }

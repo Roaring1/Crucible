@@ -115,7 +115,8 @@ class ConfigTab(QWidget):
         reload_btn = QPushButton("↻")
         reload_btn.setFixedWidth(36)
         reload_btn.setToolTip("Reload from disk (discards unsaved edits)")
-        reload_btn.clicked.connect(self._reload)
+        reload_btn.setAccessibleName("Reload server properties")
+        reload_btn.clicked.connect(self._reload_requested)
         toolbar.addWidget(reload_btn)
 
         layout.addLayout(toolbar)
@@ -167,6 +168,50 @@ class ConfigTab(QWidget):
         self._instance = instance
         self._reload()
 
+    def _collect_values(self) -> dict[str, str]:
+        edited: dict[str, str] = {}
+        for row in range(self._table.rowCount()):
+            key_item = self._table.item(row, 0)
+            if not key_item:
+                continue
+            raw_key = key_item.text().lstrip("⚠ ").strip()
+            if row in self._bool_rows:
+                edited[raw_key] = self._bool_rows[row].currentText()
+            else:
+                val_item = self._table.item(row, 1)
+                if val_item:
+                    edited[raw_key] = val_item.text()
+        return edited
+
+    def has_unsaved_changes(self) -> bool:
+        return bool(self._props_path and self._collect_values() != dict(self._data))
+
+    def confirm_discard_or_save(self) -> bool:
+        if not self.has_unsaved_changes():
+            return True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Unsaved server settings")
+        box.setText("server.properties has unsaved changes.")
+        box.setInformativeText(
+            "Save them before continuing, discard them, or cancel and keep editing."
+        )
+        save_btn = box.addButton("Save Changes", QMessageBox.ButtonRole.AcceptRole)
+        discard_btn = box.addButton("Discard Changes", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is save_btn:
+            return self._save()
+        if clicked is discard_btn:
+            return True
+        return False
+
+    def _reload_requested(self) -> None:
+        if self.confirm_discard_or_save():
+            self._reload()
+
     # Internals
 
     def _reload(self) -> None:
@@ -177,6 +222,7 @@ class ConfigTab(QWidget):
         self._props_path = props_path
 
         if not props_path.exists():
+            self._data = OrderedDict()
             self._table.setRowCount(0)
             self._warn.setText("⚠  server.properties not found — has the server been started at least once?")
             self._warn.show()
@@ -293,25 +339,12 @@ class ConfigTab(QWidget):
             )
             self._table.setRowHidden(row, not match)
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
         if self._props_path is None or not self._props_path.exists():
             QMessageBox.warning(self, "No File", "server.properties not found.")
-            return
+            return False
 
-        # Collect all current table values (text items + combo-box items)
-        edited: dict[str, str] = {}
-        for row in range(self._table.rowCount()):
-            key_item = self._table.item(row, 0)
-            if not key_item:
-                continue
-            raw_key = key_item.text().lstrip("⚠ ").strip()
-            # Boolean rows use a QComboBox widget
-            if row in self._bool_rows:
-                edited[raw_key] = self._bool_rows[row].currentText()
-            else:
-                val_item = self._table.item(row, 1)
-                if val_item:
-                    edited[raw_key] = val_item.text()
+        edited = self._collect_values()
 
         # Warn if any dangerous keys changed
         changed_dangerous = [
@@ -328,7 +361,7 @@ class ConfigTab(QWidget):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             )
             if reply != QMessageBox.StandardButton.Yes:
-                return
+                return False
 
         # Read the original file to preserve comments and ordering
         try:
@@ -337,7 +370,7 @@ class ConfigTab(QWidget):
             ).splitlines()
         except OSError as exc:
             QMessageBox.critical(self, "Read Error", str(exc))
-            return
+            return False
 
         # Rewrite line-by-line: replace values, keep everything else
         new_lines: list[str] = []
@@ -356,11 +389,12 @@ class ConfigTab(QWidget):
             tmp.replace(self._props_path)
         except OSError as exc:
             QMessageBox.critical(self, "Save Error", str(exc))
-            return
+            return False
 
         # Refresh internal state
         self._data = self._parse_props(self._props_path)
         self._set_status_saved()
+        return True
 
     def _set_status_saved(self) -> None:
         self._status.setText(

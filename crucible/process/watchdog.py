@@ -26,6 +26,8 @@ from .tmux_manager import TmuxManager
 POLL_INTERVAL_MS   = 10_000   # 10 seconds
 CRASH_LOOP_LIMIT   = 3        # give up after this many consecutive crashes
 RESTART_DELAY_MS   = 30_000   # 30 s cool-down before each restart attempt
+CRASH_CONFIRM_POLLS = 2        # ignore one transient tmux-query miss
+STABLE_UPTIME_MS    = 10 * 60_000  # reset crash count after 10 healthy minutes
 
 
 class Watchdog(QObject):
@@ -53,6 +55,8 @@ class Watchdog(QObject):
         self._watching:    dict[str, bool]           = {}
         self._auto_restart: dict[str, bool]          = {}
         self._crash_count: dict[str, int]            = {}
+        self._miss_count: dict[str, int]             = {}
+        self._watch_generation: dict[str, int]       = {}
 
         # Timer created in start() on the worker thread
         self._poll_timer: QTimer | None = None
@@ -83,10 +87,23 @@ class Watchdog(QObject):
         Register an instance for crash monitoring.
         Call AFTER a successful Start.
         """
-        self._instances[instance.id]    = instance
-        self._watching[instance.id]     = True
-        self._auto_restart[instance.id] = auto_restart
-        self._crash_count[instance.id]  = 0
+        iid = instance.id
+        already_known = iid in self._instances
+        self._instances[iid] = instance
+        self._watching[iid] = True
+        self._auto_restart[iid] = auto_restart
+        self._miss_count[iid] = 0
+        # A manual stop removes the instance entirely, so a later manual start
+        # resets the sequence. Re-watching after an automatic restart preserves
+        # the count until the server has remained healthy for STABLE_UPTIME_MS.
+        if not already_known:
+            self._crash_count[iid] = 0
+        generation = self._watch_generation.get(iid, 0) + 1
+        self._watch_generation[iid] = generation
+        QTimer.singleShot(
+            STABLE_UPTIME_MS,
+            lambda: self._mark_stable(iid, generation),
+        )
 
     @pyqtSlot(object, bool)
     def unwatch(self, instance_id: str) -> None:
@@ -99,6 +116,8 @@ class Watchdog(QObject):
         self._instances.pop(instance_id, None)
         self._auto_restart.pop(instance_id, None)
         self._crash_count.pop(instance_id, None)
+        self._miss_count.pop(instance_id, None)
+        self._watch_generation.pop(instance_id, None)
 
     # Poll
 
@@ -109,13 +128,21 @@ class Watchdog(QObject):
         for iid, instance in list(self._instances.items()):
             if not self._watching.get(iid):
                 continue
-            # Use is_running() (tmux has-session) rather than list_sessions()
-            # so we match the session by exact name, independent of any prefix.
-            if not self._tmux.is_running(instance):
+            # Require repeated misses: one timed-out/failed tmux query must not
+            # trigger a false crash and an unnecessary competing restart.
+            if self._tmux.is_running(instance):
+                self._miss_count[iid] = 0
+                continue
+            misses = self._miss_count.get(iid, 0) + 1
+            self._miss_count[iid] = misses
+            if misses >= CRASH_CONFIRM_POLLS:
                 self._handle_crash(iid)
 
     def _handle_crash(self, iid: str) -> None:
         self._watching[iid] = False   # stop watching until/unless restarted
+        self._miss_count[iid] = 0
+        # Invalidate a pending stable-uptime callback for the crashed run.
+        self._watch_generation[iid] = self._watch_generation.get(iid, 0) + 1
         count = self._crash_count.get(iid, 0) + 1
         self._crash_count[iid] = count
 
@@ -124,7 +151,7 @@ class Watchdog(QObject):
         if not self._auto_restart.get(iid, False):
             return
 
-        if count > CRASH_LOOP_LIMIT:
+        if count >= CRASH_LOOP_LIMIT:
             self.restart_failed.emit(
                 iid,
                 f"Crash loop — {count} consecutive crashes. Auto-restart disabled."
@@ -137,6 +164,15 @@ class Watchdog(QObject):
             lambda: self._do_restart(iid),
         )
 
+    def _mark_stable(self, iid: str, generation: int) -> None:
+        """Reset consecutive crashes only after one uninterrupted healthy run."""
+        if (
+            self._active
+            and self._watching.get(iid, False)
+            and self._watch_generation.get(iid) == generation
+        ):
+            self._crash_count[iid] = 0
+
     def _do_restart(self, iid: str) -> None:
         instance = self._instances.get(iid)
         if instance is None:
@@ -144,6 +180,7 @@ class Watchdog(QObject):
         ok, msg = self._tmux.start(instance)
         if ok:
             self._watching[iid] = True   # resume monitoring
+            self._miss_count[iid] = 0
             self.restarted.emit(iid)
         else:
             self.restart_failed.emit(iid, msg)

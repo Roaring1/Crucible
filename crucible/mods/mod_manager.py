@@ -24,6 +24,19 @@ from pathlib import Path
 
 from ..data.instance_model import ServerInstance
 
+_MAX_JAR_METADATA_BYTES = 4 * 1024 * 1024
+
+
+def _read_member_text(zf: zipfile.ZipFile, name: str) -> str:
+    info = zf.getinfo(name)
+    if info.file_size > _MAX_JAR_METADATA_BYTES:
+        raise ValueError(f"JAR metadata member too large: {name}")
+    with zf.open(info) as fh:
+        raw = fh.read(_MAX_JAR_METADATA_BYTES + 1)
+    if len(raw) > _MAX_JAR_METADATA_BYTES:
+        raise ValueError(f"JAR metadata member too large: {name}")
+    return raw.decode("utf-8", "replace")
+
 
 @dataclass
 class ModEntry:
@@ -182,17 +195,15 @@ class ModManager:
 
                 # mcmod.info (Forge 1.7.10)
                 if "mcmod.info" in names:
-                    with zf.open("mcmod.info") as f:
-                        raw = f.read().decode("utf-8", errors="replace")
+                    raw = _read_member_text(zf, "mcmod.info")
                     self._parse_mcmod(mod, raw)
                     return
 
                 # META-INF/MANIFEST.MF
                 if "META-INF/MANIFEST.MF" in names:
-                    with zf.open("META-INF/MANIFEST.MF") as f:
-                        mf = f.read().decode("utf-8", errors="replace")
+                    mf = _read_member_text(zf, "META-INF/MANIFEST.MF")
                     self._parse_manifest(mod, mf)
-        except (zipfile.BadZipFile, KeyError, OSError):
+        except (zipfile.BadZipFile, KeyError, OSError, ValueError):
             pass  # corrupt/unusual jar — leave fields empty
 
     def _parse_mcmod(self, mod: ModEntry, raw: str) -> None:

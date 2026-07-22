@@ -213,10 +213,13 @@ class ConsoleTab(QWidget):
         self._find_status = QLabel("")
         self._find_status.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         fb_layout.addWidget(self._find_status)
-        for label, slot in (("▲", lambda: self._find(forward=False)),
-                            ("▼", lambda: self._find(forward=True)),
-                            ("✕", self._hide_find_bar)):
+        for label, accessible_name, slot in (
+            ("▲", "Find previous match", lambda: self._find(forward=False)),
+            ("▼", "Find next match", lambda: self._find(forward=True)),
+            ("✕", "Close find bar", self._hide_find_bar),
+        ):
             b = QPushButton(label)
+            b.setAccessibleName(accessible_name)
             b.setFixedWidth(30)
             b.clicked.connect(slot)
             fb_layout.addWidget(b)

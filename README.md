@@ -9,19 +9,31 @@ backups, server.properties editing, player lists, and auto-restart on crash.
 
 ## Install
 
+### Recommended: verified release installer
+
 ```bash
-pip install --user git+https://github.com/Roaring1/Crucible.git
+bash <(curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/Roaring1/Crucible/main/get-crucible.sh)
 ```
 
-Or clone and install in editable mode:
+The downloader selects the exact source asset for the latest GitHub Release,
+requires its matching SHA-256 manifest, validates archive paths and size limits,
+and then runs the staged installer. The installer uses an isolated virtual
+environment, smoke-tests the new copy before publication, preserves backups,
+and never deletes the folder it was launched from.
+
+Manual release install: download `Crucible-vX.Y.Z-source.zip` and its matching
+`Crucible-vX.Y.Z-SHA256.txt`, verify the hash, extract, then run `bash install.sh`.
+
+### Developer install
 
 ```bash
 git clone https://github.com/Roaring1/Crucible.git
 cd Crucible
-pip install --user -e .
+python3 -m pip install --user -e .
 ```
 
-Requires Python 3.11+ and tmux. PyQt6 is pulled in automatically.
+Requires Python 3.11+, PyQt6 6.5+, and tmux.
 
 ---
 

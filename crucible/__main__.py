@@ -230,7 +230,7 @@ def cmd_fix_loading(manager: InstanceManager, args) -> None:
         if not p.exists():
             err(f"Log file not found: {p}")
             sys.exit(1)
-        log_text = p.read_text(encoding="utf-8", errors="replace")
+        log_text = lc.read_diagnostic_text(p)
 
     apply_fix = getattr(args, "apply", False)
     res = lc.autofix_loading(root, apply=apply_fix, log_text=log_text)

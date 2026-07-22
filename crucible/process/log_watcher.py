@@ -40,6 +40,7 @@ from PyQt6.QtCore import (
 )
 
 from ..data.instance_model import ServerInstance
+from .log_tail import LogTailReader
 
 
 # Regex patterns for log line parsing
@@ -76,6 +77,7 @@ _RE_TICK_MSPT   = re.compile(r"Average time per tick:\s*([\d.]+)\s*ms")
 _RE_TPS = re.compile(r"Mean TPS:\s*([\d.]+)")
 
 
+
 class LogWatcher(QObject):
     """
     Watches a GTNH server log file and emits signals as events occur.
@@ -104,11 +106,11 @@ class LogWatcher(QObject):
     def __init__(self, instance: ServerInstance, parent: QObject | None = None):
         super().__init__(parent)
         self._instance        = instance
-        self._file_pos        = 0
-        self._last_size       = 0
+        self._tail            = LogTailReader()
         self._log_was_missing = False   # track so we don't spam log_missing
         self._watcher         = QFileSystemWatcher()
         self._poll_timer: QTimer | None = None
+        self._backlog_drain_pending = False
         self._active          = False
         self._target_tps      = 20.0   # updated from vanilla /tick query output
 
@@ -135,6 +137,7 @@ class LogWatcher(QObject):
     @pyqtSlot()
     def stop(self) -> None:
         self._active = False
+        self._backlog_drain_pending = False
         if self._poll_timer is not None:
             self._poll_timer.stop()
             self._poll_timer.deleteLater()
@@ -145,8 +148,8 @@ class LogWatcher(QObject):
     def reset(self, instance: ServerInstance) -> None:
         """Switch to watching a different instance."""
         self._instance        = instance
-        self._file_pos        = 0
-        self._last_size       = 0
+        self._tail.reset()
+        self._backlog_drain_pending = False
         self._log_was_missing = False
         self._attach_watchers()
         self._on_file_changed()
@@ -189,43 +192,30 @@ class LogWatcher(QObject):
         self._log_was_missing = False
 
         try:
-            size = log.stat().st_size
+            result = self._tail.read(log)
         except OSError:
+            # File disappeared between resolution and open (e.g. mid-rotation).
             if not self._log_was_missing:
                 self._log_was_missing = True
                 self.log_missing.emit()
             return
 
-        # Detect log rotation (new server start rewrites the file)
-        if size < self._last_size:
-            self._file_pos = 0
-            self.log_rotated.emit()   # tell UI to clear stale player/state data
-        self._last_size = size
-
-        if size == self._file_pos:
-            return  # Nothing new
-
-        try:
-            with log.open("r", encoding="utf-8", errors="replace") as fh:
-                fh.seek(self._file_pos)
-                raw = fh.read()
-                self._file_pos = fh.tell()
-        except OSError:
-            # File disappeared between stat() and open() (e.g. mid-rotation).
-            # Treat as missing so the console shows the right state.
-            if not self._log_was_missing:
-                self._log_was_missing = True
-                self.log_missing.emit()
-            return
-
-        if not raw:
-            return
-
-        lines = [ln for ln in raw.splitlines() if ln]
-        if lines:
-            self.new_lines.emit(lines)
-            for line in lines:
+        if result.rotated:
+            self.log_rotated.emit()   # clear stale player/state data
+        if result.lines:
+            self.new_lines.emit(result.lines)
+            for line in result.lines:
                 self._parse(line)
+
+        # A poll is intentionally capped. If a burst exceeded that cap, queue
+        # another pass in this worker's event loop instead of waiting a second.
+        if result.backlog and self._active and not self._backlog_drain_pending:
+            self._backlog_drain_pending = True
+            QTimer.singleShot(0, self._drain_backlog)
+
+    def _drain_backlog(self) -> None:
+        self._backlog_drain_pending = False
+        self._on_file_changed()
 
     # Line parsing
 

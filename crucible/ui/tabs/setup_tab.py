@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import threading
 
-from PyQt6.QtCore import Qt, QUrl, QTimer, pyqtSlot
+from PyQt6.QtCore import Qt, QUrl, QTimer, QObject, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -28,12 +28,37 @@ from ...data.instance_model import ServerInstance
 from .. import theme
 
 
+class _ServerInstallWorker(QObject):
+    finished = pyqtSignal(object, str)
+
+    def __init__(self, path, mc, loader, loader_version):
+        super().__init__()
+        self._args = (path, mc, loader, loader_version)
+
+    def run(self) -> None:
+        try:
+            from ...importers import serverloader as sl
+            path, mc, loader, loader_version = self._args
+            result = sl.install_server_loader(
+                path,
+                minecraft_version=mc,
+                loader=loader,
+                loader_version=loader_version,
+            )
+            self.finished.emit(result, "")
+        except Exception as exc:
+            self.finished.emit(None, str(exc))
+
+
 class SetupTab(QWidget):
     """Friendly readiness checklist + quick actions for one instance."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._instance: ServerInstance | None = None
+        self._install_thread: QThread | None = None
+        self._install_worker: _ServerInstallWorker | None = None
+        self._ip_request_generation = 0
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -59,6 +84,7 @@ class SetupTab(QWidget):
     # Public API
 
     def load(self, instance: ServerInstance) -> None:
+        self._ip_request_generation += 1
         self._instance = instance
         self._rebuild()
 
@@ -319,21 +345,26 @@ class SetupTab(QWidget):
         if resp != QMessageBox.StandardButton.Yes:
             return
 
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        result = None
-        try:
-            result = sl.install_server_loader(
-                inst.path,
-                minecraft_version=mc,
-                loader=loader,
-                loader_version=inst.loader_version or "",
-            )
-        except Exception as exc:
-            QApplication.restoreOverrideCursor()
-            QMessageBox.warning(self, "Install server", f"Install failed:\n{exc}")
-            return
-        QApplication.restoreOverrideCursor()
-        if result is not None and result.ok:
+        self.setEnabled(False)
+        self._install_thread = QThread()
+        self._install_worker = _ServerInstallWorker(
+            inst.path, mc, loader, inst.loader_version or ""
+        )
+        self._install_worker.moveToThread(self._install_thread)
+        self._install_thread.started.connect(self._install_worker.run)
+        self._install_worker.finished.connect(self._on_server_install_finished)
+        self._install_worker.finished.connect(self._install_thread.quit)
+        self._install_worker.finished.connect(self._install_worker.deleteLater)
+        self._install_thread.finished.connect(self._install_thread.deleteLater)
+        self._install_thread.finished.connect(self._install_thread_finished)
+        self._install_thread.start()
+
+    @pyqtSlot(object, str)
+    def _on_server_install_finished(self, result, error: str) -> None:
+        self.setEnabled(True)
+        if error:
+            QMessageBox.warning(self, "Install server", f"Install failed:\n{error}")
+        elif result is not None and result.ok:
             QMessageBox.information(self, "Install server", "Success: " + result.summary())
         else:
             reason = result.failed_reason if result is not None else "unknown error"
@@ -344,6 +375,13 @@ class SetupTab(QWidget):
                 "matching server jar into this folder, then press Re-check.",
             )
         self._rebuild()
+
+    def _install_thread_finished(self) -> None:
+        self._install_thread = None
+        self._install_worker = None
+
+    def has_active_operation(self) -> bool:
+        return bool(self._install_thread and self._install_thread.isRunning())
 
     def _explain_install(self) -> None:
         QMessageBox.information(
@@ -360,33 +398,40 @@ class SetupTab(QWidget):
         inst = self._instance
         if inst is None:
             return
+        self._ip_request_generation += 1
+        generation = self._ip_request_generation
+        instance_id = inst.id
+        try:
+            port = inst.server_port()
+        except Exception:
+            port = "25565"
         self._ip_btn.setEnabled(False)
         self._ip_btn.setText("…")
 
         def _worker():
-            ip = ""
             try:
-                import urllib.request
-                with urllib.request.urlopen("https://api.ipify.org", timeout=5) as r:
-                    ip = r.read().decode().strip()
+                from ...data.netinfo import public_host
+                ip = public_host(timeout=5)
             except Exception:
                 ip = ""
             from PyQt6.QtCore import QMetaObject, Q_ARG
             QMetaObject.invokeMethod(
-                self, "_on_address_ready",
-                Qt.ConnectionType.QueuedConnection, Q_ARG(str, ip))
+                self, "_on_address_ready", Qt.ConnectionType.QueuedConnection,
+                Q_ARG(int, generation), Q_ARG(str, instance_id),
+                Q_ARG(str, ip), Q_ARG(str, port),
+            )
         threading.Thread(target=_worker, daemon=True).start()
 
-    @pyqtSlot(str)
-    def _on_address_ready(self, ip: str) -> None:
+    @pyqtSlot(int, str, str, str)
+    def _on_address_ready(self, generation: int, instance_id: str,
+                          ip: str, port: str) -> None:
+        if (
+            generation != self._ip_request_generation
+            or self._instance is None
+            or self._instance.id != instance_id
+        ):
+            return
         self._ip_btn.setEnabled(True)
-        inst = self._instance
-        port = "25565"
-        try:
-            if inst is not None:
-                port = inst.server_port()
-        except Exception:
-            port = "25565"
         if ip:
             addr = f"{ip}:{port}"
             try:
@@ -396,7 +441,17 @@ class SetupTab(QWidget):
             self._ip_btn.setText(f"✓  Copied {addr}")
         else:
             self._ip_btn.setText("✗  No internet — use local IP")
-        QTimer.singleShot(2500, lambda: self._ip_btn.setText("⧉  Copy connection address"))
+        QTimer.singleShot(
+            2500, lambda: self._reset_ip_button(generation, instance_id)
+        )
+
+    def _reset_ip_button(self, generation: int, instance_id: str) -> None:
+        if (
+            generation == self._ip_request_generation
+            and self._instance is not None
+            and self._instance.id == instance_id
+        ):
+            self._ip_btn.setText("⧉  Copy connection address")
 
     def _download_mods(self) -> None:
         inst = self._instance

@@ -4,7 +4,9 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from crucible.data.instance_manager import InstanceManager, validate_session_name
+from crucible.data.instance_manager import (
+    InstanceManager, validate_delete_target, validate_session_name,
+)
 from crucible.data.instance_model import ServerInstance
 from crucible.importers.downloader import DownloadItem, _safe_destination, _download_one
 from crucible.importers.prism import _extract_archive
@@ -39,6 +41,16 @@ class IdentityTests(unittest.TestCase):
             m.add_instance(str(b), "same")
 
 
+class DeleteTargetTests(unittest.TestCase):
+    def test_delete_guard_rejects_broad_and_symlink_paths(self):
+        root = Path(tempfile.mkdtemp()); home = root / "home" / "person"; server = home / "servers" / "one"; server.mkdir(parents=True)
+        self.assertEqual(validate_delete_target(str(server), home=home), server.resolve())
+        for bad in (Path("/"), home, home.parent):
+            with self.assertRaises(ValueError): validate_delete_target(str(bad), home=home)
+        link = home / "server-link"; link.symlink_to(server, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "symbolic link"): validate_delete_target(str(link), home=home)
+
+
 class DownloadSafetyTests(unittest.TestCase):
     def test_traversal_and_symlink_escape_rejected(self):
         root = Path(tempfile.mkdtemp()).resolve()
@@ -65,6 +77,60 @@ class ArchiveSafetyTests(unittest.TestCase):
         self.assertFalse((d.parent / "escape.txt").exists())
         self.assertTrue((out / "mods/good.jar").exists())
         self.assertTrue(any("unsafe" in x for x in warnings))
+
+
+class TmuxCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.inst = ServerInstance(str(self.root), "GTNH", tmux_session="gtnh")
+        self.tm = TmuxManager()
+
+    def test_status_uses_exact_tmux_target(self):
+        import subprocess
+        with patch.object(
+            self.tm, "_run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ) as run:
+            self.assertTrue(self.tm.is_running(self.inst))
+        self.assertEqual(run.call_args.args[0], ["tmux", "has-session", "-t", "=gtnh"])
+
+    def test_console_input_is_literal_then_enter(self):
+        import subprocess
+        calls = []
+
+        def fake(cmd, *args, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with patch.object(self.tm, "_run", side_effect=fake):
+            self.assertTrue(self.tm.send_command(self.inst, "say Space C-c ; $(no-shell)"))
+        self.assertEqual(
+            calls[0],
+            ["tmux", "send-keys", "-t", "=gtnh", "-l", "--", "say Space C-c ; $(no-shell)"],
+        )
+        self.assertEqual(calls[1], ["tmux", "send-keys", "-t", "=gtnh", "Enter"])
+
+    def test_konsole_attach_uses_separate_argv(self):
+        with (
+            patch.object(self.tm, "is_running", return_value=True),
+            patch("crucible.process.tmux_manager.subprocess.Popen") as popen,
+        ):
+            ok, _ = self.tm.attach(self.inst, terminal="konsole")
+        self.assertTrue(ok)
+        self.assertEqual(
+            popen.call_args.args[0],
+            ["konsole", "-e", "tmux", "attach", "-t", "=gtnh"],
+        )
+
+    def test_status_map_matches_complete_names_only(self):
+        other = ServerInstance(str(self.root / "b"), "Other", tmux_session="gtnh-old")
+        with (
+            patch.object(self.tm, "tmux_available", return_value=True),
+            patch.object(self.tm, "list_sessions", return_value=["gtnh-old"]),
+        ):
+            result = self.tm.status_map([self.inst, other])
+        self.assertEqual(result[self.inst.id], "stopped")
+        self.assertEqual(result[other.id], "running")
 
 
 class StartTests(unittest.TestCase):
