@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 _API = "https://api.modrinth.com/v2"
-_UA = "Crucible/0.6.5 (Minecraft server manager)"
+_UA = "Crucible/0.6.8 (Minecraft server manager)"
 _MAX_JSON_BYTES = 16 * 1024 * 1024
 _MAX_ICON_BYTES = 8 * 1024 * 1024
 _MAX_MOD_BYTES = 2 * 1024 * 1024 * 1024
