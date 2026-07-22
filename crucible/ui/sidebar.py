@@ -26,6 +26,8 @@ class InstanceItem(QListWidgetItem):
         "stopped":      theme.SURFACE2,
         "tmux_missing": theme.YELLOW,
         "starting":     theme.ORANGE,
+        "stopping":     theme.ORANGE,
+        "missing":      theme.RED,
         "unknown":      theme.SURFACE2,
     }
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.6.0 — 2026-07-21 — final release
+- Fix installed launcher self-location through `~/.local/bin/crucible` symlinks.
+- Fix the `Watchdog.unwatch` PyQt slot signature crash and guard all slot arities.
+- Never destroy a still-running QThread after a timed wait; add lifecycle regression scans.
+- Lazy-load expensive server tabs and reuse background health status so switching servers does not synchronously scan mods, backups, players, processes, and validation data all at once.
+- Move focused TPS sampling off the GUI thread and bound console tmux command timeouts.
+- Interpret an exact console `stop` or `/stop` as lifecycle intent, unwatch crash recovery, show `stopping`, and then let log/tmux observation confirm the actual process exit. Similar text such as `say stop` and `stopsound` is not misclassified.
+- Report externally deleted server directories as `missing`, while keeping a still-running tmux session controllable even if its files vanished.
+- Make add/remove/update/reorder registry commits disk-first and transactional so failed writes cannot create phantom or lost in-memory rows.
+- Before either unregistering or deleting a server, probe the exact tmux session live and fail closed on running sessions, timeouts, or unexpected tmux errors; never trust a potentially stale sidebar dot for destruction.
+- Detect outside edits/replacements/deletion of `instances.json`, block silent clobbering, and require a safe restart to reconcile; malformed/duplicate registry rows disable writes rather than destroying evidence.
+- Expand the regression suite to 52 tests, including the real installed-launcher symlink path.
+
 ## v0.6.0 — deep reliability and safety audit
 - Prompt to save/discard/cancel unsaved server.properties edits before reload, switch, or removal.
 - Block instance switching during active work and safely roll the sidebar selection back.

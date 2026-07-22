@@ -11,6 +11,7 @@ from crucible.data.instance_model import ServerInstance
 from crucible.importers.downloader import DownloadItem, _safe_destination, _download_one
 from crucible.importers.prism import _extract_archive
 from crucible.process.tmux_manager import TmuxManager
+from crucible.process.command_intent import lifecycle_intent
 
 
 class IdentityTests(unittest.TestCase):
@@ -39,6 +40,64 @@ class IdentityTests(unittest.TestCase):
         m.add_instance(str(a), "same")
         with self.assertRaisesRegex(ValueError, "already used"):
             m.add_instance(str(b), "same")
+
+
+
+
+class CommandIntentTests(unittest.TestCase):
+    def test_exact_stop_is_lifecycle_intent(self):
+        for command in ("stop", " STOP ", "/stop", " / stop "):
+            self.assertEqual(lifecycle_intent(command), "stop")
+
+    def test_stop_substrings_are_not_lifecycle_intent(self):
+        for command in ("say stop", "stopsound @a", "stop now", "stopserver", ""):
+            self.assertIsNone(lifecycle_intent(command), command)
+
+
+class RegistryTransactionTests(unittest.TestCase):
+    def _manager_with_instance(self):
+        root = Path(tempfile.mkdtemp())
+        server = root / "server"
+        server.mkdir()
+        manager = InstanceManager(root / "cfg")
+        instance = manager.add_instance(str(server), "Server")
+        return root, manager, instance
+
+    def test_failed_add_does_not_create_memory_only_row(self):
+        root, manager, _ = self._manager_with_instance()
+        other = root / "other"
+        other.mkdir()
+        before = list(manager.instances)
+        with patch.object(manager, "_write_instances", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                manager.add_instance(str(other), "Other")
+        self.assertEqual(manager.instances, before)
+
+    def test_failed_remove_keeps_registry_row_in_memory(self):
+        _, manager, instance = self._manager_with_instance()
+        with patch.object(manager, "_write_instances", side_effect=OSError("read only")):
+            with self.assertRaises(OSError):
+                manager.remove_instance(instance.id)
+        self.assertEqual([row.id for row in manager.instances], [instance.id])
+
+    def test_malformed_registry_blocks_destructive_overwrite(self):
+        root = Path(tempfile.mkdtemp())
+        cfg = root / "cfg"
+        cfg.mkdir()
+        registry = cfg / "instances.json"
+        registry.write_text('{"instances": [{"name": "missing path"}]}')
+        manager = InstanceManager(cfg)
+        manager.load()
+        self.assertIsNotNone(manager.load_error)
+        with self.assertRaisesRegex(RuntimeError, "writes are disabled"):
+            manager.save()
+        self.assertIn("missing path", registry.read_text())
+
+    def test_external_registry_change_is_detected(self):
+        _, manager, _ = self._manager_with_instance()
+        self.assertFalse(manager.registry_changed_externally())
+        manager.registry_file.write_text('{"version": 1, "instances": []}')
+        self.assertTrue(manager.registry_changed_externally())
 
 
 class DeleteTargetTests(unittest.TestCase):
@@ -109,6 +168,49 @@ class TmuxCommandTests(unittest.TestCase):
             ["tmux", "send-keys", "-t", "=gtnh", "-l", "--", "say Space C-c ; $(no-shell)"],
         )
         self.assertEqual(calls[1], ["tmux", "send-keys", "-t", "=gtnh", "Enter"])
+
+    def test_removal_probe_blocks_running_session_and_timeout(self):
+        import subprocess
+        with patch.object(
+            self.tm, "_run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ):
+            safe, reason = self.tm.safe_to_remove(self.inst)
+        self.assertFalse(safe)
+        self.assertIn("running", reason)
+        with patch.object(
+            self.tm, "_run",
+            return_value=subprocess.CompletedProcess([], 1, "", "timeout"),
+        ):
+            safe, reason = self.tm.safe_to_remove(self.inst)
+        self.assertFalse(safe)
+        self.assertIn("timed out", reason)
+
+    def test_removal_probe_allows_confirmed_absent_session(self):
+        import subprocess
+        with patch.object(
+            self.tm, "_run",
+            return_value=subprocess.CompletedProcess([], 1, "", "can't find session"),
+        ):
+            safe, _ = self.tm.safe_to_remove(self.inst)
+        self.assertTrue(safe)
+
+    def test_missing_directory_is_reported_when_no_session_exists(self):
+        import subprocess
+        missing = ServerInstance(str(self.root / "gone"), "Gone", tmux_session="gone")
+        with (
+            patch.object(self.tm, "tmux_available", return_value=True),
+            patch.object(self.tm, "list_sessions", return_value=[]),
+        ):
+            self.assertEqual(self.tm.status_map([missing])[missing.id], "missing")
+
+    def test_running_session_remains_controllable_when_files_are_missing(self):
+        missing = ServerInstance(str(self.root / "gone"), "Gone", tmux_session="gone")
+        with (
+            patch.object(self.tm, "tmux_available", return_value=True),
+            patch.object(self.tm, "list_sessions", return_value=["gone"]),
+        ):
+            self.assertEqual(self.tm.status_map([missing])[missing.id], "running")
 
     def test_konsole_attach_uses_separate_argv(self):
         with (

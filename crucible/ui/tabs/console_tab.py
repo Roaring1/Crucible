@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from collections import deque
 
-from PyQt6.QtCore import Qt, QEvent, pyqtSlot
+from PyQt6.QtCore import Qt, QEvent, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
     QColor, QFont, QTextCharFormat, QTextCursor,
     QShortcut, QKeySequence, QTextDocument,
@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 
 from ...data.instance_model import ServerInstance
 from ...process.log_watcher import LogWatcher
+from ...process.command_intent import lifecycle_intent
 from .. import theme
 
 MAX_LINES    = 2000
@@ -133,6 +134,10 @@ class _CommandLineEdit(QLineEdit):
 
 
 class ConsoleTab(QWidget):
+    # Emitted only after tmux accepted a command. The panel uses this to fold
+    # lifecycle commands into the same state machine as GUI buttons.
+    lifecycle_command_sent = pyqtSignal(str, str)  # instance_id, command
+
     """
     Displays the live server log and allows sending commands.
 
@@ -536,6 +541,7 @@ class ConsoleTab(QWidget):
             "stopping": ("◌ Stopping…",   theme.ORANGE),
             "stopped":  ("○ Offline",     theme.SURFACE2),
             "tmux_missing": ("⚠ tmux missing", theme.RED),
+            "missing": ("⚠ Server files missing", theme.RED),
         }
         text, color = mapping.get(status, (status.capitalize(), theme.SURFACE2))
         # Don't clobber a more-specific log-watcher message for running state --
@@ -561,6 +567,14 @@ class ConsoleTab(QWidget):
 
     # Quick commands
 
+    def _command_accepted(self, cmd: str) -> None:
+        """Record an accepted command and publish lifecycle intent."""
+        self._append_system(f"» {cmd}")
+        if self._instance is not None:
+            intent = lifecycle_intent(cmd)
+            if intent is not None:
+                self.lifecycle_command_sent.emit(self._instance.id, intent)
+
     def _quick_send(self, cmd: str) -> None:
         """Send a preset command directly."""
         if self._instance is None:
@@ -568,7 +582,7 @@ class ConsoleTab(QWidget):
         from ...process.tmux_manager import TmuxManager
         tmux = TmuxManager()
         if tmux.send_command(self._instance, cmd):
-            self._append_system(f"» {cmd}")
+            self._command_accepted(cmd)
         else:
             self._append_system("Quick command failed (is server running?)")
 
@@ -604,7 +618,7 @@ class ConsoleTab(QWidget):
         from ...process.tmux_manager import TmuxManager
         tmux = TmuxManager()
         if tmux.send_command(self._instance, cmd):
-            self._append_system(f"» {cmd}")
+            self._command_accepted(cmd)
             # Save to history
             if not self._history or self._history[-1] != cmd:
                 self._history.append(cmd)

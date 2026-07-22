@@ -60,6 +60,7 @@ class MainWindow(QMainWindow):
         self._tmux = TmuxManager()
         self._health_thread: QThread | None = None
         self._health_worker: _HealthWorker | None = None
+        self._external_registry_warning_shown = False
 
         self.setWindowTitle("Crucible — Minecraft Server Manager")
         self.resize(1200, 760)
@@ -138,6 +139,22 @@ class MainWindow(QMainWindow):
         self._health_check()
 
     def _health_check(self) -> None:
+        # Never silently accept an externally edited/deleted registry while the
+        # GUI has live objects and worker threads referring to its old rows.
+        if self._manager.registry_changed_externally():
+            if not self._external_registry_warning_shown:
+                self._external_registry_warning_shown = True
+                QMessageBox.warning(
+                    self,
+                    "Server registry changed outside Crucible",
+                    "~/.config/crucible/instances.json was edited, replaced, or "
+                    "deleted by another program. Crucible will keep its current "
+                    "in-memory list for safety. Finish active work, close Crucible, "
+                    "and reopen it to load the external change. No server files "
+                    "have been deleted by this warning.",
+                )
+        else:
+            self._external_registry_warning_shown = False
         if self._health_thread is not None and self._health_thread.isRunning():
             return
         self._health_thread = QThread()
@@ -181,7 +198,8 @@ class MainWindow(QMainWindow):
 
     def _on_instance_selected(self, instance: ServerInstance) -> None:
         previous_id = self._panel.current_instance_id()
-        if not self._panel.load(instance) and previous_id:
+        status_hint = self._sidebar.status_for(instance.id)
+        if not self._panel.load(instance, status_hint=status_hint) and previous_id:
             QTimer.singleShot(0, lambda: self._sidebar.select_by_id(previous_id))
 
     def _on_add_requested(self) -> None:
@@ -279,12 +297,15 @@ class MainWindow(QMainWindow):
         self._sidebar.update_status(instance_id, status)
 
     def _on_remove_requested(self, instance) -> None:
-        status = self._sidebar.status_for(instance.id)
-        if status in {"running", "starting", "stopping"}:
+        # Destructive decisions never trust the periodically cached sidebar dot.
+        # Probe the exact tmux target now and fail closed on timeout/error.
+        safe, reason = self._tmux.safe_to_remove(instance)
+        if not safe:
             QMessageBox.warning(
-                self, "Stop the server first",
-                f"{instance.name} is currently {status}. Stop it completely before "
-                "removing it from Crucible or deleting its files.",
+                self, "Cannot safely remove server",
+                f"Crucible will not remove {instance.name} from its registry or "
+                f"delete its files because {reason}. Stop the server completely "
+                "and retry. No files or registry rows were changed.",
             )
             return
         box = QMessageBox(self)

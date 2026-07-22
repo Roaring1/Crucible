@@ -86,6 +86,10 @@ class InstancePanel(QWidget):
         self._ip_request_generation: int       = 0
         self._watchdog:       Watchdog | None = None
         self._wd_thread:      QThread | None  = None
+        # Expensive tabs are loaded on first view per instance, not all at once
+        # during every sidebar selection.
+        self._loaded_tabs: set[QWidget] = set()
+        self._tps_poll_inflight = False
 
         self._build_ui()
         self._show_empty()
@@ -240,6 +244,9 @@ class InstancePanel(QWidget):
         self._tabs.addTab(self._system,  "📊  System")
         # Poll TPS only while the Console tab is focused (see _update_tps_polling).
         self._tabs.currentChanged.connect(self._on_tab_changed)
+        self._console.lifecycle_command_sent.connect(
+            self._on_console_lifecycle_command
+        )
 
         layout.addWidget(self._tabs, stretch=1)
 
@@ -320,7 +327,7 @@ class InstancePanel(QWidget):
 
     # Public API
 
-    def load(self, instance: ServerInstance) -> bool:
+    def load(self, instance: ServerInstance, status_hint: str | None = None) -> bool:
         """Switch panels safely; return False when the old view must remain."""
         if self._instance is not None and self._instance.id == instance.id:
             return True
@@ -345,9 +352,12 @@ class InstancePanel(QWidget):
         self._ver_label.setText(instance.version)
         self._set_buttons_enabled(True)
 
-        # Determine current status
-        status = self._tmux.get_status(instance)
+        # Sidebar health checks already know the current state. Reuse that
+        # bounded background result instead of spawning a blocking tmux process
+        # on every click. Direct action callers may omit the hint.
+        status = status_hint if status_hint not in (None, "unknown") else self._tmux.get_status(instance)
         self._update_status_display(status)
+        self._loaded_tabs.clear()
 
         # Start watchdog once
         self._ensure_watchdog()
@@ -355,18 +365,13 @@ class InstancePanel(QWidget):
             self.watchdog_watch_requested.emit(instance, instance.auto_restart)
             self._update_tps_polling()
 
-        # Load tabs
-        self._setup.load(instance)
-        self._mods.load(instance)
-        self._notes.load(instance)
-        self._info.load(instance, status)
-        self._config.load(instance)
-        self._backup.load(instance)
-        self._players.load(instance)
-        self._system.load(instance)
+        # Load only the visible tab. Mods, backups, player JSON, validation,
+        # and process scans can be expensive on large servers and must not all
+        # run synchronously merely because a sidebar row was clicked.
+        self._tabs.setEnabled(True)
+        self._load_current_tab()
 
         # Start log watcher
-        self._tabs.setEnabled(True)
         self._start_watcher(instance)
         return True
 
@@ -513,8 +518,36 @@ class InstancePanel(QWidget):
             self._watcher = None
         if self._w_thread:
             self._w_thread.quit()
-            self._w_thread.wait(2000)
+            # A timed wait() can time out while the worker is still
+            # finishing up (e.g. mid-poll). Never drop the last Python
+            # reference to a QThread that is still running -- PyQt6
+            # aborts the process with "QThread: Destroyed while thread
+            # is still running" if we do. Fall back to an unbounded wait
+            # so we only null the reference once it has truly stopped.
+            if not self._w_thread.wait(2000):
+                self._w_thread.wait()
             self._w_thread = None
+
+    @pyqtSlot(str, str)
+    def _on_console_lifecycle_command(self, instance_id: str, command: str) -> None:
+        """Fold accepted console lifecycle commands into panel state.
+
+        This is intent, not final truth: the log watcher and tmux health checks
+        still decide when the process has actually stopped.
+        """
+        if self._instance is None or self._instance.id != instance_id:
+            return
+        if command.casefold() != "stop":
+            return
+        if self._watchdog:
+            self.watchdog_unwatch_requested.emit(instance_id)
+        if self._current_status in ("running", "starting"):
+            self._update_status_display("stopping")
+            self.status_changed.emit(instance_id, "stopping")
+            self._tps_timer.stop()
+            self._console._append_system(
+                "Crucible recognized 'stop'; waiting for the tmux session to exit…"
+            )
 
     # Log-event handlers (called from main thread via queued signal)
 
@@ -576,7 +609,33 @@ class InstancePanel(QWidget):
         else:
             self._tps_timer.stop()
 
+    def _load_current_tab(self) -> None:
+        inst = self._instance
+        tab = self._tabs.currentWidget()
+        if inst is None or tab is None or tab in self._loaded_tabs:
+            return
+        status = self._current_status
+        if tab is self._setup:
+            self._setup.load(inst)
+        elif tab is self._mods:
+            self._mods.load(inst)
+        elif tab is self._notes:
+            self._notes.load(inst)
+        elif tab is self._info:
+            self._info.load(inst, status)
+        elif tab is self._config:
+            self._config.load(inst)
+        elif tab is self._backup:
+            self._backup.load(inst)
+        elif tab is self._players:
+            self._players.load(inst)
+        elif tab is self._system:
+            self._system.load(inst)
+        # Console is attached by the watcher lifecycle rather than load().
+        self._loaded_tabs.add(tab)
+
     def _on_tab_changed(self, _index: int) -> None:
+        self._load_current_tab()
         self._update_tps_polling()
 
     def _auto_tps(self) -> None:
@@ -585,10 +644,20 @@ class InstancePanel(QWidget):
         Vanilla/Fabric/Quilt have no TPS command, so we send nothing rather than
         spamming "Unknown or incomplete command" into their console.
         """
-        if self._instance and self._current_status == "running":
-            cmd = self._instance.tps_command()
+        if self._tps_poll_inflight:
+            return
+        inst = self._instance
+        if inst and self._current_status == "running":
+            cmd = inst.tps_command()
             if cmd:
-                self._tmux.send_command(self._instance, cmd)
+                self._tps_poll_inflight = True
+
+                def _done(_ok: bool, _msg: str) -> None:
+                    self._tps_poll_inflight = False
+
+                self._run_tmux(
+                    lambda: (self._tmux.send_command(inst, cmd), ""), _done
+                )
 
     # Status display
 
@@ -605,6 +674,7 @@ class InstancePanel(QWidget):
             "starting":     "⚡ STARTING…",
             "stopping":     "◌ STOPPING…",
             "tmux_missing": "⚠ TMUX MISSING",
+            "missing":      "⚠ SERVER FILES MISSING",
         }.get(status, status.upper())
 
         self._status_label.setText(label_text)
@@ -655,7 +725,8 @@ class InstancePanel(QWidget):
                 # server that vanished before "Done" crashed/exited.
                 self._update_status_display("stopped")
                 self.status_changed.emit(inst.id, "stopped")
-                self._info.load(inst, "stopped")
+                if self._info in self._loaded_tabs:
+                    self._info.load(inst, "stopped")
 
         self._run_tmux(lambda: (self._tmux.is_running(inst), ""), _done)
 
@@ -829,7 +900,11 @@ class InstancePanel(QWidget):
                 )
             self._watchdog = None
             self._wd_thread.quit()
-            self._wd_thread.wait(2000)
+            # Same rationale as _stop_watcher(): a timed-out wait() does
+            # NOT mean the thread stopped, so never null the reference on
+            # a timeout alone -- fall back to an unbounded wait first.
+            if not self._wd_thread.wait(2000):
+                self._wd_thread.wait()
             self._wd_thread = None
 
     def closeEvent(self, event) -> None:

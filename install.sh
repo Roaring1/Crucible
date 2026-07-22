@@ -114,7 +114,8 @@ mkdir -p "$STAGE/app/bin"
 cat > "$STAGE/app/bin/crucible" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-APP_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+SELF="$(readlink -f -- "${BASH_SOURCE[0]}")"
+APP_ROOT="$(cd -- "$(dirname -- "$SELF")/.." && pwd -P)"
 export PYTHONPATH="$APP_ROOT/source${PYTHONPATH:+:$PYTHONPATH}"
 exec "$APP_ROOT/venv/bin/python" -m crucible "$@"
 EOF

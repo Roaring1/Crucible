@@ -105,7 +105,7 @@ class Watchdog(QObject):
             lambda: self._mark_stable(iid, generation),
         )
 
-    @pyqtSlot(object, bool)
+    @pyqtSlot(str)
     def unwatch(self, instance_id: str) -> None:
         """
         Deregister an instance.

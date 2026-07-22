@@ -1,4 +1,7 @@
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,6 +18,54 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertIn(".crucible-previous.", text)
         self.assertIn("This installer never deletes the folder", text)
         self.assertIn("$APP_HOME/bin/crucible", text)
+
+
+    def test_installed_launcher_resolves_symlink_before_locating_venv(self):
+        text = (ROOT / "install.sh").read_text()
+        marker = 'cat > "$STAGE/app/bin/crucible" <<\'EOF\'\n'
+        body = text.split(marker, 1)[1].split("\nEOF\n", 1)[0] + "\n"
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            app = root / "share" / "crucible"
+            (app / "bin").mkdir(parents=True)
+            (app / "venv" / "bin").mkdir(parents=True)
+            (app / "source").mkdir()
+            launcher = app / "bin" / "crucible"
+            launcher.write_text(body)
+            launcher.chmod(0o755)
+            fake_python = app / "venv" / "bin" / "python"
+            fake_python.write_text("#!/usr/bin/env bash\nprintf '%s\n' \"$PYTHONPATH|$*\"\n")
+            fake_python.chmod(0o755)
+            link_dir = root / "bin"
+            link_dir.mkdir()
+            link = link_dir / "crucible"
+            link.symlink_to(launcher)
+            result = subprocess.run(
+                [str(link), "--help"], text=True, capture_output=True,
+                check=True, cwd=root,
+                env={**os.environ, "PYTHONPATH": ""},
+            )
+            self.assertIn(str(app / "source"), result.stdout)
+            self.assertIn("-m crucible --help", result.stdout)
+            self.assertNotIn(str(root / "venv"), result.stdout)
+
+    def test_expensive_server_tabs_are_lazy_loaded(self):
+        panel = (ROOT / "crucible/ui/instance_panel.py").read_text()
+        self.assertIn("self._loaded_tabs.clear()", panel)
+        self.assertIn("self._load_current_tab()", panel)
+        load_body = panel.split("def load(self, instance:", 1)[1].split(
+            "def current_instance_id", 1
+        )[0]
+        self.assertNotIn("self._mods.load(instance)", load_body)
+        self.assertNotIn("self._backup.load(instance)", load_body)
+        self.assertNotIn("self._players.load(instance)", load_body)
+
+    def test_console_stop_uses_lifecycle_state_machine(self):
+        console = (ROOT / "crucible/ui/tabs/console_tab.py").read_text()
+        panel = (ROOT / "crucible/ui/instance_panel.py").read_text()
+        self.assertIn("lifecycle_intent(cmd)", console)
+        self.assertIn("_on_console_lifecycle_command", panel)
+        self.assertIn('self._update_status_display("stopping")', panel)
 
     def test_downloader_requires_exact_verified_assets(self):
         text = (ROOT / "get-crucible.sh").read_text()

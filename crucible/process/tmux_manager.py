@@ -86,16 +86,44 @@ class TmuxManager:
         )
         return result.returncode == 0
 
+    def safe_to_remove(self, instance: ServerInstance) -> tuple[bool, str]:
+        """Fail-closed live probe before unregistering or deleting an instance.
+
+        Sidebar health is intentionally not trusted here because it can be up to
+        one polling interval stale. A timeout or unexpected tmux error blocks
+        removal rather than guessing that the server is stopped.
+        """
+        if not self.tmux_available():
+            return True, "tmux is not installed; no managed session can be running"
+        result = self._run(
+            ["tmux", "has-session", "-t", self._target(instance)], timeout=2
+        )
+        if result.returncode == 0:
+            return False, "the tmux session is still running"
+        detail = (result.stderr or "").strip().lower()
+        if detail == "timeout":
+            return False, "the live tmux safety check timed out"
+        # tmux has-session uses exit 1 when the exact session does not exist.
+        if result.returncode == 1:
+            return True, "no live tmux session exists"
+        return False, detail or f"tmux safety check failed with exit {result.returncode}"
+
     def get_status(
         self, instance: ServerInstance
-    ) -> Literal["running", "stopped", "tmux_missing"]:
+    ) -> Literal["running", "stopped", "missing", "tmux_missing"]:
         """
         Return a status string for the instance.
         "tmux_missing" means tmux itself isn't installed.
         """
         if not shutil.which("tmux"):
             return "tmux_missing"
-        return "running" if self.is_running(instance) else "stopped"
+        # A live tmux session remains controllable even if its original server
+        # directory was externally deleted. Prefer live process truth first.
+        if self.is_running(instance):
+            return "running"
+        if not Path(instance.path).is_dir():
+            return "missing"
+        return "stopped"
 
     def tmux_available(self) -> bool:
         return shutil.which("tmux") is not None
@@ -323,12 +351,12 @@ class TmuxManager:
         session = self.session_name(instance)
         literal = self._run([
             "tmux", "send-keys", "-t", "=" + session, "-l", "--", command,
-        ])
+        ], timeout=2)
         if literal.returncode != 0:
             return False
         enter = self._run([
             "tmux", "send-keys", "-t", "=" + session, "Enter",
-        ])
+        ], timeout=2)
         return enter.returncode == 0
 
     def attach(
@@ -400,12 +428,17 @@ class TmuxManager:
 
     def status_map(
         self, instances: list[ServerInstance]
-    ) -> dict[str, Literal["running", "stopped"]]:
-        """Return all statuses from one tmux query using exact session names."""
+    ) -> dict[str, Literal["running", "stopped", "missing", "tmux_missing"]]:
+        """Return live process and filesystem statuses in one bounded pass."""
         if not self.tmux_available():
-            return {i.id: "stopped" for i in instances}
+            return {i.id: "tmux_missing" for i in instances}
         sessions = set(self.list_sessions())
-        return {
-            i.id: ("running" if self.session_name(i) in sessions else "stopped")
-            for i in instances
-        }
+        result = {}
+        for instance in instances:
+            if self.session_name(instance) in sessions:
+                result[instance.id] = "running"
+            elif not Path(instance.path).is_dir():
+                result[instance.id] = "missing"
+            else:
+                result[instance.id] = "stopped"
+        return result

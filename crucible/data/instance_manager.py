@@ -73,13 +73,28 @@ class InstanceManager:
         self.config_dir    = config_dir
         self.registry_file = config_dir / "instances.json"
         self.instances: list[ServerInstance] = []
+        self._known_registry_signature = None
+        self.load_error: str | None = None
 
     # Persistence
+
+    def _registry_signature(self):
+        try:
+            st = self.registry_file.stat()
+            return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+        except OSError:
+            return None
+
+    def registry_changed_externally(self) -> bool:
+        """True when the registry changed without going through this manager."""
+        return self._registry_signature() != self._known_registry_signature
 
     def load(self) -> None:
         """Load registry from disk.  Missing file → empty list (not an error)."""
         if not self.registry_file.exists():
             self.instances = []
+            self._known_registry_signature = None
+            self.load_error = None
             return
 
         try:
@@ -92,24 +107,71 @@ class InstanceManager:
             rows = data.get("instances", [])
             if not isinstance(rows, list):
                 raise TypeError("registry instances must be a JSON list")
-            self.instances = [ServerInstance.from_dict(d) for d in rows]
-        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
-            # Corrupted file -- surface the error but don't crash the app
-            print(f"[crucible] Warning: registry parse error ({exc}) — starting empty")
+            loaded: list[ServerInstance] = []
+            seen_ids: set[str] = set()
+            seen_paths: set[str] = set()
+            seen_sessions: set[str] = set()
+            for index, row in enumerate(rows):
+                if not isinstance(row, dict):
+                    raise TypeError(f"registry row {index} must be an object")
+                instance = ServerInstance.from_dict(row)
+                resolved_path = str(Path(instance.path).expanduser().resolve())
+                if instance.id in seen_ids:
+                    raise TypeError(f"duplicate instance id: {instance.id}")
+                if resolved_path in seen_paths:
+                    raise TypeError(f"duplicate instance path: {resolved_path}")
+                if instance.tmux_session in seen_sessions:
+                    raise TypeError(f"duplicate tmux session: {instance.tmux_session}")
+                instance.path = resolved_path
+                seen_ids.add(instance.id)
+                seen_paths.add(resolved_path)
+                seen_sessions.add(instance.tmux_session)
+                loaded.append(instance)
+            self.instances = loaded
+            self.load_error = None
+            self._known_registry_signature = self._registry_signature()
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            # Never silently overwrite a malformed externally edited registry.
+            # All writes remain blocked until it is fixed and Crucible restarts.
+            self.load_error = str(exc)
+            print(f"[crucible] Warning: registry parse error ({exc}) — writes disabled")
             self.instances = []
+            self._known_registry_signature = self._registry_signature()
 
-    def save(self) -> None:
-        """Atomically write registry to disk."""
+    def _write_instances(self, instances: list[ServerInstance]) -> None:
+        """Durably publish a complete registry snapshot without mutating memory."""
+        if self.load_error is not None:
+            raise RuntimeError(
+                "registry writes are disabled because instances.json could not "
+                f"be loaded safely: {self.load_error}"
+            )
+        if self.registry_changed_externally():
+            raise RuntimeError(
+                "instances.json changed outside Crucible; restart to reconcile "
+                "before making registry changes"
+            )
         self.config_dir.mkdir(parents=True, exist_ok=True)
         payload = {
-            "version":   REGISTRY_VERSION,
-            "instances": [i.to_dict() for i in self.instances],
+            "version": REGISTRY_VERSION,
+            "instances": [i.to_dict() for i in instances],
         }
         text = json.dumps(payload, indent=2, ensure_ascii=False)
-        # Atomic: write to .tmp then rename (rename is atomic on POSIX)
         tmp = self.registry_file.with_suffix(".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(self.registry_file)
+        try:
+            with tmp.open("w", encoding="utf-8") as fh:
+                fh.write(text)
+                fh.flush()
+                import os
+                os.fsync(fh.fileno())
+            tmp.replace(self.registry_file)
+            self._known_registry_signature = self._registry_signature()
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+
+    def save(self) -> None:
+        """Atomically and durably write the current registry snapshot."""
+        self._write_instances(self.instances)
 
     # CRUD
 
@@ -169,8 +231,11 @@ class InstanceManager:
             for p in problems:
                 print(f"[crucible] Warning: {p}")
 
-        self.instances.append(inst)
-        self.save()
+        # Commit disk first, then memory. A failed save must not leave a
+        # phantom row that exists only until Crucible restarts.
+        next_instances = [*self.instances, inst]
+        self._write_instances(next_instances)
+        self.instances = next_instances
         return inst
 
     def remove_instance(self, instance_id: str) -> ServerInstance:
@@ -181,8 +246,12 @@ class InstanceManager:
         """
         for i, inst in enumerate(self.instances):
             if inst.id == instance_id:
-                removed = self.instances.pop(i)
-                self.save()
+                removed = inst
+                next_instances = self.instances[:i] + self.instances[i + 1:]
+                # Commit disk first. If this fails, both disk and memory retain
+                # the instance and callers may safely retry.
+                self._write_instances(next_instances)
+                self.instances = next_instances
                 return removed
         raise KeyError(f"No instance with id: {instance_id!r}")
 
@@ -190,8 +259,10 @@ class InstanceManager:
         """Persist changes made to an already-registered instance object."""
         for i, existing in enumerate(self.instances):
             if existing.id == inst.id:
-                self.instances[i] = inst
-                self.save()
+                next_instances = list(self.instances)
+                next_instances[i] = inst
+                self._write_instances(next_instances)
+                self.instances = next_instances
                 return
         raise KeyError(f"Instance {inst.id!r} not in registry")
 
@@ -203,8 +274,9 @@ class InstanceManager:
         id_map   = {i.id: i for i in self.instances}
         ordered  = [id_map[iid] for iid in new_order if iid in id_map]
         leftover = [i for i in self.instances if i.id not in set(new_order)]
-        self.instances = ordered + leftover
-        self.save()
+        next_instances = ordered + leftover
+        self._write_instances(next_instances)
+        self.instances = next_instances
 
     # Lookups
 
