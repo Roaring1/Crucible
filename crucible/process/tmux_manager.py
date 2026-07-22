@@ -74,17 +74,48 @@ class TmuxManager:
         return instance.tmux_session
 
     def _target(self, instance: ServerInstance) -> str:
-        """Force exact tmux target matching (never an accidental prefix match)."""
+        """Exact target-session syntax for session-level tmux commands."""
         return "=" + self.session_name(instance)
+
+    def _pane_target(self, instance: ServerInstance) -> str:
+        """Exact target-pane syntax for commands sent to the server console.
+
+        tmux accepts ``=name`` for target-session commands such as has-session,
+        attach-session, and kill-session. Pane commands such as send-keys and
+        capture-pane require a colon: ``=name:``. Without it tmux reports
+        ``can't find pane: =name`` even though the session exists.
+        """
+        return "=" + self.session_name(instance) + ":"
 
     # Status checks
 
-    def is_running(self, instance: ServerInstance) -> bool:
-        """Return True if a tmux session exists for this instance."""
+    def probe_running(self, instance: ServerInstance) -> bool | None:
+        """Return True/False for a confirmed probe, or None on uncertainty."""
+        if not self.tmux_available():
+            return False
         result = self._run(
-            ["tmux", "has-session", "-t", self._target(instance)]
+            ["tmux", "has-session", "-t", self._target(instance)], timeout=2
         )
-        return result.returncode == 0
+        if result.returncode == 0:
+            return True
+        if (result.stderr or "").strip().lower() == "timeout":
+            return None
+        if result.returncode == 1:
+            return False
+        return None
+
+    def is_running(self, instance: ServerInstance) -> bool:
+        """Compatibility boolean; uncertain probes are never treated as running."""
+        return self.probe_running(instance) is True
+
+    @staticmethod
+    def _unmanaged_pids(instance: ServerInstance) -> list[int]:
+        """Best-effort detection of a server JVM not reachable via its tmux session."""
+        try:
+            from .resource_monitor import ResourceSampler
+            return ResourceSampler().find_instance_pids(instance)
+        except Exception:
+            return []
 
     def safe_to_remove(self, instance: ServerInstance) -> tuple[bool, str]:
         """Fail-closed live probe before unregistering or deleting an instance.
@@ -105,12 +136,18 @@ class TmuxManager:
             return False, "the live tmux safety check timed out"
         # tmux has-session uses exit 1 when the exact session does not exist.
         if result.returncode == 1:
-            return True, "no live tmux session exists"
+            pids = self._unmanaged_pids(instance)
+            if pids:
+                return False, (
+                    "a server-like Java process is still running outside the "
+                    f"configured tmux session (PID(s): {', '.join(map(str, pids))})"
+                )
+            return True, "no live tmux session or matching server process exists"
         return False, detail or f"tmux safety check failed with exit {result.returncode}"
 
     def get_status(
         self, instance: ServerInstance
-    ) -> Literal["running", "stopped", "missing", "tmux_missing"]:
+    ) -> Literal["running", "unmanaged", "stopped", "missing", "unknown", "tmux_missing"]:
         """
         Return a status string for the instance.
         "tmux_missing" means tmux itself isn't installed.
@@ -119,8 +156,13 @@ class TmuxManager:
             return "tmux_missing"
         # A live tmux session remains controllable even if its original server
         # directory was externally deleted. Prefer live process truth first.
-        if self.is_running(instance):
+        running = self.probe_running(instance)
+        if running is True:
             return "running"
+        if running is None:
+            return "unknown"
+        if self._unmanaged_pids(instance):
+            return "unmanaged"
         if not Path(instance.path).is_dir():
             return "missing"
         return "stopped"
@@ -128,7 +170,7 @@ class TmuxManager:
     def tmux_available(self) -> bool:
         return shutil.which("tmux") is not None
 
-    def list_sessions(self) -> list[str]:
+    def list_sessions(self) -> list[str] | None:
         """
         Return all active tmux session names.
         If SESSION_PREFIX is set, only sessions starting with that string are returned.
@@ -137,7 +179,10 @@ class TmuxManager:
         """
         result = self._run(["tmux", "list-sessions", "-F", "#{session_name}"], timeout=2)
         if result.returncode != 0:
-            return []
+            detail = (result.stderr or "").strip().lower()
+            if "no server running" in detail or "failed to connect to server" in detail:
+                return []
+            return None
         sessions = [s.strip() for s in result.stdout.splitlines() if s.strip()]
         if self.SESSION_PREFIX:
             sessions = [s for s in sessions if s.startswith(self.SESSION_PREFIX)]
@@ -243,7 +288,7 @@ class TmuxManager:
 
     def _read_capture(self, session: str, max_lines: int = 40, max_chars: int = 4000) -> str:
         result = self._run(
-            ["tmux", "capture-pane", "-p", "-t", "=" + session, "-S", f"-{max_lines}"],
+            ["tmux", "capture-pane", "-p", "-t", "=" + session + ":", "-S", f"-{max_lines}"],
             timeout=2,
         )
         if result.returncode != 0:
@@ -284,12 +329,15 @@ class TmuxManager:
                 if tail:
                     msg += "\n\nLast output:\n" + tail
                 return False, msg
-            if not self.is_running(instance):
+            running = self.probe_running(instance)
+            if running is False:
                 tail = self._read_capture(session)
                 msg = "The tmux session ended before the server finished starting."
                 if tail:
                     msg += "\n\nLast output:\n" + tail
                 return False, msg
+            # None means the probe was uncertain; do not turn a transient tmux
+            # query failure into a false immediate-start failure.
         return True, ""
 
     def stop(
@@ -307,29 +355,49 @@ class TmuxManager:
                          Falls through to force-kill if the server hangs.
         graceful=False → immediately kills the tmux session (no world save).
         """
-        if not self.is_running(instance):
-            return False, "Server is not running"
+        running = self.probe_running(instance)
+        if running is None:
+            return False, "Could not verify the tmux session state; no command was sent"
+        if not running:
+            pids = self._unmanaged_pids(instance)
+            if pids:
+                return False, (
+                    "Server process exists outside the configured tmux session; "
+                    "Crucible cannot safely send console commands to it"
+                )
+            return False, "Server is not running in its configured tmux session"
 
         if not graceful:
             return self._force_kill(instance)
 
         # Send 'stop' via the console
-        if not self.send_command(instance, "stop"):
-            return False, "Failed to send 'stop' command — session may have vanished"
+        sent, send_detail = self.send_command_result(instance, "stop")
+        if not sent:
+            return False, f"Failed to send 'stop': {send_detail}"
 
-        # Poll until the session disappears or we time out
+        # Poll until the session is *confirmed* gone. Unknown probes are not
+        # offline and never authorize a force-kill.
         elapsed = 0
+        saw_unknown = False
         while elapsed < timeout_s:
             time.sleep(poll_interval_s)
             elapsed += poll_interval_s
-            if not self.is_running(instance):
+            running = self.probe_running(instance)
+            if running is False:
                 return True, f"Server stopped gracefully after {elapsed}s"
+            if running is None:
+                saw_unknown = True
 
-        # Timed out -- fall through to force kill
-        ok, msg = self._force_kill(instance)
-        if ok:
-            return True, f"Server did not stop within {timeout_s}s — force-killed"
-        return False, f"Force kill failed after timeout: {msg}"
+        if saw_unknown and self.probe_running(instance) is None:
+            return False, (
+                f"Could not verify shutdown within {timeout_s}s because tmux "
+                "status checks were unavailable. No force-kill was attempted."
+            )
+        # Graceful mode must never silently become destructive. The GUI may now
+        # ask the user explicitly whether to force-kill without a world save.
+        return False, (
+            f"Server did not stop within {timeout_s}s. It was not force-killed."
+        )
 
     def _force_kill(self, instance: ServerInstance) -> tuple[bool, str]:
         """Kill the tmux session immediately."""
@@ -341,23 +409,28 @@ class TmuxManager:
 
     # Console interaction
 
-    def send_command(self, instance: ServerInstance, command: str) -> bool:
-        """
-        Send a command string to the server console via tmux send-keys.
-
-        Works for any Minecraft/Forge console command: stop, say, op, tps, etc.
-        Returns True on success.
-        """
-        session = self.session_name(instance)
+    def send_command_result(
+        self, instance: ServerInstance, command: str
+    ) -> tuple[bool, str]:
+        """Send literal console input and return actionable failure detail."""
+        target = self._pane_target(instance)
         literal = self._run([
-            "tmux", "send-keys", "-t", "=" + session, "-l", "--", command,
+            "tmux", "send-keys", "-t", target, "-l", "--", command,
         ], timeout=2)
         if literal.returncode != 0:
-            return False
+            detail = (literal.stderr or "").strip() or f"exit {literal.returncode}"
+            return False, f"tmux could not target the server console ({detail})"
         enter = self._run([
-            "tmux", "send-keys", "-t", "=" + session, "Enter",
+            "tmux", "send-keys", "-t", target, "Enter",
         ], timeout=2)
-        return enter.returncode == 0
+        if enter.returncode != 0:
+            detail = (enter.stderr or "").strip() or f"exit {enter.returncode}"
+            return False, f"tmux sent the text but could not press Enter ({detail})"
+        return True, "command accepted by the configured tmux pane"
+
+    def send_command(self, instance: ServerInstance, command: str) -> bool:
+        """Compatibility boolean wrapper around :meth:`send_command_result`."""
+        return self.send_command_result(instance, command)[0]
 
     def attach(
         self,
@@ -375,8 +448,16 @@ class TmuxManager:
         Auto-detection order: konsole (KDE/Nobara default) → kitty → alacritty
         → gnome-terminal → xterm.
         """
-        if not self.is_running(instance):
-            return False, "Server is not running — nothing to attach to"
+        running = self.probe_running(instance)
+        if running is None:
+            return False, "Could not verify the tmux session; retry shortly"
+        if not running:
+            if self._unmanaged_pids(instance):
+                return False, (
+                    "A server process is running outside the configured tmux "
+                    "session; Crucible cannot attach to its console"
+                )
+            return False, "Server is not running in its configured tmux session"
 
         session = self.session_name(instance)
         target = "=" + session
@@ -428,15 +509,22 @@ class TmuxManager:
 
     def status_map(
         self, instances: list[ServerInstance]
-    ) -> dict[str, Literal["running", "stopped", "missing", "tmux_missing"]]:
-        """Return live process and filesystem statuses in one bounded pass."""
+    ) -> dict[str, Literal[
+        "running", "unmanaged", "stopped", "missing", "unknown", "tmux_missing"
+    ]]:
+        """Return process/filesystem truth without converting query errors to offline."""
         if not self.tmux_available():
             return {i.id: "tmux_missing" for i in instances}
-        sessions = set(self.list_sessions())
+        queried = self.list_sessions()
+        if queried is None:
+            return {i.id: "unknown" for i in instances}
+        sessions = set(queried)
         result = {}
         for instance in instances:
             if self.session_name(instance) in sessions:
                 result[instance.id] = "running"
+            elif self._unmanaged_pids(instance):
+                result[instance.id] = "unmanaged"
             elif not Path(instance.path).is_dir():
                 result[instance.id] = "missing"
             else:

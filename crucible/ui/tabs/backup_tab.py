@@ -189,20 +189,44 @@ class BackupTab(QWidget):
         if self._thread and self._thread.isRunning():
             return
 
-        if self._instance and TmuxManager().is_running(self._instance):
-            reply = QMessageBox.warning(
-                self, "Back up a running server?",
-                "The server is currently running. Crucible will request a save-all "
-                "before copying, but a stopped-server backup is the safest option.\n\n"
-                "Continue with a live backup?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
+        if self._instance:
+            tmux = TmuxManager()
+            status = tmux.get_status(self._instance)
+            if status == "unknown":
+                QMessageBox.critical(
+                    self, "Backup cancelled",
+                    "Crucible could not verify whether the server is running. "
+                    "No backup was started; retry after the tmux status recovers.",
+                )
                 return
-            if not TmuxManager().send_command(self._instance, "save-all flush"):
-                QMessageBox.critical(self, "Backup cancelled", "Could not request a world save.")
+            if status == "unmanaged":
+                QMessageBox.critical(
+                    self, "Backup cancelled",
+                    "A matching server process is running outside the configured "
+                    "tmux session. Crucible cannot flush its world safely. Stop it "
+                    "manually or restore the correct tmux session first.",
+                )
                 return
+            if status == "running":
+                reply = QMessageBox.warning(
+                    self, "Back up a running server?",
+                    "The server is currently running. Crucible will request a save-all "
+                    "before copying, but a stopped-server backup is the safest option.\n\n"
+                    "Continue with a live backup?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+                ok, detail = tmux.send_command_result(
+                    self._instance, "save-all flush"
+                )
+                if not ok:
+                    QMessageBox.critical(
+                        self, "Backup cancelled",
+                        f"Could not request a world save:\n{detail}",
+                    )
+                    return
 
         self._backup_btn.setEnabled(False)
         self._progress.setValue(0)

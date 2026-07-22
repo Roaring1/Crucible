@@ -130,7 +130,12 @@ class Watchdog(QObject):
                 continue
             # Require repeated misses: one timed-out/failed tmux query must not
             # trigger a false crash and an unnecessary competing restart.
-            if self._tmux.is_running(instance):
+            running = self._tmux.probe_running(instance)
+            if running is None:
+                # Unknown is not offline. Preserve the previous evidence and
+                # retry next poll instead of inventing a crash.
+                continue
+            if running:
                 self._miss_count[iid] = 0
                 continue
             misses = self._miss_count.get(iid, 0) + 1

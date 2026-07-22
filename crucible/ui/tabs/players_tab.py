@@ -770,16 +770,39 @@ class _PlayerListWidget(QWidget):
             QMessageBox.information(self, "Already Listed",
                                     f"{name} is already in this list.")
             return
-        if self._instance is None or not self._tmux.is_running(self._instance):
+        if self._instance is None:
+            return
+        running = self._tmux.probe_running(self._instance)
+        if running is None:
             QMessageBox.warning(
-                self, "Start server first",
-                "Crucible will not invent a UUID for this player. Start the server, "
-                "then add them so Minecraft resolves and stores their real profile.",
+                self, "Server status unavailable",
+                "Crucible could not verify the configured tmux session. No command "
+                "was sent; retry when the status check recovers.",
+            )
+            return
+        if not running:
+            if self._tmux._unmanaged_pids(self._instance):
+                detail = (
+                    "The server appears to be running outside its configured tmux "
+                    "session, so Crucible cannot safely address its console."
+                )
+            else:
+                detail = "The server is not running in its configured tmux session."
+            QMessageBox.warning(
+                self, "Managed server console unavailable",
+                detail + " Crucible will not invent a UUID; restore/start the managed "
+                "session and try again.",
             )
             return
         command = "whitelist add" if self._filename == "whitelist.json" else "op"
-        if not self._tmux.send_command(self._instance, f"{command} {name}"):
-            QMessageBox.critical(self, "Command failed", "Could not send the command to the server.")
+        ok, detail = self._tmux.send_command_result(
+            self._instance, f"{command} {name}"
+        )
+        if not ok:
+            QMessageBox.critical(
+                self, "Command failed",
+                f"Could not send the command to the server:\n{detail}",
+            )
             return
         self._name_input.clear()
         self._status.setText(f"Sent: {command} {name} — refreshing…")

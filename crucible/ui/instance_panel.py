@@ -84,6 +84,7 @@ class InstancePanel(QWidget):
         self._w_thread: QThread | None        = None
         self._current_status: str             = "stopped"
         self._ip_request_generation: int       = 0
+        self._manual_stop_generation: int       = 0
         self._watchdog:       Watchdog | None = None
         self._wd_thread:      QThread | None  = None
         # Expensive tabs are loaded on first view per instance, not all at once
@@ -426,7 +427,7 @@ class InstancePanel(QWidget):
         # If the health check now says running but we were stopped,
         # the server was probably started externally -- accept it.
         self._update_status_display(status)
-        if self._instance:
+        if self._instance and self._info in self._loaded_tabs:
             self._info.load(self._instance, status)
 
     # Sidebar context-menu proxies
@@ -548,6 +549,46 @@ class InstancePanel(QWidget):
             self._console._append_system(
                 "Crucible recognized 'stop'; waiting for the tmux session to exit…"
             )
+            self._manual_stop_generation += 1
+            generation = self._manual_stop_generation
+            QTimer.singleShot(
+                120_000,
+                lambda: self._check_manual_stop_timeout(instance_id, generation),
+            )
+
+    def _check_manual_stop_timeout(self, instance_id: str, generation: int) -> None:
+        """Resume normal monitoring if a typed stop never actually stops."""
+        if (
+            generation != self._manual_stop_generation
+            or self._instance is None
+            or self._instance.id != instance_id
+            or self._current_status != "stopping"
+        ):
+            return
+        inst = self._instance
+
+        def _done(running: bool | None, _msg: str) -> None:
+            if (
+                generation != self._manual_stop_generation
+                or self._instance is not inst
+                or self._current_status != "stopping"
+            ):
+                return
+            if running is True:
+                self._update_status_display("running")
+                self.status_changed.emit(inst.id, "running")
+                if self._watchdog:
+                    self.watchdog_watch_requested.emit(inst, inst.auto_restart)
+                self._console._append_system(
+                    "The server did not stop after 120 seconds; monitoring resumed."
+                )
+            elif running is None:
+                QTimer.singleShot(
+                    30_000,
+                    lambda: self._check_manual_stop_timeout(instance_id, generation),
+                )
+
+        self._run_tmux(lambda: (self._tmux.probe_running(inst), ""), _done)
 
     # Log-event handlers (called from main thread via queued signal)
 
@@ -675,6 +716,8 @@ class InstancePanel(QWidget):
             "stopping":     "◌ STOPPING…",
             "tmux_missing": "⚠ TMUX MISSING",
             "missing":      "⚠ SERVER FILES MISSING",
+            "unmanaged":    "⚠ RUNNING OUTSIDE MANAGED TMUX",
+            "unknown":      "? STATUS CHECK UNAVAILABLE",
         }.get(status, status.upper())
 
         self._status_label.setText(label_text)
@@ -686,7 +729,7 @@ class InstancePanel(QWidget):
         starting = (status in ("starting", "stopping"))
         self._btn_start.setEnabled(status == "stopped")
         self._btn_stop.setEnabled(running or starting)
-        self._btn_restart.setEnabled(True)
+        self._btn_restart.setEnabled(status in ("running", "stopped"))
         self._btn_attach.setEnabled(running or starting)
 
         # Drive (or stop) the fast transition poll based on the new state.
@@ -715,11 +758,13 @@ class InstancePanel(QWidget):
         self._transition_polling = True
         expecting = self._current_status
 
-        def _done(is_running: bool, _msg: str) -> None:
+        def _done(is_running: bool | None, _msg: str) -> None:
             self._transition_polling = False
             # Bail out if the user switched servers or the state already moved.
             if self._instance is not inst or self._current_status != expecting:
                 return
+            if is_running is None:
+                return  # uncertain is not stopped; retry on the next timer tick
             if not is_running:
                 # Session gone: a stopping server is now stopped; a starting
                 # server that vanished before "Done" crashed/exited.
@@ -728,7 +773,7 @@ class InstancePanel(QWidget):
                 if self._info in self._loaded_tabs:
                     self._info.load(inst, "stopped")
 
-        self._run_tmux(lambda: (self._tmux.is_running(inst), ""), _done)
+        self._run_tmux(lambda: (self._tmux.probe_running(inst), ""), _done)
 
     def _set_buttons_enabled(self, enabled: bool) -> None:
         for btn in (self._btn_start, self._btn_stop,
@@ -783,15 +828,27 @@ class InstancePanel(QWidget):
 
         self._run_tmux(lambda: self._tmux.start(inst), _on_done)
 
+    def _restore_after_failed_stop(self, inst: ServerInstance) -> None:
+        """A failed/cancelled stop means the live server must be monitored again."""
+        if self._instance is not inst:
+            return
+        self._update_status_display("running")
+        self.status_changed.emit(inst.id, "running")
+        if self._watchdog:
+            self.watchdog_watch_requested.emit(inst, inst.auto_restart)
+
     def _do_stop(self) -> None:
         if not self._instance:
             return
+        inst = self._instance
         if self._watchdog:
-            self.watchdog_unwatch_requested.emit(self._instance.id)
+            self.watchdog_unwatch_requested.emit(inst.id)
+        self._manual_stop_generation += 1
+        self._update_status_display("stopping")
+        self.status_changed.emit(inst.id, "stopping")
         self._tps_timer.stop()
         self._btn_stop.setEnabled(False)
         self._btn_stop.setText("Stopping…")
-        inst = self._instance
 
         def _on_done(ok: bool, msg: str) -> None:
             if ok:
@@ -799,26 +856,40 @@ class InstancePanel(QWidget):
                 self.status_changed.emit(inst.id, "stopped")
                 self._btn_stop.setText("■  Stop")
                 self._btn_stop.setEnabled(False)
-            else:
-                reply = QMessageBox.question(
-                    self,
-                    "Stop Failed",
-                    f"{msg}\n\nForce-kill? (no world save)",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                )
-                if reply == QMessageBox.StandardButton.Yes:
-                    def _on_kill(ok2: bool, _msg2: str) -> None:
-                        if ok2:
-                            self._update_status_display("stopped")
-                            self.status_changed.emit(inst.id, "stopped")
-                        self._btn_stop.setText("■  Stop")
-                        self._btn_stop.setEnabled(self._current_status in ("running", "starting"))
-                    self._run_tmux(lambda: self._tmux.stop(inst, graceful=False), _on_kill)
-                else:
-                    self._btn_stop.setText("■  Stop")
-                    self._btn_stop.setEnabled(self._current_status in ("running", "starting"))
+                return
 
-        self._run_tmux(lambda: self._tmux.stop(inst, graceful=True, timeout_s=90), _on_done)
+            reply = QMessageBox.question(
+                self,
+                "Stop Failed",
+                f"{msg}\n\nForce-kill? (no world save)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                def _on_kill(ok2: bool, msg2: str) -> None:
+                    if ok2:
+                        self._update_status_display("stopped")
+                        self.status_changed.emit(inst.id, "stopped")
+                    else:
+                        self._restore_after_failed_stop(inst)
+                        QMessageBox.critical(self, "Force-kill failed", msg2)
+                    self._btn_stop.setText("■  Stop")
+                    self._btn_stop.setEnabled(
+                        self._current_status in ("running", "starting")
+                    )
+
+                self._run_tmux(
+                    lambda: self._tmux.stop(inst, graceful=False), _on_kill
+                )
+            else:
+                self._restore_after_failed_stop(inst)
+                self._btn_stop.setText("■  Stop")
+                self._btn_stop.setEnabled(
+                    self._current_status in ("running", "starting")
+                )
+
+        self._run_tmux(
+            lambda: self._tmux.stop(inst, graceful=True, timeout_s=90), _on_done
+        )
 
     def _do_restart(self) -> None:
         if not self._instance:
@@ -841,15 +912,29 @@ class InstancePanel(QWidget):
             self._preflight_properties(inst)
             self._run_tmux(lambda: self._tmux.start(inst), _on_start_done)
 
-        def _after_check(ok: bool, msg: str) -> None:
-            # msg is "running" or "stopped" -- ok is always True
-            if msg == "running":
+        def _after_check(_ok: bool, state: str) -> None:
+            if state == "unknown":
+                QMessageBox.warning(
+                    self, "Restart",
+                    "Could not verify the tmux session. No stop or start command "
+                    "was issued; retry shortly.",
+                )
+                self._btn_restart.setText("↺  Restart")
+                self._btn_restart.setEnabled(True)
+                return
+            if state == "running":
                 if self._watchdog:
                     self.watchdog_unwatch_requested.emit(inst.id)
 
-                def _on_stop_done(stop_ok: bool, _stop_msg: str) -> None:
+                def _on_stop_done(stop_ok: bool, stop_msg: str) -> None:
                     if not stop_ok:
-                        QMessageBox.warning(self, "Restart", "Server did not stop cleanly.")
+                        if self._watchdog:
+                            self.watchdog_watch_requested.emit(
+                                inst, inst.auto_restart
+                            )
+                        QMessageBox.warning(
+                            self, "Restart", "Server did not stop cleanly:\n" + stop_msg
+                        )
                         self._btn_restart.setText("↺  Restart")
                         self._btn_restart.setEnabled(True)
                         return
@@ -862,12 +947,15 @@ class InstancePanel(QWidget):
             else:
                 _do_start_phase()
 
-        # Check is_running() off the main thread to avoid blocking the UI
-        # (tmux has-session is a subprocess call)
-        self._run_tmux(
-            lambda: (True, "running" if self._tmux.is_running(inst) else "stopped"),
-            _after_check,
-        )
+        def _probe_restart_state():
+            running = self._tmux.probe_running(inst)
+            state = (
+                "unknown" if running is None
+                else ("running" if running else "stopped")
+            )
+            return True, state
+
+        self._run_tmux(_probe_restart_state, _after_check)
 
     def _do_attach(self) -> None:
         if not self._instance:

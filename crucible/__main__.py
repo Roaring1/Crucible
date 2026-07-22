@@ -70,7 +70,7 @@ def cmd_list(manager: InstanceManager, tmux: TmuxManager, _args) -> None:
     print(sep)
 
     for inst in manager.instances:
-        status = status_map.get(inst.id, "stopped")
+        status = status_map.get(inst.id, "unknown")
         dot    = status_dot(status)
         col    = GREEN if status == "running" else DIM
 
@@ -312,16 +312,23 @@ def cmd_stop(manager: InstanceManager, tmux: TmuxManager, args) -> None:
 
 def cmd_restart(manager: InstanceManager, tmux: TmuxManager, args) -> None:
     inst = resolve_instance(manager, args.name)
+    status = tmux.get_status(inst)
 
-    if tmux.is_running(inst):
+    if status == "running":
         info(f"Stopping '{inst.name}'…")
         success, msg = tmux.stop(inst, graceful=True, timeout_s=args.timeout)
         if not success:
             err(f"Stop failed: {msg}")
             sys.exit(1)
         ok(msg)
-    else:
+    elif status == "stopped":
         info("Server was not running — starting fresh")
+    else:
+        err(
+            f"Refusing restart while status is {status!r}; Crucible cannot safely "
+            "decide whether to stop or start the server."
+        )
+        sys.exit(1)
 
     success, msg = tmux.start(inst)
     if success:
@@ -347,7 +354,7 @@ def cmd_status(manager: InstanceManager, tmux: TmuxManager, args) -> None:
 
     print()
     for inst in instances:
-        status = status_map.get(inst.id, "stopped")
+        status = status_map.get(inst.id, "unknown")
         dot    = status_dot(status)
         col    = GREEN if status == "running" else DIM
         print(
@@ -380,14 +387,20 @@ def cmd_send(manager: InstanceManager, tmux: TmuxManager, args) -> None:
     inst    = resolve_instance(manager, args.name)
     command = " ".join(args.command)
 
-    if not tmux.is_running(inst):
-        err(f"'{inst.name}' is not running")
+    running = tmux.probe_running(inst)
+    if running is None:
+        err(f"Could not verify the tmux session for '{inst.name}'; no command sent")
+        sys.exit(1)
+    if not running:
+        status = tmux.get_status(inst)
+        err(f"'{inst.name}' has status {status!r}; no managed console is available")
         sys.exit(1)
 
-    if tmux.send_command(inst, command):
+    sent, detail = tmux.send_command_result(inst, command)
+    if sent:
         ok(f"Sent: {CYAN}{command!r}{RESET}")
     else:
-        err("send-keys failed")
+        err(detail)
         sys.exit(1)
 
 

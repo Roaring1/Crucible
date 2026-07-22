@@ -26,9 +26,11 @@ STATUS_COLORS = {
     "running":      GREEN,
     "stopped":      SURFACE2,
     "tmux_missing": YELLOW,
+    "missing":      RED,
+    "unmanaged":    YELLOW,
+    "unknown":      YELLOW,
     "starting":     ORANGE,
     "stopping":     YELLOW,
-    "unknown":      SURFACE2,
 }
 
 LOG_COLORS = {

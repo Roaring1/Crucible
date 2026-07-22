@@ -103,6 +103,8 @@ Crucible modifies server files only for explicit actions such as setup/import, c
 
 ## Changelog
 
+**v0.6.1** -- corrective runtime-truth release; working tmux console/whitelist/stop targeting, uncertainty-safe status, unmanaged-process detection, and non-destructive stop timeouts
+
 **v0.6.0** -- deep reliability/security audit; atomic backups, safe imports, start-failure reporting, identity/session safeguards, and regression tests
 
 **v0.3.7** -- antivibe GUI pass: amber accent, varied button hierarchy, no uniform border-radius, Unicode separators removed from all source files

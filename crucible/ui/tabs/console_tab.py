@@ -542,6 +542,8 @@ class ConsoleTab(QWidget):
             "stopped":  ("○ Offline",     theme.SURFACE2),
             "tmux_missing": ("⚠ tmux missing", theme.RED),
             "missing": ("⚠ Server files missing", theme.RED),
+            "unmanaged": ("⚠ Running outside managed tmux", theme.YELLOW),
+            "unknown": ("? Status check unavailable", theme.YELLOW),
         }
         text, color = mapping.get(status, (status.capitalize(), theme.SURFACE2))
         # Don't clobber a more-specific log-watcher message for running state --
@@ -581,10 +583,11 @@ class ConsoleTab(QWidget):
             return
         from ...process.tmux_manager import TmuxManager
         tmux = TmuxManager()
-        if tmux.send_command(self._instance, cmd):
+        ok, detail = tmux.send_command_result(self._instance, cmd)
+        if ok:
             self._command_accepted(cmd)
         else:
-            self._append_system("Quick command failed (is server running?)")
+            self._append_system(f"Quick command failed: {detail}")
 
     def _quick_tps(self) -> None:
         """Send the loader-appropriate TPS command, or explain if there isn't one."""
@@ -617,14 +620,15 @@ class ConsoleTab(QWidget):
 
         from ...process.tmux_manager import TmuxManager
         tmux = TmuxManager()
-        if tmux.send_command(self._instance, cmd):
+        ok, detail = tmux.send_command_result(self._instance, cmd)
+        if ok:
             self._command_accepted(cmd)
             # Save to history
             if not self._history or self._history[-1] != cmd:
                 self._history.append(cmd)
             self._hist_idx = -1
         else:
-            self._append_system("Failed to send (is server running?)")
+            self._append_system(f"Failed to send: {detail}")
 
         self._cmd_input.clear()
 

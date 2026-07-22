@@ -28,7 +28,8 @@ class InstanceItem(QListWidgetItem):
         "starting":     theme.ORANGE,
         "stopping":     theme.ORANGE,
         "missing":      theme.RED,
-        "unknown":      theme.SURFACE2,
+        "unmanaged":    theme.YELLOW,
+        "unknown":      theme.YELLOW,
     }
 
     def __init__(self, instance: ServerInstance, status: str = "stopped"):
@@ -328,8 +329,10 @@ class Sidebar(QWidget):
         remove_act  = menu.addAction("🗑  Remove from Crucible…")
 
         running = (status == "running")
-        start_act.setEnabled(not running)
+        stopped = (status == "stopped")
+        start_act.setEnabled(stopped)
         stop_act.setEnabled(running)
+        restart_act.setEnabled(running or stopped)
 
         chosen = menu.exec(self._list.mapToGlobal(pos))
         if chosen == start_act:

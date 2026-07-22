@@ -165,9 +165,58 @@ class TmuxCommandTests(unittest.TestCase):
             self.assertTrue(self.tm.send_command(self.inst, "say Space C-c ; $(no-shell)"))
         self.assertEqual(
             calls[0],
-            ["tmux", "send-keys", "-t", "=gtnh", "-l", "--", "say Space C-c ; $(no-shell)"],
+            ["tmux", "send-keys", "-t", "=gtnh:", "-l", "--", "say Space C-c ; $(no-shell)"],
         )
-        self.assertEqual(calls[1], ["tmux", "send-keys", "-t", "=gtnh", "Enter"])
+        self.assertEqual(calls[1], ["tmux", "send-keys", "-t", "=gtnh:", "Enter"])
+
+    @unittest.skipUnless(__import__("shutil").which("tmux"), "tmux not installed")
+    def test_real_tmux_session_accepts_literal_console_command(self):
+        import subprocess
+        import time
+        import uuid
+
+        name = "crucible-test-" + uuid.uuid4().hex[:12]
+        out = self.root / "console-input.txt"
+        instance = ServerInstance(str(self.root), "Live", tmux_session=name)
+        try:
+            subprocess.run(
+                ["tmux", "new-session", "-d", "-s", name,
+                 f"cat > {out}"], check=True,
+            )
+            ok, detail = self.tm.send_command_result(instance, "whitelist add Roaring4")
+            self.assertTrue(ok, detail)
+            for _ in range(30):
+                if out.exists() and "whitelist add Roaring4" in out.read_text():
+                    break
+                time.sleep(0.05)
+            self.assertEqual(out.read_text().strip(), "whitelist add Roaring4")
+        finally:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", "=" + name],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+
+    def test_session_query_timeout_is_unknown_not_offline(self):
+        with patch.object(self.tm, "list_sessions", return_value=None):
+            self.assertEqual(self.tm.status_map([self.inst])[self.inst.id], "unknown")
+
+    def test_unmanaged_process_is_not_reported_offline_or_safe_to_remove(self):
+        import subprocess
+        with (
+            patch.object(self.tm, "list_sessions", return_value=[]),
+            patch.object(self.tm, "_unmanaged_pids", return_value=[4242]),
+        ):
+            self.assertEqual(self.tm.status_map([self.inst])[self.inst.id], "unmanaged")
+        with (
+            patch.object(
+                self.tm, "_run",
+                return_value=subprocess.CompletedProcess([], 1, "", "no session"),
+            ),
+            patch.object(self.tm, "_unmanaged_pids", return_value=[4242]),
+        ):
+            safe, reason = self.tm.safe_to_remove(self.inst)
+        self.assertFalse(safe)
+        self.assertIn("4242", reason)
 
     def test_removal_probe_blocks_running_session_and_timeout(self):
         import subprocess
@@ -212,9 +261,35 @@ class TmuxCommandTests(unittest.TestCase):
         ):
             self.assertEqual(self.tm.status_map([missing])[missing.id], "running")
 
+    def test_graceful_stop_never_implicitly_force_kills(self):
+        with (
+            patch.object(self.tm, "probe_running", side_effect=[True, True, True]),
+            patch.object(self.tm, "send_command_result", return_value=(True, "ok")),
+            patch.object(self.tm, "_force_kill") as force_kill,
+            patch("crucible.process.tmux_manager.time.sleep"),
+        ):
+            ok, message = self.tm.stop(
+                self.inst, graceful=True, timeout_s=2, poll_interval_s=1
+            )
+        self.assertFalse(ok)
+        self.assertIn("not force-killed", message)
+        force_kill.assert_not_called()
+
+    def test_uncertain_stop_probe_is_not_offline_or_force_killed(self):
+        with (
+            patch.object(self.tm, "probe_running", return_value=None),
+            patch.object(self.tm, "send_command_result") as send,
+            patch.object(self.tm, "_force_kill") as force_kill,
+        ):
+            ok, message = self.tm.stop(self.inst)
+        self.assertFalse(ok)
+        self.assertIn("Could not verify", message)
+        send.assert_not_called()
+        force_kill.assert_not_called()
+
     def test_konsole_attach_uses_separate_argv(self):
         with (
-            patch.object(self.tm, "is_running", return_value=True),
+            patch.object(self.tm, "probe_running", return_value=True),
             patch("crucible.process.tmux_manager.subprocess.Popen") as popen,
         ):
             ok, _ = self.tm.attach(self.inst, terminal="konsole")

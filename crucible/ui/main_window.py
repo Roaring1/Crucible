@@ -172,8 +172,8 @@ class MainWindow(QMainWindow):
     def _apply_health_status(self, status_map) -> None:
         self._sidebar.update_all_statuses(status_map)
         selected = self._sidebar.selected_instance()
-        if selected:
-            self._panel.update_status(status_map.get(selected.id, "stopped"))
+        if selected and selected.id in status_map:
+            self._panel.update_status(status_map[selected.id])
         self._update_status_bar()
 
     def _health_thread_finished(self) -> None:

@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.1 — 2026-07-21 — runtime truth and tmux console correction
+- Fix the root cause of GUI console, whitelist, save-flush, TPS, and Stop failures: tmux pane commands require exact target-pane syntax `=session:`, while v0.6.0 incorrectly passed target-session syntax `=session` and received `can't find pane`.
+- Add a real tmux integration regression that creates a live session, sends `whitelist add Roaring4`, presses Enter, and verifies the exact received input; also verify capture-pane, has-session, and kill-session target forms.
+- Treat tmux query timeout/error as `unknown`, never as offline; transient query failures no longer trigger false GUI offline state, transition completion, watchdog crashes, restarts, or destructive decisions.
+- Detect matching Java server processes outside the configured tmux session as `unmanaged` rather than stopped; disable unsafe Start/Restart and explain why Crucible cannot control that console.
+- Return actionable tmux stderr in GUI console, whitelist/op, backup save-flush, Stop, and CLI command failures.
+- Make graceful Stop permanently non-destructive: timeout never silently force-kills. The GUI must ask explicitly before a no-world-save kill.
+- Restore watchdog monitoring and online state after a cancelled/failed Stop or Restart stop phase.
+- If an accepted typed `stop` does not actually stop within 120 seconds, re-check live tmux truth and resume monitoring instead of remaining stuck in a fictional stopping state.
+- Fix duplicate/eager Info-tab refresh work and a duplicate `unknown` theme key that hid the intended warning color.
+- Expand the suite from 54 to 60 tests, including live tmux command delivery, unknown status, unmanaged processes, watchdog uncertainty, and no implicit force-kill.
+
 ## v0.6.0 — 2026-07-21 — final release
 - Fix installed launcher self-location through `~/.local/bin/crucible` symlinks.
 - Fix the `Watchdog.unwatch` PyQt slot signature crash and guard all slot arities.

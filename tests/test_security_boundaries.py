@@ -99,7 +99,7 @@ class WatchdogTests(unittest.TestCase):
     def test_repeated_miss_required_before_crash(self):
         with (
             patch.object(watchdog_mod.QTimer, "singleShot"),
-            patch.object(self.watchdog._tmux, "is_running", return_value=False),
+            patch.object(self.watchdog._tmux, "probe_running", return_value=False),
         ):
             self.watchdog.watch(self.instance, auto_restart=False)
             self.watchdog._poll()
@@ -108,6 +108,18 @@ class WatchdogTests(unittest.TestCase):
             self.watchdog._poll()
         self.assertEqual(self.watchdog._crash_count[self.instance.id], 1)
         self.assertFalse(self.watchdog._watching[self.instance.id])
+
+    def test_uncertain_tmux_probe_never_counts_as_crash(self):
+        with (
+            patch.object(watchdog_mod.QTimer, "singleShot"),
+            patch.object(self.watchdog._tmux, "probe_running", return_value=None),
+        ):
+            self.watchdog.watch(self.instance, auto_restart=True)
+            for _ in range(watchdog_mod.CRASH_CONFIRM_POLLS + 2):
+                self.watchdog._poll()
+        self.assertEqual(self.watchdog._miss_count[self.instance.id], 0)
+        self.assertEqual(self.watchdog._crash_count[self.instance.id], 0)
+        self.assertTrue(self.watchdog._watching[self.instance.id])
 
     def test_automatic_rewatch_preserves_crash_count_and_limit(self):
         failed = Mock()
