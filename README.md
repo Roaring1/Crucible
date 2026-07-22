@@ -103,6 +103,8 @@ Crucible modifies server files only for explicit actions such as setup/import, c
 
 ## Changelog
 
+**v0.6.2** -- fixes the GTNH reboot-wrapper false "Stop looks like a restart" report; Stop now sends Ctrl-C to interrupt startserver-java9.sh/.bat's own 12-second auto-reboot countdown, and the watchdog now detects a real java crash even when that wrapper script keeps the tmux session alive
+
 **v0.6.1** -- corrective runtime-truth release; working tmux console/whitelist/stop targeting, uncertainty-safe status, unmanaged-process detection, and non-destructive stop timeouts
 
 **v0.6.0** -- deep reliability/security audit; atomic backups, safe imports, start-failure reporting, identity/session safeguards, and regression tests

@@ -275,6 +275,80 @@ class TmuxCommandTests(unittest.TestCase):
         self.assertIn("not force-killed", message)
         force_kill.assert_not_called()
 
+    def test_stop_sends_ctrl_c_to_interrupt_reboot_wrapper_loop(self):
+        """GTNH's startserver-java9.sh/.bat wraps java in an outer
+        'while true' reboot loop with a countdown. A clean in-game stop
+        exits java but the wrapper keeps the tmux session alive and would
+        relaunch a fresh server. Once java is no longer the pane's
+        foreground command, stop() must send Ctrl-C to interrupt that
+        countdown instead of just waiting for has-session to go False.
+        """
+        with (
+            patch.object(self.tm, "probe_running", side_effect=[True, True, True, False]),
+            patch.object(self.tm, "send_command_result", return_value=(True, "ok")),
+            patch.object(self.tm, "is_java_foreground", side_effect=[True, False]),
+            patch.object(self.tm, "_run", return_value=__import__("subprocess").CompletedProcess([], 0, "", "")) as run,
+            patch("crucible.process.tmux_manager.time.sleep"),
+        ):
+            ok, message = self.tm.stop(
+                self.inst, graceful=True, timeout_s=6, poll_interval_s=1
+            )
+        self.assertTrue(ok)
+        self.assertIn("stopped gracefully", message)
+        ctrl_c_calls = [
+            call for call in run.call_args_list
+            if call.args and call.args[0][:2] == ["tmux", "send-keys"] and "C-c" in call.args[0]
+        ]
+        self.assertEqual(len(ctrl_c_calls), 1)
+
+    def test_stop_reports_interrupted_reboot_loop_on_timeout(self):
+        """If Ctrl-C is sent but the wrapper script still never exits within
+        the timeout, stop() must report that clearly and still never
+        force-kill on its own.
+        """
+        with (
+            patch.object(self.tm, "probe_running", return_value=True),
+            patch.object(self.tm, "send_command_result", return_value=(True, "ok")),
+            patch.object(self.tm, "is_java_foreground", return_value=False),
+            patch.object(self.tm, "_force_kill") as force_kill,
+            patch("crucible.process.tmux_manager.time.sleep"),
+        ):
+            ok, message = self.tm.stop(
+                self.inst, graceful=True, timeout_s=2, poll_interval_s=1
+            )
+        self.assertFalse(ok)
+        self.assertIn("reboot-loop countdown was interrupted", message)
+        self.assertIn("not force-killed", message)
+        force_kill.assert_not_called()
+
+    def test_is_java_foreground_reads_pane_current_command(self):
+        import subprocess
+        with patch.object(
+            self.tm, "_run",
+            return_value=subprocess.CompletedProcess([], 0, "java\n", ""),
+        ) as run:
+            self.assertTrue(self.tm.is_java_foreground(self.inst))
+        self.assertEqual(
+            run.call_args.args[0],
+            ["tmux", "list-panes", "-t", "=gtnh:", "-F", "#{pane_current_command}"],
+        )
+
+    def test_is_java_foreground_false_during_reboot_countdown(self):
+        import subprocess
+        with patch.object(
+            self.tm, "_run",
+            return_value=subprocess.CompletedProcess([], 0, "sleep\n", ""),
+        ):
+            self.assertFalse(self.tm.is_java_foreground(self.inst))
+
+    def test_is_java_foreground_uncertain_on_tmux_error(self):
+        import subprocess
+        with patch.object(
+            self.tm, "_run",
+            return_value=subprocess.CompletedProcess([], 1, "", "can't find pane"),
+        ):
+            self.assertIsNone(self.tm.is_java_foreground(self.inst))
+
     def test_uncertain_stop_probe_is_not_offline_or_force_killed(self):
         with (
             patch.object(self.tm, "probe_running", return_value=None),

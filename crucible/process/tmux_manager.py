@@ -108,6 +108,40 @@ class TmuxManager:
         """Compatibility boolean; uncertain probes are never treated as running."""
         return self.probe_running(instance) is True
 
+    def pane_current_command(self, instance: ServerInstance) -> str | None:
+        """Return the foreground command name running in the console pane.
+
+        Many official GTNH start scripts (startserver-java9.sh/.bat) wrap the
+        ``java`` invocation in an outer ``while true`` reboot loop with a
+        countdown, explicitly so a crashed server comes back automatically.
+        That loop keeps the tmux *session* alive forever, across both real
+        crashes and a clean in-game ``stop`` — ``has-session`` alone can
+        never observe java exiting. Checking the pane's current foreground
+        command lets callers tell "java is up" apart from "the wrapper is
+        mid-countdown / back at a bare shell" while the session persists.
+
+        Returns None on any tmux error/timeout — callers must treat that as
+        uncertain, never as "java is gone".
+        """
+        result = self._run(
+            ["tmux", "list-panes", "-t", self._pane_target(instance),
+             "-F", "#{pane_current_command}"],
+            timeout=2,
+        )
+        if result.returncode != 0:
+            return None
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        return lines[0] if lines else None
+
+    def is_java_foreground(self, instance: ServerInstance) -> bool | None:
+        """True/False for a confirmed probe of the console pane's foreground
+        command, or None on uncertainty (tmux error/timeout/no such pane).
+        """
+        command = self.pane_current_command(instance)
+        if command is None:
+            return None
+        return command.strip().lower() == "java"
+
     @staticmethod
     def _unmanaged_pids(instance: ServerInstance) -> list[int]:
         """Best-effort detection of a server JVM not reachable via its tmux session."""
@@ -377,8 +411,19 @@ class TmuxManager:
 
         # Poll until the session is *confirmed* gone. Unknown probes are not
         # offline and never authorize a force-kill.
+        #
+        # Some official start scripts (e.g. GTNH's startserver-java9.sh/.bat)
+        # wrap java in an outer reboot loop with a short countdown, by design,
+        # so a crash comes back automatically. That loop keeps this tmux
+        # session alive forever, even after a clean in-game stop, and will
+        # relaunch a fresh java before has-session ever reports False. As
+        # soon as java is no longer the pane's foreground command (session
+        # still alive) we send Ctrl-C once to interrupt that countdown so
+        # the wrapper script itself exits instead of rebooting the server
+        # out from under a Stop click.
         elapsed = 0
         saw_unknown = False
+        sent_interrupt = False
         while elapsed < timeout_s:
             time.sleep(poll_interval_s)
             elapsed += poll_interval_s
@@ -387,11 +432,26 @@ class TmuxManager:
                 return True, f"Server stopped gracefully after {elapsed}s"
             if running is None:
                 saw_unknown = True
+                continue
+            if not sent_interrupt:
+                java_up = self.is_java_foreground(instance)
+                if java_up is False:
+                    self._run(
+                        ["tmux", "send-keys", "-t", self._pane_target(instance), "C-c"],
+                        timeout=2,
+                    )
+                    sent_interrupt = True
 
         if saw_unknown and self.probe_running(instance) is None:
             return False, (
                 f"Could not verify shutdown within {timeout_s}s because tmux "
                 "status checks were unavailable. No force-kill was attempted."
+            )
+        if sent_interrupt:
+            return False, (
+                f"Server did not stop within {timeout_s}s. The console's "
+                "reboot-loop countdown was interrupted, but the session did "
+                "not close in time. It was not force-killed."
             )
         # Graceful mode must never silently become destructive. The GUI may now
         # ask the user explicitly whether to force-kill without a world save.

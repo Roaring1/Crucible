@@ -121,6 +121,62 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(self.watchdog._crash_count[self.instance.id], 0)
         self.assertTrue(self.watchdog._watching[self.instance.id])
 
+    def test_crash_detected_when_session_survives_via_reboot_wrapper(self):
+        """Official GTNH start scripts (startserver-java9.sh/.bat) wrap java
+        in an outer 'while true' reboot loop, by design, so the tmux session
+        never disappears even after java crashes. probe_running() alone can
+        never see this. The watchdog must also watch the pane's foreground
+        command so a real crash is still detected and reported.
+        """
+        with (
+            patch.object(watchdog_mod.QTimer, "singleShot"),
+            patch.object(self.watchdog._tmux, "probe_running", return_value=True),
+            patch.object(self.watchdog._tmux, "is_java_foreground", return_value=False),
+        ):
+            self.watchdog.watch(self.instance, auto_restart=False)
+            self.watchdog._poll()
+            self.assertEqual(self.watchdog._crash_count[self.instance.id], 0)
+            self.assertTrue(self.watchdog._watching[self.instance.id])
+            self.watchdog._poll()
+        self.assertEqual(self.watchdog._crash_count[self.instance.id], 1)
+        self.assertFalse(self.watchdog._watching[self.instance.id])
+
+    def test_uncertain_pane_probe_never_counts_as_crash_while_session_alive(self):
+        with (
+            patch.object(watchdog_mod.QTimer, "singleShot"),
+            patch.object(self.watchdog._tmux, "probe_running", return_value=True),
+            patch.object(self.watchdog._tmux, "is_java_foreground", return_value=None),
+        ):
+            self.watchdog.watch(self.instance, auto_restart=True)
+            for _ in range(watchdog_mod.CRASH_CONFIRM_POLLS + 2):
+                self.watchdog._poll()
+        self.assertEqual(self.watchdog._java_miss_count[self.instance.id], 0)
+        self.assertEqual(self.watchdog._crash_count[self.instance.id], 0)
+        self.assertTrue(self.watchdog._watching[self.instance.id])
+
+    def test_reboot_wrapper_crash_does_not_double_launch_a_second_java(self):
+        """When auto-restart is enabled and the wrapper script's own loop is
+        already going to relaunch java, _do_restart's call into
+        TmuxManager.start() must decline (session already exists) instead of
+        starting a second, competing java process.
+        """
+        with (
+            patch.object(watchdog_mod.QTimer, "singleShot"),
+            patch.object(self.watchdog._tmux, "probe_running", return_value=True),
+            patch.object(self.watchdog._tmux, "is_java_foreground", return_value=False),
+        ):
+            self.watchdog.watch(self.instance, auto_restart=True)
+            self.watchdog._poll()
+            self.watchdog._poll()
+        self.assertFalse(self.watchdog._watching[self.instance.id])
+        failed = Mock()
+        self.watchdog.restart_failed.emit = failed
+        with patch.object(self.watchdog._tmux, "is_running", return_value=True):
+            self.watchdog._do_restart(self.instance.id)
+        failed.assert_called_once()
+        self.assertIn("already running", failed.call_args.args[1])
+        self.assertFalse(self.watchdog._watching[self.instance.id])
+
     def test_automatic_rewatch_preserves_crash_count_and_limit(self):
         failed = Mock()
         self.watchdog.restart_failed.emit = failed

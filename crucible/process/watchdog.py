@@ -56,6 +56,7 @@ class Watchdog(QObject):
         self._auto_restart: dict[str, bool]          = {}
         self._crash_count: dict[str, int]            = {}
         self._miss_count: dict[str, int]             = {}
+        self._java_miss_count: dict[str, int]        = {}
         self._watch_generation: dict[str, int]       = {}
 
         # Timer created in start() on the worker thread
@@ -93,6 +94,7 @@ class Watchdog(QObject):
         self._watching[iid] = True
         self._auto_restart[iid] = auto_restart
         self._miss_count[iid] = 0
+        self._java_miss_count[iid] = 0
         # A manual stop removes the instance entirely, so a later manual start
         # resets the sequence. Re-watching after an automatic restart preserves
         # the count until the server has remained healthy for STABLE_UPTIME_MS.
@@ -117,6 +119,7 @@ class Watchdog(QObject):
         self._auto_restart.pop(instance_id, None)
         self._crash_count.pop(instance_id, None)
         self._miss_count.pop(instance_id, None)
+        self._java_miss_count.pop(instance_id, None)
         self._watch_generation.pop(instance_id, None)
 
     # Poll
@@ -135,17 +138,40 @@ class Watchdog(QObject):
                 # Unknown is not offline. Preserve the previous evidence and
                 # retry next poll instead of inventing a crash.
                 continue
-            if running:
-                self._miss_count[iid] = 0
+            if not running:
+                misses = self._miss_count.get(iid, 0) + 1
+                self._miss_count[iid] = misses
+                if misses >= CRASH_CONFIRM_POLLS:
+                    self._handle_crash(iid)
                 continue
-            misses = self._miss_count.get(iid, 0) + 1
-            self._miss_count[iid] = misses
-            if misses >= CRASH_CONFIRM_POLLS:
+            self._miss_count[iid] = 0
+
+            # The tmux *session* can stay alive forever even after java
+            # crashes or exits cleanly: official start scripts such as
+            # GTNH's startserver-java9.sh/.bat wrap java in an outer
+            # "while true" reboot loop, by design, so the session survives
+            # every crash. Watch the pane's foreground command too, so a
+            # crash is still detected and reported even though has-session
+            # never flips to False. If auto-restart is enabled, _do_restart's
+            # own is_running() guard prevents launching a second, competing
+            # java process while the wrapper's own countdown is still live.
+            java_up = self._tmux.is_java_foreground(instance)
+            if java_up is None:
+                # Uncertain — do not invent a crash off an unrelated pane
+                # query failure.
+                continue
+            if java_up:
+                self._java_miss_count[iid] = 0
+                continue
+            java_misses = self._java_miss_count.get(iid, 0) + 1
+            self._java_miss_count[iid] = java_misses
+            if java_misses >= CRASH_CONFIRM_POLLS:
                 self._handle_crash(iid)
 
     def _handle_crash(self, iid: str) -> None:
         self._watching[iid] = False   # stop watching until/unless restarted
         self._miss_count[iid] = 0
+        self._java_miss_count[iid] = 0
         # Invalidate a pending stable-uptime callback for the crashed run.
         self._watch_generation[iid] = self._watch_generation.get(iid, 0) + 1
         count = self._crash_count.get(iid, 0) + 1

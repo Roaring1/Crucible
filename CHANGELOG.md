@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.6.2 — 2026-07-21 — GTNH reboot-wrapper crash/stop detection
+- Root cause of "Stop looks like it's being restarted": GTNH's own `startserver-java9.sh`/`.bat` wrap java in a `while true` loop that auto-reboots java ~12 seconds after ANY exit (crash or graceful stop) unless Ctrl-C is sent during the countdown. Because `probe_running()` only checked `tmux has-session` (which the wrapper keeps alive forever), Crucible could never see this.
+- Add `TmuxManager.pane_current_command()` and `TmuxManager.is_java_foreground()` to inspect the tmux pane's actual foreground process instead of only the session's existence.
+- `stop()` now sends `Ctrl-C` to the pane the first time it observes java is no longer the foreground process (while the session is still alive), interrupting the wrapper's reboot countdown before it can relaunch java; a clearer failure message is reported if the session still doesn't close afterward.
+- `Watchdog._poll()` now also treats `is_java_foreground() == False` held for `CRASH_CONFIRM_POLLS` consecutive polls as a confirmed crash, even while `probe_running()` stays `True` under a reboot-wrapper session, so real crashes are detected and reported instead of silently missed.
+- Confirmed the existing `TmuxManager.start()` / `is_running()` guard already prevents a duplicate/competing java launch if Crucible's own auto-restart fires while the wrapper script's own countdown is also about to relaunch java.
+- Diagnosed two distinct, unrelated `SIGSEGV` crashes reported against GTNH 2.8.4 on OpenJDK Temurin 25+36: a JIT/C2 compiler crash in `ShapedRecipes.func_77569_a`, and a native `libc __strchr_avx2` segfault — both crash types are independent of this wrapper-loop fix; consider Java 17/21 LTS as a more battle-tested runtime if either recurs.
+- Expand the suite from 60 to 68 tests, covering pane-foreground detection, Stop's Ctrl-C interrupt behavior, and watchdog crash detection under a surviving reboot-wrapper session.
+
 ## v0.6.1 — 2026-07-21 — runtime truth and tmux console correction
 - Fix the root cause of GUI console, whitelist, save-flush, TPS, and Stop failures: tmux pane commands require exact target-pane syntax `=session:`, while v0.6.0 incorrectly passed target-session syntax `=session` and received `can't find pane`.
 - Add a real tmux integration regression that creates a live session, sends `whitelist add Roaring4`, presses Enter, and verifies the exact received input; also verify capture-pane, has-session, and kill-session target forms.
