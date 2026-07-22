@@ -3,7 +3,9 @@ crucible/ui/instance_panel.py
 
 Right-hand panel shown when an instance is selected.
 Header: name, version badge, Start/Stop/Restart/Console buttons, status dot.
-Body: QTabWidget with Console, Mods, Notes, Info, Config, Backups, Players.
+Body: QTabWidget with Setup, Console, Mods, World, Config, Backups, Players,
+Notes, Info (Info includes live System performance stats -- System is no
+longer a separate tab).
 
 Status state machine:
   stopped  -> starting  (tmux.start() succeeds)
@@ -33,7 +35,7 @@ from ..process.log_watcher import LogWatcher
 from ..process.watchdog import Watchdog
 from ..process.startup_patterns import RE_SERVER_DONE
 from . import theme
-from .tabs import ConsoleTab, ModsTab, NotesTab, InfoTab, ConfigTab, BackupTab, WorldTab, PlayersTab, SetupTab, SystemTab
+from .tabs import ConsoleTab, ModsTab, NotesTab, InfoTab, ConfigTab, BackupTab, WorldTab, PlayersTab, SetupTab
 
 # Fallback "Done (Xs)!" detector used only while "starting", read straight off
 # the tmux pane. Shares the exact pattern with log_watcher's log-file parsing
@@ -241,23 +243,28 @@ class InstancePanel(QWidget):
         self._backup  = BackupTab()
         self._world   = WorldTab()
         self._players = PlayersTab()
-        self._system  = SystemTab()
 
         # "Setup" is first so non-technical owners land on the easy checklist.
+        # World sits right after Mods (worlds are heavily affected by which
+        # mods are installed) and before Config/Backups/Players; Notes moves
+        # next-to-last and Info is last (Info now also shows live System
+        # performance stats, so it reads as the final "everything at a
+        # glance" summary tab).
         self._tabs.addTab(self._setup,   "🧭  Setup")
         self._tabs.addTab(self._console, "Console")
         self._tabs.addTab(self._mods,    "Mods")
-        self._tabs.addTab(self._notes,   "Notes")
-        self._tabs.addTab(self._info,    "Info")
+        self._tabs.addTab(self._world,   "🌍  World")
         self._tabs.addTab(self._config,  "⚙  Config")
         self._tabs.addTab(self._backup,  "💾  Backups")
-        self._tabs.addTab(self._world,   "🌍  World")
         self._tabs.addTab(self._players, "👥  Players")
-        self._tabs.addTab(self._system,  "📊  System")
-        # World swaps must never proceed with unsaved server.properties edits
-        # in flight -- reuse ConfigTab's own save/discard guard rather than
-        # duplicating that logic.
+        self._tabs.addTab(self._notes,   "Notes")
+        self._tabs.addTab(self._info,    "Info")
+        # World swaps/resets/seed changes must never proceed with unsaved
+        # server.properties edits in flight -- reuse ConfigTab's own
+        # save/discard guard rather than duplicating that logic, and let
+        # WorldTab refresh ConfigTab's buffer after it writes the seed directly.
         self._world.set_config_guard(self._config.confirm_discard_or_save)
+        self._world.set_config_reload(self._config.reload_from_disk)
 
         # Poll TPS only while the Console tab is focused (see _update_tps_polling).
         self._tabs.currentChanged.connect(self._on_tab_changed)
@@ -688,9 +695,8 @@ class InstancePanel(QWidget):
             self._world.load(inst)
         elif tab is self._players:
             self._players.load(inst)
-        elif tab is self._system:
-            self._system.load(inst)
         # Console is attached by the watcher lifecycle rather than load().
+        # (System performance stats are now loaded as part of Info, above.)
         self._loaded_tabs.add(tab)
 
     def _on_tab_changed(self, _index: int) -> None:

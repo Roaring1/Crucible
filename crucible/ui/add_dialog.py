@@ -63,7 +63,11 @@ class AddInstanceDialog(QDialog):
         self._import_pending: tuple[str, str, bool] | None = None
         self._import_result: tuple[object, str] | None = None
         self.setWindowTitle("Add Server Instance")
-        self.setMinimumWidth(560)
+        # Widened from 560 -- at 560px, the register-existing-server form's
+        # "Server path:" row (label + line edit + Browse… button) and the
+        # other field rows clipped their text/placeholders and were hard to
+        # read.
+        self.setMinimumWidth(680)
         self.setModal(True)
         self._build_ui()
 
@@ -176,14 +180,19 @@ class AddInstanceDialog(QDialog):
         layout.addLayout(form)
 
         # Path field
+        # Minimum widths below keep every field (and its placeholder text)
+        # readable rather than clipped, regardless of how the dialog is
+        # resized -- this was reported unreadable at the previous 560px
+        # dialog width.
         path_row = QHBoxLayout()
         self._path_edit = QLineEdit()
         self._path_edit.setPlaceholderText("/path/to/my-server")
+        self._path_edit.setMinimumWidth(320)
         self._path_edit.textChanged.connect(self._auto_fill_name)
         path_row.addWidget(self._path_edit, stretch=1)
 
         browse_btn = QPushButton("Browse…")
-        browse_btn.setFixedWidth(80)
+        browse_btn.setMinimumWidth(80)
         browse_btn.clicked.connect(self._browse)
         path_row.addWidget(browse_btn)
 
@@ -192,15 +201,18 @@ class AddInstanceDialog(QDialog):
         # Name field
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText("My Server")
+        self._name_edit.setMinimumWidth(320)
         form.addRow("Display name:", self._name_edit)
 
         self._ver_edit = QLineEdit()
         self._ver_edit.setPlaceholderText("e.g. 2.8.4  (optional)")
+        self._ver_edit.setMinimumWidth(320)
         form.addRow("Version:", self._ver_edit)
 
         # Session field
         self._session_edit = QLineEdit()
         self._session_edit.setPlaceholderText("auto-derived from name  (e.g. my-server)")
+        self._session_edit.setMinimumWidth(320)
         form.addRow("tmux session:", self._session_edit)
 
         hint = QLabel(

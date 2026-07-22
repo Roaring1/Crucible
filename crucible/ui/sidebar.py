@@ -7,13 +7,14 @@ Left sidebar: lists registered server instances with live status dots.
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QSize, QUrl, QMimeData, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QDrag
+from PyQt6.QtGui import QColor, QPainter, QDrag, QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QLabel, QMenu, QAbstractItemView,
+    QPushButton, QLabel, QMenu, QAbstractItemView, QApplication,
 )
 
 from ..data.instance_model import ServerInstance
+from ..data.backup_manager import BackupManager
 from . import theme
 from crucible import __version__
 
@@ -323,6 +324,10 @@ class Sidebar(QWidget):
         stop_act    = menu.addAction("■  Stop")
         restart_act = menu.addAction("↺  Restart")
         menu.addSeparator()
+        open_folder_act  = menu.addAction("📂  Open server folder")
+        open_backups_act = menu.addAction("💾  Open backups folder")
+        copy_path_act    = menu.addAction("📋  Copy server path")
+        menu.addSeparator()
         fixload_act = menu.addAction("🩺  Fix loading errors…")
         export_act  = menu.addAction("📤  Export for Prism…")
         menu.addSeparator()
@@ -341,9 +346,31 @@ class Sidebar(QWidget):
             self.stop_requested.emit(inst)
         elif chosen == restart_act:
             self.restart_requested.emit(inst)
+        elif chosen == open_folder_act:
+            self._open_folder(inst.path)
+        elif chosen == open_backups_act:
+            self._open_backups_folder(inst)
+        elif chosen == copy_path_act:
+            QApplication.clipboard().setText(inst.path)
         elif chosen == fixload_act:
             self.fix_loading_requested.emit(inst)
         elif chosen == export_act:
             self.export_requested.emit(inst)
         elif chosen == remove_act:
             self.remove_requested.emit(inst)
+
+    @staticmethod
+    def _open_folder(path: str) -> None:
+        """Open a folder in the OS file manager. Silently does nothing if the
+        folder no longer exists on disk (e.g. a server moved/deleted outside
+        Crucible) rather than raising into the RMB menu handler."""
+        from pathlib import Path
+        p = Path(path)
+        if p.is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
+
+    def _open_backups_folder(self, inst: ServerInstance) -> None:
+        # BackupManager creates this directory on first use if it does not
+        # already exist, so there is always something to open here.
+        backup_dir = BackupManager(inst).backup_dir()
+        self._open_folder(str(backup_dir))

@@ -1,25 +1,29 @@
 """
 crucible/ui/tabs/world_tab.py
 
-World identification, named "world slot" backups, and the safe world-swap
-workflow (World Backup & Swap feature).
+World identification, named "world slot" backups, the safe world-swap
+workflow, and quick actions to set the seed, start fresh, or permanently
+delete the world (World Backup & Swap + World Actions feature).
 
 This is deliberately separate from BackupTab (which stays a simple "one zip
 per click" tool): WorldTab is where a user manages MULTIPLE named saved
-worlds and safely swaps the live world between them. Swapping is the
-highest-risk operation in Crucible, so every precondition is enforced here
-and explained in plain language before anything touches disk:
+worlds, safely swaps the live world between them, and can start over with a
+clean world. Swapping/resetting/wiping are the highest-risk operations in
+Crucible, so every precondition is enforced here and explained in plain
+language before anything touches disk:
 
   - The server must be fully stopped (checked live via tmux; any status
-    other than the exact "stopped" value blocks the swap).
+    other than the exact "stopped" value blocks the operation).
   - There must be no unsaved server.properties edits (delegated to whatever
     guard is wired in via set_config_guard -- normally ConfigTab's own
     confirm_discard_or_save).
-  - A safety backup of the CURRENT world is always taken automatically,
-    with no way to skip it.
-  - The actual swap (BackupManager.swap_world) runs in a background thread
-    and rolls itself back automatically on any failure -- see
-    crucible/data/backup_manager.py for that logic.
+  - Swap and Reset always take an automatic safety backup of the CURRENT
+    world first, with no way to skip it. Wipe is the one exception -- it is
+    for users who explicitly want to free disk space -- so it requires a
+    typed confirmation instead of a safety backup.
+  - Every disk-heavy operation (backup, swap, reset, wipe, and the world-
+    size scan itself) runs in a background thread so the GUI never freezes,
+    even on huge modpacks with dozens of dimensions.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from PyQt6.QtCore import Qt, QThread
+from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QProgressBar, QFrame,
@@ -39,13 +43,47 @@ from PyQt6.QtWidgets import (
 from ...data.instance_model import ServerInstance, dimension_label
 from ...data.backup_manager import (
     BackupManager, BackupWorker, BackupEntry, SwapWorker, SwapResult,
+    ResetWorldWorker, WipeWorldWorker,
 )
 from ...process.tmux_manager import TmuxManager
 from .. import theme
 
+# Dimension lists longer than this are collapsed behind a "Show all" toggle --
+# GTNH-style packs can have 80-90+ dimensions, which as one giant paragraph of
+# text was one of the biggest readability complaints about this tab.
+_DIMS_COLLAPSE_THRESHOLD = 6
+
+
+class _WorldStatsWorker(QObject):
+    """Computes the (potentially slow) recursive world size and pre-swap
+    folder total off the GUI thread.
+
+    GTNH-scale worlds can have 80-90+ dimension folders full of region
+    files, so walking them with Path.rglob() on the main thread -- which is
+    exactly what the old synchronous _refresh() did -- is what caused the
+    "UI not responding" freezes whenever this tab was opened or refreshed.
+    """
+
+    done = pyqtSignal(int, int)   # world_size_bytes, presafe_total_bytes
+
+    def __init__(self, instance: ServerInstance, pre_swap_dirs: list[Path], parent=None):
+        super().__init__(parent)
+        self._instance = instance
+        self._pre_swap_dirs = pre_swap_dirs
+
+    def run(self) -> None:
+        try:
+            size = self._instance.world_size_bytes()
+        except Exception:
+            size = 0
+        total = 0
+        for d in self._pre_swap_dirs:
+            total += _dir_size(d)
+        self.done.emit(size, total)
+
 
 class WorldTab(QWidget):
-    """Named world-slot backups and safe world swapping for one instance."""
+    """Named world-slot backups, safe world swapping, and world reset/wipe/seed for one instance."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -54,28 +92,42 @@ class WorldTab(QWidget):
         self._thread:   QThread | None        = None
         self._worker = None
         self._active_manager: BackupManager | None = None
-        self._op_kind: str | None = None      # "backup" | "swap"
+        self._op_kind: str | None = None      # "backup" | "swap" | "reset" | "wipe"
         self._op_result = None
         self._config_guard: Callable[[], bool] | None = None
+        self._config_reload: Callable[[], None] | None = None
+        self._stats_thread: QThread | None = None
+        self._stats_worker: _WorldStatsWorker | None = None
+        self._stats_generation = 0
+        self._dims_expanded = False
         self._build_ui()
 
     # Public API
 
     def set_config_guard(self, fn: Callable[[], bool] | None) -> None:
         """Wire a guard (e.g. ConfigTab.confirm_discard_or_save) that must
-        return True before a swap is allowed to proceed. Swapping while
-        there are unsaved server.properties edits could restore a world
-        that no longer matches the properties the user thinks are active.
+        return True before a swap/reset is allowed to proceed. Acting while
+        there are unsaved server.properties edits could leave a world that
+        no longer matches the properties the user thinks are active.
         """
         self._config_guard = fn
+
+    def set_config_reload(self, fn: Callable[[], None] | None) -> None:
+        """Wire a callback (e.g. ConfigTab.reload_from_disk) so that when
+        Set Seed writes server.properties directly, the Config tab's own
+        in-memory buffer is refreshed instead of going stale."""
+        self._config_reload = fn
 
     def load(self, instance: ServerInstance) -> None:
         self._instance = instance
         self._manager = BackupManager(instance)
+        self._dims_expanded = False
         self._refresh()
 
     def has_active_operation(self) -> bool:
-        return bool(self._thread and self._thread.isRunning())
+        thread_busy = bool(self._thread and self._thread.isRunning())
+        stats_busy = bool(self._stats_thread and self._stats_thread.isRunning())
+        return thread_busy or stats_busy
 
     # UI construction
 
@@ -90,7 +142,9 @@ class WorldTab(QWidget):
 
         info_row = QHBoxLayout()
         self._world_label = QLabel("World: -")
-        self._world_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
+        # Was theme.SUBTEXT (low-contrast grey) -- promoted to TEXT since this
+        # is primary information users specifically said was hard to read.
+        self._world_label.setStyleSheet(f"color: {theme.TEXT}; font-size: 12px;")
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self._refresh)
         info_row.addWidget(self._world_label)
@@ -98,10 +152,51 @@ class WorldTab(QWidget):
         info_row.addWidget(refresh_btn)
         layout.addLayout(info_row)
 
+        dims_row = QHBoxLayout()
         self._dims_label = QLabel("")
-        self._dims_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
+        self._dims_label.setStyleSheet(f"color: {theme.TEXT}; font-size: 12px;")
         self._dims_label.setWordWrap(True)
-        layout.addWidget(self._dims_label)
+        dims_row.addWidget(self._dims_label, stretch=1)
+        self._dims_toggle_btn = QPushButton("Show all")
+        self._dims_toggle_btn.setFixedWidth(80)
+        self._dims_toggle_btn.clicked.connect(self._toggle_dims_expanded)
+        self._dims_toggle_btn.hide()
+        dims_row.addWidget(self._dims_toggle_btn, alignment=Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(dims_row)
+
+        layout.addWidget(_hline())
+
+        # ---- Quick world actions: Set Seed / Reset / Wipe ---------------
+        actions_head = QLabel("World actions")
+        actions_head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
+        layout.addWidget(actions_head)
+
+        actions_info = QLabel(
+            "Set the seed used for newly-generated terrain, start over with a "
+            "brand new world (safety-backed-up first), or permanently delete "
+            "the world to free disk space."
+        )
+        actions_info.setWordWrap(True)
+        actions_info.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
+        layout.addWidget(actions_info)
+
+        actions_row = QHBoxLayout()
+        actions_row.setSpacing(8)
+        self._seed_btn = QPushButton("\U0001F331  Set Seed\u2026")
+        self._seed_btn.setToolTip("Change level-seed in server.properties (affects newly-generated chunks only)")
+        self._seed_btn.clicked.connect(self._set_seed)
+        self._reset_btn = QPushButton("\u267B  Reset World (start fresh)\u2026")
+        self._reset_btn.setToolTip("Safety-backup the current world, then start a brand new one on next start")
+        self._reset_btn.clicked.connect(self._confirm_and_reset)
+        self._wipe_btn = QPushButton("\U0001F5D1  Wipe World\u2026")
+        self._wipe_btn.setObjectName("DangerButton")
+        self._wipe_btn.setToolTip("Permanently delete the world folder -- no backup is kept")
+        self._wipe_btn.clicked.connect(self._confirm_and_wipe)
+        actions_row.addWidget(self._seed_btn)
+        actions_row.addWidget(self._reset_btn)
+        actions_row.addWidget(self._wipe_btn)
+        actions_row.addStretch()
+        layout.addLayout(actions_row)
 
         layout.addWidget(_hline())
 
@@ -186,19 +281,19 @@ class WorldTab(QWidget):
         world_root = inst.world_root_path()
 
         if world_root.is_dir():
-            size = inst.world_size_bytes()
+            # Dimension listing is a cheap shallow directory scan (just the
+            # DIM* folder names directly inside the world root) -- safe to
+            # do synchronously. The expensive recursive byte-size walk is
+            # kicked off separately below, on a background thread.
             dims = inst.world_dimension_dirs()
-            self._world_label.setText(f"World: {world_root.name}   ({_human_size(size)})")
-            if dims:
-                parts = ", ".join(f"{d.name} ({dimension_label(d.name)})" for d in dims)
-                self._dims_label.setText(f"Dimensions found: Overworld, {parts}")
-            else:
-                self._dims_label.setText("Dimensions found: Overworld only (no Nether/End generated yet)")
+            self._world_label.setText(f"World: {world_root.name}   (calculating size\u2026)")
+            self._set_dims_text(dims)
         else:
             self._world_label.setText(f"World: {world_root.name}   (not generated yet)")
             self._dims_label.setText(
                 "This server has never been started, so no world folder exists yet."
             )
+            self._dims_toggle_btn.hide()
 
         entries = self._manager.list_backups()
         self._table.setRowCount(len(entries))
@@ -241,10 +336,9 @@ class WorldTab(QWidget):
 
         pre_swap_dirs = self._manager.list_pre_swap_dirs()
         if pre_swap_dirs:
-            total = sum(_dir_size(d) for d in pre_swap_dirs)
             self._presafe_label.setText(
-                f"{len(pre_swap_dirs)} leftover pre-swap folder(s) from previous swaps "
-                f"({_human_size(total)}). These are an extra safety net kept alongside "
+                f"{len(pre_swap_dirs)} leftover pre-swap folder(s) from previous swaps/resets "
+                "(calculating size\u2026). These are an extra safety net kept alongside "
                 "your world folder -- once you've confirmed your current world is good, "
                 "you can delete them."
             )
@@ -252,6 +346,91 @@ class WorldTab(QWidget):
         else:
             self._presafe_label.setText("No leftover pre-swap folders.")
             self._cleanup_btn.setEnabled(False)
+
+        self._start_stats_worker(world_root, pre_swap_dirs)
+
+    def _set_dims_text(self, dims: list[Path]) -> None:
+        """Render the dimension list, collapsing long lists (GTNH-scale packs
+        routinely have 80-90+ dimensions) behind a 'Show all' toggle instead
+        of one unreadable wall-of-text paragraph."""
+        if not dims:
+            self._dims_label.setText("Dimensions found: Overworld only (no Nether/End generated yet)")
+            self._dims_toggle_btn.hide()
+            return
+
+        full_parts = ", ".join(f"{d.name} ({dimension_label(d.name)})" for d in dims)
+        if len(dims) <= _DIMS_COLLAPSE_THRESHOLD:
+            self._dims_label.setText(f"Dimensions found: Overworld, {full_parts}")
+            self._dims_toggle_btn.hide()
+            return
+
+        self._dims_toggle_btn.show()
+        if self._dims_expanded:
+            self._dims_label.setText(f"Dimensions found ({len(dims) + 1} total): Overworld, {full_parts}")
+            self._dims_toggle_btn.setText("Show less")
+        else:
+            short_parts = ", ".join(
+                f"{d.name} ({dimension_label(d.name)})" for d in dims[:_DIMS_COLLAPSE_THRESHOLD]
+            )
+            remaining = len(dims) - _DIMS_COLLAPSE_THRESHOLD
+            self._dims_label.setText(
+                f"Dimensions found ({len(dims) + 1} total): Overworld, {short_parts}, "
+                f"and {remaining} more\u2026"
+            )
+            self._dims_toggle_btn.setText("Show all")
+
+    def _toggle_dims_expanded(self) -> None:
+        self._dims_expanded = not self._dims_expanded
+        if self._instance is not None:
+            self._set_dims_text(self._instance.world_dimension_dirs())
+
+    # Background world-size scan
+
+    def _start_stats_worker(self, world_root: Path, pre_swap_dirs: list[Path]) -> None:
+        if not world_root.is_dir() and not pre_swap_dirs:
+            return
+        self._stats_generation += 1
+        generation = self._stats_generation
+        inst = self._instance
+        if inst is None:
+            return
+
+        thread = QThread()
+        worker = _WorldStatsWorker(inst, pre_swap_dirs)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(lambda size, total: self._on_stats_done(generation, size, total))
+        worker.done.connect(thread.quit)
+        worker.done.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        # Only clear the tracked refs if THIS thread is still the current one
+        # -- a rapid Refresh click or tab re-load can start a newer scan
+        # before an older one finishes, and that older thread's cleanup must
+        # never clobber the newer thread's live reference.
+        thread.finished.connect(lambda t=thread: self._stats_thread_finished(t))
+        self._stats_thread = thread
+        self._stats_worker = worker
+        thread.start()
+
+    def _stats_thread_finished(self, thread: QThread) -> None:
+        if self._stats_thread is thread:
+            self._stats_thread = None
+            self._stats_worker = None
+
+    def _on_stats_done(self, generation: int, size: int, presafe_total: int) -> None:
+        if generation != self._stats_generation or self._instance is None or self._manager is None:
+            return  # stale -- instance changed or a newer refresh already started
+        world_root = self._instance.world_root_path()
+        if world_root.is_dir():
+            self._world_label.setText(f"World: {world_root.name}   ({_human_size(size)})")
+        pre_swap_dirs = self._manager.list_pre_swap_dirs()
+        if pre_swap_dirs:
+            self._presafe_label.setText(
+                f"{len(pre_swap_dirs)} leftover pre-swap folder(s) from previous swaps/resets "
+                f"({_human_size(presafe_total)}). These are an extra safety net kept alongside "
+                "your world folder -- once you've confirmed your current world is good, "
+                "you can delete them."
+            )
 
     # Backup action
 
@@ -391,17 +570,247 @@ class WorldTab(QWidget):
     def _on_swap_failed(self, error: str) -> None:
         self._op_result = ("failed", error)
 
+    # Set Seed action
+
+    def _set_seed(self) -> None:
+        inst = self._instance
+        if inst is None:
+            return
+        if self._thread and self._thread.isRunning():
+            return
+
+        tmux = TmuxManager()
+        status = tmux.get_status(inst)
+        if status != "stopped":
+            QMessageBox.critical(
+                self, "Set Seed",
+                "The server should be fully stopped before changing the seed -- "
+                "a running server won't pick it up until restarted, and editing "
+                "server.properties while the JVM might also be writing to it "
+                f"risks a corrupted file. Current status: {status}.",
+            )
+            return
+        if self._config_guard is not None and not self._config_guard():
+            return
+
+        props_path = inst.path_obj / "server.properties"
+        if not props_path.exists():
+            QMessageBox.warning(
+                self, "Set Seed",
+                "server.properties not found -- start the server at least once first.",
+            )
+            return
+
+        current_seed = self._read_current_seed(props_path)
+        seed, ok = QInputDialog.getText(
+            self, "Set world seed",
+            "New level-seed (leave blank for a random seed):",
+            text=current_seed,
+        )
+        if not ok:
+            return
+        seed = seed.strip()
+
+        reply = QMessageBox.warning(
+            self, "Set world seed?",
+            "This only affects terrain that hasn't been generated yet -- it will "
+            "NOT change chunks that already exist in the current world. To "
+            "actually see a new world generated with this seed, use "
+            "\u201cReset World\u201d afterwards.\n\n"
+            + (f"Set level-seed to '{seed}'?" if seed else
+               "Continue with a blank (random) seed?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            self._write_seed(props_path, seed)
+        except OSError as exc:
+            QMessageBox.critical(self, "Set Seed", f"Could not write server.properties:\n{exc}")
+            return
+
+        if self._config_reload is not None:
+            self._config_reload()
+
+        QMessageBox.information(
+            self, "Seed updated",
+            "level-seed saved. Newly-generated chunks (including a world made "
+            "via \u201cReset World\u201d) will use this seed.",
+        )
+
+    @staticmethod
+    def _read_current_seed(props_path: Path) -> str:
+        try:
+            for line in props_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.strip().startswith("level-seed="):
+                    return line.split("=", 1)[1].strip()
+        except OSError:
+            pass
+        return ""
+
+    @staticmethod
+    def _write_seed(props_path: Path, seed: str) -> None:
+        """Atomically rewrite (or insert) level-seed=..., leaving every other
+        line -- including comments and ordering -- untouched."""
+        lines = props_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+        found = False
+        for i, line in enumerate(lines):
+            if line.strip().startswith("level-seed="):
+                newline = "\n" if line.endswith("\n") else ""
+                lines[i] = f"level-seed={seed}{newline}"
+                found = True
+                break
+        if not found:
+            if lines and not lines[-1].endswith("\n"):
+                lines[-1] += "\n"
+            lines.append(f"level-seed={seed}\n")
+        tmp = props_path.with_suffix(props_path.suffix + ".tmp")
+        tmp.write_text("".join(lines), encoding="utf-8")
+        tmp.replace(props_path)
+
+    # Reset World action
+
+    def _confirm_and_reset(self) -> None:
+        if not self._manager or not self._instance:
+            return
+        if self._thread and self._thread.isRunning():
+            return
+
+        tmux = TmuxManager()
+        status = tmux.get_status(self._instance)
+        if status != "stopped":
+            QMessageBox.critical(
+                self, "Reset cancelled",
+                "The server must be fully stopped before resetting the world -- "
+                "moving a world folder out from under a running server would "
+                f"corrupt it. Current status: {status}.\n\n"
+                "Stop the server from the header controls above, then try again.",
+            )
+            return
+        if self._config_guard is not None and not self._config_guard():
+            return
+
+        reply = QMessageBox.warning(
+            self, "Reset world?",
+            "This will start a brand new world on the next server start.\n\n"
+            "Before this happens, Crucible will:\n"
+            " - Automatically back up the CURRENT world (always, cannot be skipped)\n"
+            " - Move the current world folder aside rather than deleting it "
+            "(recoverable later via Swap)\n\n"
+            "Tip: use \u201cSet Seed\u2026\u201d above first if you want the new world "
+            "generated from a specific seed.\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._begin_operation("reset")
+        self._active_manager = self._manager
+        self._thread = QThread()
+        self._worker = ResetWorldWorker(self._active_manager)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.progress.connect(self._progress.setValue)
+        self._worker.finished.connect(self._on_reset_done)
+        self._worker.failed.connect(self._on_reset_failed)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.failed.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._thread_finished)
+        self._thread.start()
+
+    def _on_reset_done(self, result: SwapResult) -> None:
+        self._op_result = ("done", result)
+
+    def _on_reset_failed(self, error: str) -> None:
+        self._op_result = ("failed", error)
+
+    # Wipe World action
+
+    def _confirm_and_wipe(self) -> None:
+        if not self._manager or not self._instance:
+            return
+        if self._thread and self._thread.isRunning():
+            return
+
+        tmux = TmuxManager()
+        status = tmux.get_status(self._instance)
+        if status != "stopped":
+            QMessageBox.critical(
+                self, "Wipe cancelled",
+                "The server must be fully stopped before wiping the world. "
+                f"Current status: {status}.\n\nStop the server, then try again.",
+            )
+            return
+        if self._config_guard is not None and not self._config_guard():
+            return
+
+        world_root = self._instance.world_root_path()
+        if not world_root.is_dir():
+            QMessageBox.information(self, "Wipe World", "There is no world folder to wipe.")
+            return
+
+        text, ok = QInputDialog.getText(
+            self, "Permanently delete this world?",
+            "This PERMANENTLY deletes the world folder and every dimension "
+            "inside it. No backup is taken -- use this only to free disk "
+            "space after you already have a backup you trust elsewhere.\n\n"
+            f"Type WIPE to confirm deleting '{world_root.name}':",
+        )
+        if not ok:
+            return
+        if text.strip().upper() != "WIPE":
+            QMessageBox.information(
+                self, "Wipe cancelled",
+                "Confirmation text did not match -- nothing was deleted.",
+            )
+            return
+
+        self._begin_operation("wipe")
+        self._active_manager = self._manager
+        self._thread = QThread()
+        self._worker = WipeWorldWorker(self._active_manager)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.finished.connect(self._on_wipe_done)
+        self._worker.failed.connect(self._on_wipe_failed)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.failed.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._thread_finished)
+        self._thread.start()
+
+    def _on_wipe_done(self, result: SwapResult) -> None:
+        self._op_result = ("done", result)
+
+    def _on_wipe_failed(self, error: str) -> None:
+        self._op_result = ("failed", error)
+
     # Shared thread lifecycle
 
     def _begin_operation(self, kind: str) -> None:
         self._op_kind = kind
         self._op_result = None
         self._backup_btn.setEnabled(False)
+        self._seed_btn.setEnabled(False)
+        self._reset_btn.setEnabled(False)
+        self._wipe_btn.setEnabled(False)
         self._table.setEnabled(False)
         self._progress.setValue(0)
-        self._progress_lbl.setText(
-            "Creating backup..." if kind == "backup" else "Swapping worlds... do not close Crucible."
-        )
+        labels = {
+            "backup": "Creating backup...",
+            "swap": "Swapping worlds... do not close Crucible.",
+            "reset": "Resetting world... do not close Crucible.",
+            "wipe": "Wiping world...",
+        }
+        self._progress_lbl.setText(labels.get(kind, "Working..."))
         self._progress_lbl.show()
         self._progress.show()
 
@@ -416,6 +825,9 @@ class WorldTab(QWidget):
         self._progress_lbl.hide()
         self._progress.hide()
         self._backup_btn.setEnabled(True)
+        self._seed_btn.setEnabled(True)
+        self._reset_btn.setEnabled(True)
+        self._wipe_btn.setEnabled(True)
         self._table.setEnabled(True)
 
         if kind == "backup" and result and result[0] == "failed":
@@ -436,6 +848,25 @@ class WorldTab(QWidget):
                     self, "Swap Failed",
                     f"{result[1]}\n\nThe previous world has been restored -- nothing was lost.",
                 )
+        elif kind == "reset" and result:
+            if result[0] == "done":
+                reset_result: SwapResult = result[1]
+                QMessageBox.information(
+                    self, "World reset",
+                    f"{reset_result.message}\n\n"
+                    "A safety backup of the world you just replaced was saved "
+                    "automatically, and its previous folder was kept on disk as "
+                    "an extra precaution (see the cleanup option below to remove "
+                    "it later). Start the server to generate the new world.",
+                )
+            elif result[0] == "failed":
+                QMessageBox.critical(self, "Reset Failed", result[1])
+        elif kind == "wipe" and result:
+            if result[0] == "done":
+                wipe_result: SwapResult = result[1]
+                QMessageBox.information(self, "World wiped", wipe_result.message)
+            elif result[0] == "failed":
+                QMessageBox.critical(self, "Wipe Failed", result[1])
         self._refresh()
 
     # Rename / delete / cleanup

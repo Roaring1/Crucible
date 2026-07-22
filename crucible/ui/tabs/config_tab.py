@@ -170,6 +170,16 @@ class ConfigTab(QWidget):
         self._instance = instance
         self._reload()
 
+    def reload_from_disk(self) -> None:
+        """Re-read server.properties from disk, discarding any in-memory
+        edit buffer without prompting.
+
+        Used by other tabs (e.g. WorldTab's "Set Seed") that write
+        server.properties directly on disk, so this tab's buffered table
+        doesn't silently go stale and get overwritten by a later Save.
+        """
+        self._reload()
+
     def _collect_values(self) -> dict[str, str]:
         edited: dict[str, str] = {}
         for row in range(self._table.rowCount()):

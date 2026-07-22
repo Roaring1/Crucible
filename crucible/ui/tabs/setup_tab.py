@@ -22,13 +22,30 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QFrame, QScrollArea, QApplication, QMessageBox,
-    QSpinBox,
+    QSpinBox, QComboBox,
 )
 
 from ...data.instance_manager import InstanceManager
 from ...data.instance_model import ServerInstance
 from ...process.resource_monitor import system_memory_mb
 from .. import theme
+
+
+def _suggest_memory_mb(total_mb: float | None) -> int:
+    """Heuristic suggested -Xms/-Xmx (in MB) for a dedicated Minecraft
+    server on this machine, leaving headroom for the OS, Crucible itself,
+    and anything else running.
+
+    Reserves at least 2 GB or 25% of total RAM (whichever is larger) for
+    everything other than the server JVM, then clamps the remainder to a
+    sane 1-16 GB range and rounds to the nearest 512 MB.
+    """
+    if not total_mb or total_mb <= 0:
+        return 4096
+    reserve_mb = max(2048.0, total_mb * 0.25)
+    target_mb = total_mb - reserve_mb
+    target_mb = max(1024.0, min(target_mb, 16384.0))
+    return int(round(target_mb / 512) * 512)
 
 
 class _ServerInstallWorker(QObject):
@@ -65,6 +82,8 @@ class SetupTab(QWidget):
         self._ip_request_generation = 0
         self._xms_spin: QSpinBox | None = None
         self._xmx_spin: QSpinBox | None = None
+        self._xms_unit: QComboBox | None = None
+        self._xmx_unit: QComboBox | None = None
         self._mem_status: QLabel | None = None
         self._build_ui()
 
@@ -258,25 +277,54 @@ class SetupTab(QWidget):
 
         row.addWidget(QLabel("Min (Xms):"))
         self._xms_spin = QSpinBox()
-        self._xms_spin.setRange(512, 1_048_576)
-        self._xms_spin.setSingleStep(512)
-        self._xms_spin.setSuffix(" MB")
-        self._xms_spin.setValue(xms_mb if xms_mb else 2048)
+        self._xms_unit = QComboBox()
+        self._xms_unit.addItems(["MB", "GB"])
+        self._configure_memory_unit(
+            self._xms_spin, self._xms_unit, xms_mb if xms_mb else 2048, initial=True,
+        )
+        self._xms_unit.currentTextChanged.connect(
+            lambda text: self._on_memory_unit_changed(self._xms_spin, text)
+        )
         row.addWidget(self._xms_spin)
+        row.addWidget(self._xms_unit)
 
         row.addWidget(QLabel("Max (Xmx):"))
         self._xmx_spin = QSpinBox()
-        self._xmx_spin.setRange(512, 1_048_576)
-        self._xmx_spin.setSingleStep(512)
-        self._xmx_spin.setSuffix(" MB")
-        self._xmx_spin.setValue(xmx_mb if xmx_mb else 4096)
+        self._xmx_unit = QComboBox()
+        self._xmx_unit.addItems(["MB", "GB"])
+        self._configure_memory_unit(
+            self._xmx_spin, self._xmx_unit, xmx_mb if xmx_mb else 4096, initial=True,
+        )
+        self._xmx_unit.currentTextChanged.connect(
+            lambda text: self._on_memory_unit_changed(self._xmx_spin, text)
+        )
         row.addWidget(self._xmx_spin)
+        row.addWidget(self._xmx_unit)
 
         save_btn = QPushButton("Save memory settings")
         save_btn.clicked.connect(self._save_memory)
         row.addWidget(save_btn)
         row.addStretch()
         self._layout.addLayout(row)
+
+        # Suggested amount -- a plain heuristic based on this machine's total
+        # RAM, so non-technical owners don't have to guess a value out of thin
+        # air. Xms is suggested equal to Xmx, which is the common recommendation
+        # for dedicated Minecraft servers (it avoids in-game heap-resize pauses
+        # from the JVM growing the heap mid-session).
+        suggested_mb = _suggest_memory_mb(total_mb)
+        suggest_row = QHBoxLayout()
+        suggest_label = QLabel(
+            f"Suggested for this machine: {suggested_mb / 1024:.1f} GB "
+            f"(leaves headroom for the OS, Crucible, and other programs)"
+        )
+        suggest_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
+        suggest_label.setWordWrap(True)
+        apply_suggested_btn = QPushButton("Apply suggested")
+        apply_suggested_btn.clicked.connect(lambda: self._apply_suggested_memory(suggested_mb))
+        suggest_row.addWidget(suggest_label, stretch=1)
+        suggest_row.addWidget(apply_suggested_btn)
+        self._layout.addLayout(suggest_row)
 
         self._mem_status = QLabel("")
         self._mem_status.setWordWrap(True)
@@ -290,12 +338,71 @@ class SetupTab(QWidget):
             )
             self._mem_status.setStyleSheet(f"color: {theme.YELLOW}; font-size: 11px;")
 
+    @staticmethod
+    def _configure_memory_unit(
+        spin: QSpinBox, unit_combo: QComboBox, mb_value: int, initial: bool = False,
+    ) -> None:
+        """Configure a memory QSpinBox's range/suffix/value for whichever unit
+        is selected in unit_combo, given an underlying value in MB.
+
+        On initial setup, defaults to GB display when the value is a clean
+        multiple of 1024 (the common case), otherwise MB so odd values (e.g.
+        1536 MB) aren't misleadingly rounded.
+        """
+        if initial:
+            use_gb = mb_value >= 1024 and mb_value % 1024 == 0
+            unit_combo.setCurrentText("GB" if use_gb else "MB")
+        unit = unit_combo.currentText()
+        if unit == "GB":
+            spin.setRange(1, 1024)
+            spin.setSingleStep(1)
+            spin.setSuffix(" GB")
+            spin.setValue(max(1, round(mb_value / 1024)))
+        else:
+            spin.setRange(512, 1_048_576)
+            spin.setSingleStep(512)
+            spin.setSuffix(" MB")
+            spin.setValue(mb_value)
+
+    def _on_memory_unit_changed(self, spin: QSpinBox, new_unit: str) -> None:
+        """Convert a memory spinbox's current value when its unit dropdown
+        changes, so switching GB<->MB never silently changes the underlying
+        amount (beyond GB's whole-number rounding)."""
+        old_suffix = spin.suffix().strip()
+        old_mb = spin.value() * 1024 if old_suffix == "GB" else spin.value()
+        if new_unit == "GB":
+            spin.setRange(1, 1024)
+            spin.setSingleStep(1)
+            spin.setSuffix(" GB")
+            spin.setValue(max(1, round(old_mb / 1024)))
+        else:
+            spin.setRange(512, 1_048_576)
+            spin.setSingleStep(512)
+            spin.setSuffix(" MB")
+            spin.setValue(max(512, old_mb))
+
+    @staticmethod
+    def _spin_value_mb(spin: QSpinBox) -> int:
+        """Read a memory spinbox's current value in MB, regardless of
+        whichever unit (MB/GB) its suffix currently displays."""
+        return spin.value() * 1024 if spin.suffix().strip() == "GB" else spin.value()
+
+    def _apply_suggested_memory(self, suggested_mb: int) -> None:
+        if self._xms_spin is None or self._xmx_spin is None:
+            return
+        if self._xms_unit is not None:
+            self._xms_unit.setCurrentText("GB")
+        if self._xmx_unit is not None:
+            self._xmx_unit.setCurrentText("GB")
+        self._configure_memory_unit(self._xms_spin, self._xms_unit, suggested_mb)
+        self._configure_memory_unit(self._xmx_spin, self._xmx_unit, suggested_mb)
+
     def _save_memory(self) -> None:
         inst = self._instance
         if inst is None or self._xms_spin is None or self._xmx_spin is None:
             return
-        xms_mb = self._xms_spin.value()
-        xmx_mb = self._xmx_spin.value()
+        xms_mb = self._spin_value_mb(self._xms_spin)
+        xmx_mb = self._spin_value_mb(self._xmx_spin)
 
         _, total_mb = system_memory_mb()
         if total_mb and xmx_mb > total_mb:

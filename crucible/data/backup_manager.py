@@ -469,6 +469,66 @@ class BackupManager:
         found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return found
 
+    # World reset / wipe
+
+    def reset_world(self, progress_cb: Callable[[int], None] | None = None) -> SwapResult:
+        """Start over with a brand new world on the next server start.
+
+        Non-destructive by design -- reuses exactly the same rename-aside
+        pattern as swap_world(): the current world is first safety-backed-up
+        (mandatory, just like a swap), then the live world root is renamed to
+        "<level-name>.pre-swap-<timestamp>" so it shows up in
+        list_pre_swap_dirs() and can be recovered or cleaned up the same way
+        a swap's leftover folder can. Minecraft simply regenerates a fresh
+        world root the next time the server starts, using whatever
+        level-seed is currently set in server.properties.
+
+        Same caller contract as swap_world(): the caller (World tab) MUST
+        already have confirmed the server is fully stopped and there are no
+        unsaved server.properties edits before calling this.
+        """
+        world_root = self._instance.world_root_path()
+
+        pre_swap_backup_path: Path | None = None
+        pre_swap_dir: Path | None = None
+
+        if world_root.is_dir():
+            # Mandatory safety backup -- identical rationale to swap_world()
+            # step 2: never optional, always taken before anything is moved.
+            pre_swap_backup_path = self.create_pre_swap_backup(progress_cb=progress_cb)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            pre_swap_dir = world_root.with_name(f"{world_root.name}.pre-swap-{timestamp}")
+            world_root.rename(pre_swap_dir)
+
+        if progress_cb:
+            progress_cb(100)
+        return SwapResult(
+            ok=True,
+            message="World reset \u2014 a brand new world will generate the next "
+                     "time the server starts.",
+            pre_swap_backup_path=pre_swap_backup_path,
+            pre_swap_dir=pre_swap_dir,
+        )
+
+    def wipe_world(self) -> SwapResult:
+        """Permanently delete the current world folder. No safety backup is
+        kept -- this is for users who explicitly want to free disk space and
+        already have a backup they trust elsewhere. Callers MUST obtain a
+        strong, explicit (typed) confirmation before calling this; there is
+        no rollback once this returns.
+        """
+        world_root = self._instance.world_root_path()
+        if not world_root.is_dir():
+            return SwapResult(ok=True, message="No world folder existed to wipe.")
+        name = world_root.name
+        shutil.rmtree(world_root)
+        return SwapResult(
+            ok=True,
+            message=f"'{name}' was permanently deleted. A brand new world will "
+                     "generate the next time the server starts.",
+        )
+
 
 class BackupWorker(QObject):
     """Runs BackupManager.create_backup() in a background QThread."""
@@ -520,6 +580,52 @@ class SwapWorker(QObject):
             result = self._manager.swap_world(
                 self._entry, progress_cb=lambda p: self.progress.emit(p)
             )
+            self.finished.emit(result)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class ResetWorldWorker(QObject):
+    """Runs BackupManager.reset_world() in a background QThread.
+
+    The mandatory safety backup this takes can be just as slow as a swap's,
+    so this must never run on the GUI thread either.
+    """
+
+    progress = pyqtSignal(int)       # 0-100
+    finished = pyqtSignal(object)    # SwapResult
+    failed   = pyqtSignal(str)       # error message
+
+    def __init__(self, manager: BackupManager, parent: QObject | None = None):
+        super().__init__(parent)
+        self._manager = manager
+
+    def run(self) -> None:
+        try:
+            result = self._manager.reset_world(progress_cb=lambda p: self.progress.emit(p))
+            self.finished.emit(result)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class WipeWorldWorker(QObject):
+    """Runs BackupManager.wipe_world() in a background QThread.
+
+    Deleting a multi-gigabyte world tree can take a noticeable moment on
+    slow disks, so this stays off the GUI thread for consistency with every
+    other world-folder operation, even though there's no zip/extract work.
+    """
+
+    finished = pyqtSignal(object)    # SwapResult
+    failed   = pyqtSignal(str)       # error message
+
+    def __init__(self, manager: BackupManager, parent: QObject | None = None):
+        super().__init__(parent)
+        self._manager = manager
+
+    def run(self) -> None:
+        try:
+            result = self._manager.wipe_world()
             self.finished.emit(result)
         except Exception as exc:
             self.failed.emit(str(exc))

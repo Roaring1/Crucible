@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 
 from ...data.instance_model import ServerInstance
 from .. import theme
+from .system_tab import SystemTab
 
 
 def _field(label: str, value: str, value_color: str = theme.TEXT) -> tuple[QLabel, QLabel]:
@@ -58,8 +59,19 @@ class InfoTab(QWidget):
         self._layout.addWidget(self._placeholder)
         self._layout.addStretch()
 
+        # Live CPU/memory performance section, merged in from the old
+        # standalone "System" tab so instance health/config/performance all
+        # live in one place. Created once here (not in load()) so its
+        # QTimer/ResourceSampler state survives repeated Info tab reloads --
+        # load() only detaches and re-attaches this widget, never deletes it.
+        self._system = SystemTab()
+
     def load(self, instance: ServerInstance, status: str = "stopped") -> None:
         """Rebuild the info display for the given instance."""
+        # Detach (but do NOT delete) the persistent System performance
+        # section before clearing everything else, so it survives this
+        # rebuild and its resource-sampling timer keeps running uninterrupted.
+        self._layout.removeWidget(self._system)
         # Clear existing widgets
         while self._layout.count():
             item = self._layout.takeAt(0)
@@ -148,5 +160,13 @@ class InfoTab(QWidget):
                 w.setStyleSheet(f"color: {theme.YELLOW}; font-size: 12px;")
                 w.setWordWrap(True)
                 self._layout.addWidget(w)
+
+        # Performance section (merged System tab) -- always shown last.
+        perf_sep = QFrame()
+        perf_sep.setFrameShape(QFrame.Shape.HLine)
+        perf_sep.setStyleSheet(f"color: {theme.SURFACE1};")
+        self._layout.addWidget(perf_sep)
+        self._layout.addWidget(self._system)
+        self._system.load(instance)
 
         self._layout.addStretch()
