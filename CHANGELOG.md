@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.6.5 -- hotfix: World tab crash on launch
+- Fix `NameError: name 'WorldTab' is not defined` when opening the GUI. v0.6.4 referenced the new `WorldTab` class in `instance_panel.py` but the import statement at the top of that file was never updated to include it.
+
 ## v0.6.4 -- 2026-07-21 -- World Backup & Swap
 - Add reliable **world identification** to `ServerInstance` (`crucible/data/instance_model.py`): `world_root_path()` resolves `level-name` from `server.properties` (defaulting to `"world"` when unset/missing, matching vanilla behavior), `world_size_bytes()` recursively sums the world folder's size, and `world_dimension_dirs()`/`dimension_label()` detect `DIM*` sibling folders (e.g. `DIM1` = The End, `DIM-1` = The Nether) nested inside the world root, matching the Forge/Fabric/modern-Paper layout used by modpacks like GTNH.
 - Extend `BackupEntry`/`BackupManager` (`crucible/data/backup_manager.py`) with **named world slots**: an optional user-supplied `slot_name` stored in a small backward-compatible sidecar JSON file per backup, `rename_slot()`, and prune-exemption for named slots so an intentional checkpoint (e.g. "Pre-1.20 update") is never silently deleted by count/age-based pruning -- only unnamed auto-backups are prunable by default.

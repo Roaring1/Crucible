@@ -33,7 +33,7 @@ from ..process.log_watcher import LogWatcher
 from ..process.watchdog import Watchdog
 from ..process.startup_patterns import RE_SERVER_DONE
 from . import theme
-from .tabs import ConsoleTab, ModsTab, NotesTab, InfoTab, ConfigTab, BackupTab, PlayersTab, SetupTab, SystemTab
+from .tabs import ConsoleTab, ModsTab, NotesTab, InfoTab, ConfigTab, BackupTab, WorldTab, PlayersTab, SetupTab, SystemTab
 
 # Fallback "Done (Xs)!" detector used only while "starting", read straight off
 # the tmux pane. Shares the exact pattern with log_watcher's log-file parsing
