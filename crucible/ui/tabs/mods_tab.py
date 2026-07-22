@@ -554,7 +554,9 @@ class ModsTab(QWidget):
             self.refresh()
 
     def has_active_operation(self) -> bool:
-        return bool(self._net_thread and self._net_thread.isRunning())
+        net_busy = bool(self._net_thread and self._net_thread.isRunning())
+        inspect_busy = bool(self._thread and self._thread.isRunning())
+        return net_busy or inspect_busy
 
     # Background jar inspection
 
