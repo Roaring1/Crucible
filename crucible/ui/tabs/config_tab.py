@@ -51,7 +51,9 @@ _DANGEROUS_KEYS: dict[str, str] = {
         "⚠ Changing this makes the server create/load a DIFFERENT world folder.\n"
         "Your existing world data is NOT deleted — you'd need to rename the folder\n"
         "on disk to match the new name before restarting.\n"
-        "Safe to change between sessions when you know what you're doing."
+        "To switch between saved worlds safely, use the World tab's Swap action\n"
+        "instead of editing this value directly -- it backs up, verifies, and\n"
+        "can automatically roll back if anything goes wrong."
     ),
     "level-seed": (
         "⚠ Seed only affects world generation for NEW chunks.\n"

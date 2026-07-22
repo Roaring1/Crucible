@@ -103,6 +103,8 @@ Crucible modifies server files only for explicit actions such as setup/import, c
 
 ## Changelog
 
+**v0.6.4** -- adds a World Backup & Swap system: named/rememberable world save slots with integrity-verified backups, a new World tab, and a fail-closed swap workflow (stopped-server check, automatic pre-swap safety backup, atomic rename-based swap, and automatic rollback on any verification failure)
+
 **v0.6.3** -- fixes a possible "stuck on STARTING..." GUI status via a tmux-pane-tail fallback that shares the exact same startup-detection pattern as the log watcher; adds an in-app server memory (Java heap -Xms/-Xmx) editor to the Setup tab that preserves all other java_args flags and warns before over-allocating RAM
 
 **v0.6.2** -- fixes the GTNH reboot-wrapper false "Stop looks like a restart" report; Stop now sends Ctrl-C to interrupt startserver-java9.sh/.bat's own 12-second auto-reboot countdown, and the watchdog now detects a real java crash even when that wrapper script keeps the tmux session alive

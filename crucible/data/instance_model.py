@@ -43,6 +43,48 @@ _START_SCRIPT_NAMES = [
 ]
 
 
+# World / dimension folder naming (used by World Backup & Swap).
+#
+# Vanilla and Forge (including GTNH) nest the Nether and End INSIDE the main
+# world folder as "DIM-1" (Nether) and "DIM1" (End); mods can add further
+# custom dimensions as other "DIM<n>" folders. This is confirmed against both
+# the GTNH wiki and general Minecraft Java Edition level-format documentation.
+#
+# This is deliberately different from Bukkit/Spigot/Paper's convention, which
+# stores the Nether/End as SEPARATE top-level "<level>_nether"/"<level>_the_end"
+# folders instead -- Crucible targets Forge-based servers (GTNH first and
+# foremost), so DIM* nesting is the convention that matters here.
+_DIMENSION_LABELS = {
+    "DIM1":  "The End",
+    "DIM-1": "The Nether",
+}
+
+
+def is_dimension_dir_name(name: str) -> bool:
+    """True for a Forge/vanilla-style nested dimension folder name.
+
+    Matches "DIM" followed by an optional "-" and one or more digits (e.g.
+    "DIM1", "DIM-1", "DIM7"), case-insensitively. Deliberately does NOT match
+    an unrelated folder that merely starts with "dim" as a substring of a
+    longer word.
+    """
+    upper = name.upper()
+    if not upper.startswith("DIM"):
+        return False
+    suffix = upper[3:]
+    if not suffix:
+        return False
+    digits = suffix[1:] if suffix.startswith("-") else suffix
+    return digits.isdigit()
+
+
+def dimension_label(name: str) -> str:
+    """Friendly display label for a DIM* folder name, e.g. "DIM-1" -> "The
+    Nether". Unknown/mod-added dimensions get a generic label."""
+    upper = name.upper()
+    return _DIMENSION_LABELS.get(upper, f"Custom dimension ({name})")
+
+
 # Data model
 
 @dataclass
@@ -277,6 +319,83 @@ class ServerInstance:
             if (p / candidate).exists():
                 found.append(candidate)
         return found
+
+    # World identification, sizing, and swap support (World Backup & Swap).
+    # These are read-only filesystem queries -- they never write anything.
+
+    def world_root_path(self) -> Path:
+        """Absolute path to this server's world (level) folder.
+
+        Reads level-name from server.properties (default "world" -- the
+        vanilla/Forge/GTNH default). Does NOT check existence; a server that
+        has never been started won't have generated a world folder yet, so
+        callers must check world_root_path().exists()/.is_dir() themselves.
+        """
+        p = self.path_obj
+        level_name = "world"
+        props = p / "server.properties"
+        if props.exists():
+            try:
+                for line in props.read_text(encoding="utf-8", errors="replace").splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("level-name="):
+                        candidate = stripped.split("=", 1)[1].strip()
+                        if candidate:
+                            level_name = candidate
+                        break
+            except OSError:
+                pass
+        return p / level_name
+
+    def world_dimension_dirs(self) -> list[Path]:
+        """List Forge/vanilla-style nested dimension folders (DIM*) found
+        directly inside the world root.
+
+        Purely informational: BackupManager already captures these
+        automatically because it recursively walks the whole world root, so
+        this listing does not change what gets backed up. It exists so the
+        UI can show the user what's actually inside their world (e.g.
+        "Overworld + Nether (DIM-1) + End (DIM1)") without guessing, and so
+        the swap workflow can sanity-check dimension counts after a restore.
+
+        Does NOT look for Bukkit/Spigot/Paper-style separate
+        "<level>_nether"/"<level>_the_end" folders -- see is_dimension_dir_name
+        for why that convention doesn't apply to Crucible's Forge-first target.
+        """
+        root = self.world_root_path()
+        if not root.is_dir():
+            return []
+        dims = []
+        try:
+            for entry in sorted(root.iterdir()):
+                if entry.is_dir() and is_dimension_dir_name(entry.name):
+                    dims.append(entry)
+        except OSError:
+            return []
+        return dims
+
+    def world_size_bytes(self) -> int:
+        """Recursive on-disk size of the world root, in bytes.
+
+        Dimension folders (DIM*) live inside the world root, so a single
+        recursive walk already includes them -- no separate dimension-size
+        accounting is needed. Returns 0 if the world hasn't been generated
+        yet (server never started) or the folder is unreadable.
+        """
+        root = self.world_root_path()
+        if not root.is_dir():
+            return 0
+        total = 0
+        try:
+            for fpath in root.rglob("*"):
+                try:
+                    if fpath.is_file() and not fpath.is_symlink():
+                        total += fpath.stat().st_size
+                except OSError:
+                    continue
+        except OSError:
+            return total
+        return total
 
     # Server-setup helpers (used by the GUI Setup tab and the CLI 'doctor')
 

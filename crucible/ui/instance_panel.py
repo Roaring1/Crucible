@@ -239,6 +239,7 @@ class InstancePanel(QWidget):
         self._info    = InfoTab()
         self._config  = ConfigTab()
         self._backup  = BackupTab()
+        self._world   = WorldTab()
         self._players = PlayersTab()
         self._system  = SystemTab()
 
@@ -250,8 +251,14 @@ class InstancePanel(QWidget):
         self._tabs.addTab(self._info,    "Info")
         self._tabs.addTab(self._config,  "⚙  Config")
         self._tabs.addTab(self._backup,  "💾  Backups")
+        self._tabs.addTab(self._world,   "🌍  World")
         self._tabs.addTab(self._players, "👥  Players")
         self._tabs.addTab(self._system,  "📊  System")
+        # World swaps must never proceed with unsaved server.properties edits
+        # in flight -- reuse ConfigTab's own save/discard guard rather than
+        # duplicating that logic.
+        self._world.set_config_guard(self._config.confirm_discard_or_save)
+
         # Poll TPS only while the Console tab is focused (see _update_tps_polling).
         self._tabs.currentChanged.connect(self._on_tab_changed)
         self._console.lifecycle_command_sent.connect(
@@ -677,6 +684,8 @@ class InstancePanel(QWidget):
             self._config.load(inst)
         elif tab is self._backup:
             self._backup.load(inst)
+        elif tab is self._world:
+            self._world.load(inst)
         elif tab is self._players:
             self._players.load(inst)
         elif tab is self._system:
@@ -1002,9 +1011,10 @@ class InstancePanel(QWidget):
         tmux_busy = any(t.isRunning() for t in self._worker_threads)
         backup_thread = getattr(self._backup, "_thread", None)
         backup_busy = bool(backup_thread and backup_thread.isRunning())
+        world_busy = self._world.has_active_operation()
         setup_busy = self._setup.has_active_operation()
         mods_busy = self._mods.has_active_operation()
-        return tmux_busy or backup_busy or setup_busy or mods_busy
+        return tmux_busy or backup_busy or world_busy or setup_busy or mods_busy
 
     def shutdown(self) -> None:
         """Stop worker-owned timers in their own threads, then join threads."""
