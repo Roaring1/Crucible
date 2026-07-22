@@ -346,6 +346,45 @@ def detect_prism_source(source: str | Path) -> PrismImportPlan:
     return PrismImportPlan(source=path, game_root=path, info=PrismPackInfo(source_type="directory", name=path.name))
 
 
+# Names/globs that only appear at the top level of an already-complete,
+# ready-to-run dedicated server (an official modpack "Server Pack" download,
+# a hand-built Forge/NeoForge/Fabric server, etc.) -- never in a bare Prism
+# *client* instance. Prism instances only ever contain client launcher
+# metadata plus mods/config/etc.; they never ship their own start script or
+# a runnable server jar/loader at the instance root.
+_PREBUILT_SERVER_SCRIPT_NAMES = (
+    "startserver-java9.sh", "startserver-java17.sh", "ServerStart.sh",
+    "startserver.sh", "start.sh", "run.sh", "launch.sh", "run-server.sh",
+)
+_PREBUILT_SERVER_JAR_GLOBS = (
+    "server.jar", "minecraft_server*.jar", "fabric-server-launch.jar",
+    "quilt-server-launch.jar", "paper*.jar", "forge-*.jar", "neoforge-*.jar",
+)
+
+
+def _looks_like_prebuilt_server(game_root: Path) -> bool:
+    """True if `game_root` already looks like a complete dedicated server
+    rather than a bare Prism client instance.
+
+    This matters because a plain client instance only has mods/config/etc.
+    worth salvaging (Crucible's narrow SERVER_SAFE_DIRS/SERVER_SAFE_FILES
+    allowlist below), but a real Server Pack (GTNH's official download and
+    similar) also ships its own start script and server jar/loader directly
+    at the top level -- files that allowlist was never designed to preserve.
+    Silently dropping them during import produces a folder that looks
+    imported successfully but has no way to actually start.
+    """
+    for name in _PREBUILT_SERVER_SCRIPT_NAMES:
+        if (game_root / name).exists():
+            return True
+    for pattern in _PREBUILT_SERVER_JAR_GLOBS:
+        if any(game_root.glob(pattern)):
+            return True
+    if any(game_root.glob("libraries/net/*/*/*/unix_args.txt")):
+        return True
+    return False
+
+
 def _copy_tree(src: Path, dst: Path) -> int:
     if not src.exists():
         return 0
@@ -498,6 +537,20 @@ def import_prism_source(
     game_root = plan.game_root
     if not game_root.exists():
         warnings.append(f"Expected game root does not exist: {game_root}")
+    elif _looks_like_prebuilt_server(game_root):
+        # This source already IS a ready-to-run dedicated server (its own
+        # start script and/or server jar/loader sits at the top level) --
+        # e.g. an official modpack "Server Pack" download, not a bare Prism
+        # client instance. Copy everything (minus obvious client-only junk)
+        # instead of the client-import allowlist below, or the real
+        # launcher/jar would be silently dropped.
+        copied["(full server pack)"] = _copy_tree(game_root, target)
+        warnings.append(
+            "Source already looked like a complete dedicated server (a start "
+            "script and/or server jar/loader was found at its top level), so "
+            "the entire folder was copied instead of the usual client-import "
+            "allowlist."
+        )
     else:
         for dirname in SERVER_SAFE_DIRS:
             src = game_root / dirname
@@ -518,8 +571,21 @@ def import_prism_source(
                 shutil.copy2(src, meta_dir / metadata_name)
                 break
 
-    (target / "start.sh").write_text(_START_SH, encoding="utf-8")
-    os.chmod(target / "start.sh", 0o755)
+    # Never clobber a start script that was just copied from a real,
+    # already-complete server pack -- only write Crucible's placeholder when
+    # nothing genuine came over from the source.
+    if not (target / "start.sh").exists():
+        (target / "start.sh").write_text(_START_SH, encoding="utf-8")
+        os.chmod(target / "start.sh", 0o755)
+    else:
+        os.chmod(target / "start.sh", 0o755)
+    for _name in _PREBUILT_SERVER_SCRIPT_NAMES:
+        _p = target / _name
+        if _p.exists() and _p.is_file():
+            try:
+                os.chmod(_p, 0o755)
+            except OSError:
+                pass
     _write_default_server_properties(target)
     _write_eula(target, accept_eula)
 
