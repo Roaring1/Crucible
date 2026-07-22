@@ -13,7 +13,6 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
 
 # Files that indicate a runnable dedicated server is actually present
 # (as opposed to a client-only pack staging folder).

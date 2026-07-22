@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from collections import deque
 
-from PyQt6.QtCore import Qt, QTimer, QEvent, pyqtSlot
+from PyQt6.QtCore import Qt, QEvent, pyqtSlot
 from PyQt6.QtGui import (
     QColor, QFont, QTextCharFormat, QTextCursor,
     QShortcut, QKeySequence, QTextDocument,
@@ -17,7 +17,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QPlainTextEdit, QLineEdit, QPushButton,
-    QLabel, QCheckBox, QSizePolicy,
+    QLabel, QCheckBox,
 )
 
 from ...data.instance_model import ServerInstance
@@ -237,7 +237,7 @@ class ConsoleTab(QWidget):
         self._players_label = QLabel("Players: —")
         self._players_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         self._server_state_label = QLabel("")
-        self._server_state_label.setStyleSheet(f"font-size: 11px; font-weight: 600;")
+        self._server_state_label.setStyleSheet("font-size: 11px; font-weight: 600;")
 
         sr_layout.addWidget(self._tps_label)
         sr_layout.addSpacing(16)
@@ -341,8 +341,8 @@ class ConsoleTab(QWidget):
             btn = QPushButton(label)
             btn.setFixedHeight(24)
             btn.setStyleSheet(
-                f"font-size: 11px; padding: 2px 8px; "
-                f"border-radius: 4px;"
+                "font-size: 11px; padding: 2px 8px; "
+                "border-radius: 4px;"
             )
             if cmd == "__TPS__":
                 btn.clicked.connect(self._quick_tps)
@@ -607,7 +607,7 @@ class ConsoleTab(QWidget):
                 self._history.append(cmd)
             self._hist_idx = -1
         else:
-            self._append_system(f"Failed to send (is server running?)")
+            self._append_system("Failed to send (is server running?)")
 
         self._cmd_input.clear()
 

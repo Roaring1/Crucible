@@ -35,13 +35,16 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-_USER_AGENT = "Crucible/0.4 (+https://github.com/; Minecraft server manager)"
+_USER_AGENT = "Crucible/0.6.0 (Minecraft server manager)"
 _TIMEOUT = 30
 _MAX_RETRIES = 3
+_MAX_METADATA_BYTES = 16 * 1024 * 1024
+_MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
 # Public metadata / maven endpoints (no keys required).
 _MOJANG_MANIFEST = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
@@ -99,10 +102,7 @@ def _log(cb: LogCb, msg: str) -> None:
 
 
 def _ssl_ctx() -> ssl.SSLContext:
-    try:
-        return ssl.create_default_context()
-    except Exception:
-        return ssl._create_unverified_context()  # last-resort; better than crashing
+    return ssl.create_default_context()
 
 
 def _http_bytes(url: str, *, cb: LogCb = None, timeout: int = _TIMEOUT) -> bytes:
@@ -113,7 +113,10 @@ def _http_bytes(url: str, *, cb: LogCb = None, timeout: int = _TIMEOUT) -> bytes
         try:
             req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
             with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
-                return r.read()
+                data = r.read(_MAX_METADATA_BYTES + 1)
+                if len(data) > _MAX_METADATA_BYTES:
+                    raise RuntimeError("metadata response exceeds safe size limit")
+                return data
         except Exception as exc:  # noqa: BLE001 - retry any transient error
             last = exc
             _log(cb, f"  ! {type(exc).__name__}: {exc} (attempt {attempt}/{_MAX_RETRIES})")
@@ -131,6 +134,9 @@ def _download_to(url: str, dest: Path, *, cb: LogCb = None,
     """Stream-download a URL to dest atomically. Raises on failure."""
     if cancel is not None and cancel.is_set():
         raise RuntimeError("cancelled")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise RuntimeError("refusing non-HTTPS download URL")
     ctx = _ssl_ctx()
     dest.parent.mkdir(parents=True, exist_ok=True)
     last: Exception | None = None
@@ -141,15 +147,22 @@ def _download_to(url: str, dest: Path, *, cb: LogCb = None,
         try:
             req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
             with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+                declared = r.headers.get("Content-Length")
+                if declared and int(declared) > _MAX_DOWNLOAD_BYTES:
+                    raise RuntimeError("download exceeds safe size limit")
                 fd, tmp_name = tempfile.mkstemp(dir=str(dest.parent), suffix=".part")
                 tmp = Path(tmp_name)
                 with os.fdopen(fd, "wb") as out:
+                    received = 0
                     while True:
                         if cancel is not None and cancel.is_set():
                             raise RuntimeError("cancelled")
                         chunk = r.read(65536)
                         if not chunk:
                             break
+                        received += len(chunk)
+                        if received > _MAX_DOWNLOAD_BYTES:
+                            raise RuntimeError("download exceeds safe size limit")
                         out.write(chunk)
             os.replace(tmp, dest)
             return

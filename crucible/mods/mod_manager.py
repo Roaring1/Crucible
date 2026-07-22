@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..data.instance_model import ServerInstance

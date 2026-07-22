@@ -21,7 +21,7 @@ from PyQt6.QtGui import QPixmap, QIcon, QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QListWidget, QListWidgetItem, QFileDialog, QMessageBox, QCheckBox,
-    QPlainTextEdit, QProgressBar, QWidget,
+    QPlainTextEdit, QProgressBar,
 )
 
 from ..mods import modrinth

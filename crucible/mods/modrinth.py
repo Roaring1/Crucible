@@ -18,11 +18,16 @@ import hashlib
 import urllib.request
 import urllib.parse
 import urllib.error
+import tempfile
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 _API = "https://api.modrinth.com/v2"
-_UA = "Crucible/0.5.1 (Minecraft server manager)"
+_UA = "Crucible/0.6.0 (Minecraft server manager)"
+_MAX_JSON_BYTES = 16 * 1024 * 1024
+_MAX_ICON_BYTES = 8 * 1024 * 1024
+_MAX_MOD_BYTES = 2 * 1024 * 1024 * 1024
 
 
 def humanize_count(n: int) -> str:
@@ -100,7 +105,10 @@ def _get(url: str, timeout: float = 12.0):
                                                "Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8"))
+            data = r.read(_MAX_JSON_BYTES + 1)
+            if len(data) > _MAX_JSON_BYTES:
+                raise ModrinthError("Modrinth response was unexpectedly large.")
+            return json.loads(data.decode("utf-8"))
     except urllib.error.HTTPError as e:
         raise ModrinthError(f"Modrinth returned HTTP {e.code}.") from e
     except urllib.error.URLError as e:
@@ -220,7 +228,10 @@ def fetch_bytes(url: str, timeout: float = 15.0) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read()
+            data = r.read(_MAX_ICON_BYTES + 1)
+            if len(data) > _MAX_ICON_BYTES:
+                raise ModrinthError("Image response was unexpectedly large.")
+            return data
     except (urllib.error.URLError, TimeoutError, ValueError) as e:
         raise ModrinthError(f"Fetch failed: {e}") from e
 
@@ -280,21 +291,42 @@ def resolve_with_deps(project_id: str, *, loader: str, mc_version: str,
 
 
 def _download(url: str, dest: Path, timeout: float = 60.0) -> int:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ModrinthError("Refusing a non-HTTPS download URL.")
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    tmp = None
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = r.read()
-    except (urllib.error.URLError, TimeoutError) as e:
+            declared = r.headers.get("Content-Length")
+            if declared and int(declared) > _MAX_MOD_BYTES:
+                raise ModrinthError("Mod file exceeds safe size limit.")
+            fd, tmp_name = tempfile.mkstemp(prefix=".crucible-mod-", dir=str(dest.parent))
+            tmp = Path(tmp_name)
+            received = 0
+            with os.fdopen(fd, "wb") as out:
+                while True:
+                    chunk = r.read(64 * 1024)
+                    if not chunk:
+                        break
+                    received += len(chunk)
+                    if received > _MAX_MOD_BYTES:
+                        raise ModrinthError("Mod file exceeds safe size limit.")
+                    out.write(chunk)
+        tmp.replace(dest)
+        return received
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
         raise ModrinthError(f"Download failed: {e}") from e
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    tmp.write_bytes(data)
-    tmp.replace(dest)
-    return len(data)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
 def _sha1(path: Path) -> str:
     h = hashlib.sha1()
-    h.update(path.read_bytes())
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(64 * 1024), b""):
+            h.update(chunk)
     return h.hexdigest()
 
 

@@ -89,7 +89,7 @@ class BackupManager:
                 "Start the server at least once to generate one."
             )
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         # Sanitize instance name for filename
         safe_name = "".join(
             c for c in self._instance.name if c.isalnum() or c in "._- "
@@ -101,18 +101,30 @@ class BackupManager:
         all_files: list[tuple[Path, Path]] = []   # (abs_path, arcname)
         for wdir in world_dirs:
             for fpath in wdir.rglob("*"):
-                if fpath.is_file():
-                    all_files.append((fpath, fpath.relative_to(server_path)))
+                if fpath.is_file() and not fpath.is_symlink():
+                    resolved = fpath.resolve()
+                    try:
+                        resolved.relative_to(server_path.resolve())
+                    except ValueError:
+                        continue
+                    all_files.append((resolved, resolved.relative_to(server_path.resolve())))
 
         total = len(all_files)
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-            for i, (fpath, arcname) in enumerate(all_files):
-                try:
+        partial = zip_path.with_suffix(".zip.partial")
+        try:
+            with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+                for i, (fpath, arcname) in enumerate(all_files):
                     zf.write(fpath, arcname)
-                except OSError:
-                    pass   # skip locked/missing files mid-backup
-                if progress_cb and total > 0:
-                    progress_cb(int((i + 1) / total * 100))
+                    if progress_cb and total > 0:
+                        progress_cb(int((i + 1) / total * 100))
+            with zipfile.ZipFile(partial, "r") as check:
+                bad = check.testzip()
+                if bad is not None:
+                    raise OSError(f"Backup verification failed at {bad}")
+            partial.replace(zip_path)
+        except Exception:
+            partial.unlink(missing_ok=True)
+            raise
 
         if progress_cb:
             progress_cb(100)
@@ -140,8 +152,13 @@ class BackupManager:
                     break
 
         dirs = []
+        root = server_path.resolve()
         for candidate in [level_name, f"{level_name}_nether", f"{level_name}_the_end"]:
-            d = server_path / candidate
+            d = (server_path / candidate).resolve()
+            try:
+                d.relative_to(root)
+            except ValueError:
+                continue
             if d.exists() and d.is_dir():
                 dirs.append(d)
         return dirs

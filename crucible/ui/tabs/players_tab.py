@@ -16,10 +16,9 @@ from __future__ import annotations
 
 import json
 import time
-import uuid
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QObject, QSize, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QObject, QSize, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
@@ -259,9 +258,9 @@ class PlayersTab(QWidget):
         self._join_times.clear()
         self._load_seen()
         self._refresh_online_list()
-        self._whitelist_w.load(instance.path, "whitelist.json")
-        self._ops_w.load(instance.path,       "ops.json")
-        self._banned_w.load(instance.path,    "banned-players.json")
+        self._whitelist_w.load(instance, "whitelist.json")
+        self._ops_w.load(instance,       "ops.json")
+        self._banned_w.load(instance,    "banned-players.json")
 
     def attach_watcher(self, watcher: LogWatcher) -> None:
         self.detach_watcher()
@@ -671,6 +670,8 @@ class _PlayerListWidget(QWidget):
         self._filename  = filename
         self._allow_add = allow_add
         self._path: Path | None = None
+        self._instance: ServerInstance | None = None
+        self._tmux = TmuxManager()
         self._data: list[dict]  = []
         self._build_ui()
 
@@ -709,8 +710,9 @@ class _PlayerListWidget(QWidget):
         self._status.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         layout.addWidget(self._status)
 
-    def load(self, server_path: str, filename: str) -> None:
-        self._path = Path(server_path) / filename
+    def load(self, instance: ServerInstance, filename: str) -> None:
+        self._instance = instance
+        self._path = Path(instance.path) / filename
         if not self._path.exists():
             self._data = []
             self._table.setRowCount(0)
@@ -748,10 +750,20 @@ class _PlayerListWidget(QWidget):
             QMessageBox.information(self, "Already Listed",
                                     f"{name} is already in this list.")
             return
-        self._data.append({"uuid": str(uuid.uuid4()), "name": name})
-        self._save()
-        self._refresh_table()
+        if self._instance is None or not self._tmux.is_running(self._instance):
+            QMessageBox.warning(
+                self, "Start server first",
+                "Crucible will not invent a UUID for this player. Start the server, "
+                "then add them so Minecraft resolves and stores their real profile.",
+            )
+            return
+        command = "whitelist add" if self._filename == "whitelist.json" else "op"
+        if not self._tmux.send_command(self._instance, f"{command} {name}"):
+            QMessageBox.critical(self, "Command failed", "Could not send the command to the server.")
+            return
         self._name_input.clear()
+        self._status.setText(f"Sent: {command} {name} — refreshing…")
+        QTimer.singleShot(1500, lambda: self.load(self._instance, self._filename))
 
     def _remove_player(self, row: int) -> None:
         if 0 <= row < len(self._data):

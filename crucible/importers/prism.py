@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import tempfile
+import stat
 import zipfile
 from dataclasses import dataclass, field
 try:
@@ -53,6 +54,11 @@ CLIENT_ONLY_NAMES = {
     "options.txt",
     "servers.dat",
 }
+_MAX_ARCHIVE_MEMBERS = 100_000
+_MAX_ARCHIVE_BYTES = 20 * 1024 * 1024 * 1024  # 20 GiB expanded
+_MAX_SINGLE_MEMBER = 2 * 1024 * 1024 * 1024   # 2 GiB
+_MAX_COMPRESSION_RATIO = 1_000
+
 _LOADER_UIDS = {
     "net.minecraftforge": "forge",
     "net.neoforged": "neoforge",
@@ -208,15 +214,47 @@ def _extract_archive(path: Path) -> tuple[Path, list[str]]:
     warnings: list[str] = []
     try:
         with zipfile.ZipFile(path, "r") as zf:
-            for member in zf.infolist():
+            members = zf.infolist()
+            if len(members) > _MAX_ARCHIVE_MEMBERS:
+                raise ValueError(f"Archive has too many entries ({len(members):,})")
+            expanded = sum(m.file_size for m in members)
+            if expanded > _MAX_ARCHIVE_BYTES:
+                raise ValueError(f"Archive expands beyond {_MAX_ARCHIVE_BYTES // (1024**3)} GiB")
+            for member in members:
+                mode = member.external_attr >> 16
+                if stat.S_ISLNK(mode):
+                    warnings.append(f"Skipped archive symlink: {member.filename}")
+                    continue
+                if member.file_size > _MAX_SINGLE_MEMBER:
+                    raise ValueError(f"Archive member is too large: {member.filename}")
+                if (member.file_size > 100 * 1024 * 1024 and member.compress_size > 0
+                        and member.file_size / member.compress_size > _MAX_COMPRESSION_RATIO):
+                    raise ValueError(f"Suspicious compression ratio: {member.filename}")
                 dest = (tmp / member.filename).resolve()
-                if not (dest == tmp.resolve() or str(dest).startswith(str(tmp.resolve()) + os.sep)):
+                try:
+                    dest.relative_to(tmp.resolve())
+                except ValueError:
                     warnings.append(f"Skipped unsafe archive path: {member.filename}")
                     continue
-                zf.extract(member, tmp)
-    except zipfile.BadZipFile as exc:
+                if member.is_dir():
+                    dest.mkdir(parents=True, exist_ok=True)
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member) as src, dest.open("wb") as out:
+                    remaining = member.file_size
+                    while remaining:
+                        chunk = src.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        remaining -= len(chunk)
+                    if remaining:
+                        raise ValueError(f"Truncated archive member: {member.filename}")
+    except (zipfile.BadZipFile, ValueError) as exc:
         shutil.rmtree(tmp, ignore_errors=True)
-        raise ValueError(f"Not a valid zip/mrpack archive: {path}") from exc
+        if isinstance(exc, zipfile.BadZipFile):
+            raise ValueError(f"Not a valid zip/mrpack archive: {path}") from exc
+        raise
     return tmp, warnings
 
 
@@ -312,15 +350,21 @@ def _copy_tree(src: Path, dst: Path) -> int:
     if not src.exists():
         return 0
     count = 0
+    source_root = src.resolve()
     for p in src.rglob("*"):
-        if p.is_dir():
+        if p.is_dir() or p.is_symlink():
+            continue
+        resolved = p.resolve()
+        try:
+            resolved.relative_to(source_root)
+        except ValueError:
             continue
         rel = p.relative_to(src)
         if any(part in CLIENT_ONLY_NAMES for part in rel.parts):
             continue
         target = dst / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(p, target)
+        shutil.copy2(resolved, target)
         count += 1
     return count
 

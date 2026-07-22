@@ -76,7 +76,7 @@ The GUI **+ Add Server** dialog also includes **Import Prism Instance…** and *
 |---|---|
 | `~/.config/crucible/instances.json` | Registered servers |
 
-Server files are never modified by Crucible except when you use the Mods or Config tabs.
+Crucible modifies server files only for explicit actions such as setup/import, configuration, mods, player commands, diagnostics, and backups. Destructive actions require confirmation.
 
 ---
 
@@ -90,6 +90,8 @@ Server files are never modified by Crucible except when you use the Mods or Conf
 ---
 
 ## Changelog
+
+**v0.6.0** -- deep reliability/security audit; atomic backups, safe imports, start-failure reporting, identity/session safeguards, and regression tests
 
 **v0.3.7** -- antivibe GUI pass: amber accent, varied button hierarchy, no uniform border-radius, Unicode separators removed from all source files
 

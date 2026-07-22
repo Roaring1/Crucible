@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import zipfile
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -88,7 +89,10 @@ def read_index_from_mrpack(mrpack: str | Path) -> dict:
     try:
         with zipfile.ZipFile(mrpack) as zf:
             try:
-                raw = zf.read(_INDEX_NAME)
+                info = zf.getinfo(_INDEX_NAME)
+                if info.file_size > 16 * 1024 * 1024:
+                    raise ValueError(f"{_INDEX_NAME} exceeds 16 MiB")
+                raw = zf.read(info)
             except KeyError:
                 raise ValueError(
                     f"{mrpack.name} is not a valid .mrpack (no {_INDEX_NAME})"
@@ -119,35 +123,50 @@ def _safe_join(base: Path, rel: str) -> Optional[Path]:
 
 
 def apply_overrides(mrpack: str | Path, target: str | Path, *, log_cb: LogCb = None) -> int:
-    """Extract ``overrides/`` then ``server-overrides/`` from the pack.
-
-    ``server-overrides`` is applied last so it wins over the shared overrides.
-    Returns the number of files written. Never raises; problems are logged.
-    """
+    """Safely stream bounded overrides; server-overrides wins."""
     target = Path(target)
     written = 0
+    expanded = 0
     try:
         with zipfile.ZipFile(Path(mrpack)) as zf:
-            names = zf.namelist()
+            names = zf.infolist()
+            if len(names) > _prism._MAX_ARCHIVE_MEMBERS:
+                raise ValueError("archive contains too many entries")
             for prefix in ("overrides/", "server-overrides/"):
-                for name in names:
+                for info in names:
+                    name = info.filename
                     if not name.startswith(prefix) or name.endswith("/"):
                         continue
-                    rel = name[len(prefix):]
-                    if not rel:
+                    if stat.S_ISLNK(info.external_attr >> 16):
+                        _log(log_cb, f"  ! skipped archive symlink: {name}")
                         continue
+                    if info.file_size > _prism._MAX_SINGLE_MEMBER:
+                        raise ValueError(f"override is too large: {name}")
+                    expanded += info.file_size
+                    if expanded > _prism._MAX_ARCHIVE_BYTES:
+                        raise ValueError("overrides exceed expanded-size limit")
+                    rel = name[len(prefix):]
                     dest = _safe_join(target, rel)
                     if dest is None:
                         _log(log_cb, f"  ! skipped unsafe override path: {name}")
                         continue
                     try:
                         dest.parent.mkdir(parents=True, exist_ok=True)
-                        with zf.open(name) as src, open(dest, "wb") as out:
-                            out.write(src.read())
+                        with zf.open(info) as src, dest.open("wb") as out:
+                            remaining = info.file_size
+                            while remaining:
+                                chunk = src.read(min(1024 * 1024, remaining))
+                                if not chunk:
+                                    break
+                                out.write(chunk)
+                                remaining -= len(chunk)
+                            if remaining:
+                                raise OSError("truncated archive member")
                         written += 1
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
+                        dest.unlink(missing_ok=True)
                         _log(log_cb, f"  ! could not write override {rel}: {exc}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _log(log_cb, f"  ! could not read overrides: {exc}")
     if written:
         _log(log_cb, f"Applied {written} override file(s).")

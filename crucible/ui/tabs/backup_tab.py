@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 
 from ...data.instance_model import ServerInstance
 from ...data.backup_manager import BackupManager, BackupWorker, BackupEntry
+from ...process.tmux_manager import TmuxManager
 from .. import theme
 
 
@@ -184,6 +185,21 @@ class BackupTab(QWidget):
             return
         if self._thread and self._thread.isRunning():
             return
+
+        if self._instance and TmuxManager().is_running(self._instance):
+            reply = QMessageBox.warning(
+                self, "Back up a running server?",
+                "The server is currently running. Crucible will request a save-all "
+                "before copying, but a stopped-server backup is the safest option.\n\n"
+                "Continue with a live backup?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            if not TmuxManager().send_command(self._instance, "save-all flush"):
+                QMessageBox.critical(self, "Backup cancelled", "Could not request a world save.")
+                return
 
         self._backup_btn.setEnabled(False)
         self._progress.setValue(0)

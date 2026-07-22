@@ -17,9 +17,8 @@ Design:
 
 from __future__ import annotations
 
-from datetime import datetime
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 
 from ..data.instance_model import ServerInstance
 from .tmux_manager import TmuxManager
@@ -60,6 +59,7 @@ class Watchdog(QObject):
 
     # Lifecycle
 
+    @pyqtSlot()
     def start(self) -> None:
         """Called after moveToThread() + thread.start()."""
         self._active     = True
@@ -67,6 +67,7 @@ class Watchdog(QObject):
         self._poll_timer.timeout.connect(self._poll)
         self._poll_timer.start(POLL_INTERVAL_MS)
 
+    @pyqtSlot()
     def stop(self) -> None:
         self._active = False
         if self._poll_timer:
@@ -76,6 +77,7 @@ class Watchdog(QObject):
 
     # Registration
 
+    @pyqtSlot(object, bool)
     def watch(self, instance: ServerInstance, auto_restart: bool = False) -> None:
         """
         Register an instance for crash monitoring.
@@ -86,6 +88,7 @@ class Watchdog(QObject):
         self._auto_restart[instance.id] = auto_restart
         self._crash_count[instance.id]  = 0
 
+    @pyqtSlot(object, bool)
     def unwatch(self, instance_id: str) -> None:
         """
         Deregister an instance.

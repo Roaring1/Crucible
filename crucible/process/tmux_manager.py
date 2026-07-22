@@ -151,24 +151,22 @@ class TmuxManager:
         except OSError:
             pass
 
-        # Launch prep: mirror the boot output to a log via tee (kept visible for
-        # `tmux attach`) and record the start script's REAL exit code the moment
-        # it exits. tmux new-session returns 0 as soon as the *session* exists,
-        # so without this a script that dies instantly (e.g. the placeholder
-        # start.sh with no server jar, exit 2) was reported as a good start.
+        # Record the start script's real exit code. Keep a failed pane alive
+        # for one extra second so verification can capture its scrollback. Do
+        # not pipe through tee: that would duplicate output for the full server
+        # lifetime and could consume unbounded disk space.
         start_env = f"{java_args} -Dcrucible.session={session}".strip()
-        log = self._start_log_path(session)
         marker = self._start_marker_path(session)
-        for _p in (marker, log):
-            try:
-                _p.unlink()
-            except OSError:
-                pass
+        try:
+            marker.unlink()
+        except OSError:
+            pass
         inner = (
             "env CRUCIBLE_JAVA_ARGS=" + shlex.quote(start_env)
             + " bash " + shlex.quote(script.name)
-            + " 2>&1 | tee " + shlex.quote(str(log))
-            + "; printf '%s' \"${PIPESTATUS[0]}\" > " + shlex.quote(str(marker))
+            + "; _crucible_code=$?; printf '%s' \"$_crucible_code\" > "
+            + shlex.quote(str(marker))
+            + "; sleep 1; exit \"$_crucible_code\""
         )
         cmd = [
             "tmux", "new-session",
@@ -178,7 +176,7 @@ class TmuxManager:
             # Tag the JVM with a per-instance marker so it's identifiable in
             # Activity Monitor / Mission Control / htop AND matchable by the
             # resource monitor.
-            # Run through bash -c so the pipe + PIPESTATUS exit-marker work.
+            # Run through bash -c so the exit marker can be written.
             "bash -c " + shlex.quote(inner),
         ]
 
@@ -198,9 +196,6 @@ class TmuxManager:
     def _tmp_dir(self) -> Path:
         return Path(tempfile.gettempdir())
 
-    def _start_log_path(self, session: str) -> Path:
-        return self._tmp_dir() / ("crucible-start-" + session + ".log")
-
     def _start_marker_path(self, session: str) -> Path:
         return self._tmp_dir() / ("crucible-start-" + session + ".exit")
 
@@ -215,14 +210,14 @@ class TmuxManager:
             return -1
 
     def _read_capture(self, session: str, max_lines: int = 40, max_chars: int = 4000) -> str:
-        try:
-            text = self._start_log_path(session).read_text(errors="replace")
-        except OSError:
+        result = self._run(
+            ["tmux", "capture-pane", "-p", "-t", session, "-S", f"-{max_lines}"],
+            timeout=2,
+        )
+        if result.returncode != 0:
             return ""
-        out = "\n".join(text.splitlines()[-max_lines:]).strip()
-        if len(out) > max_chars:
-            out = out[-max_chars:]
-        return out
+        out = result.stdout.strip()
+        return out[-max_chars:] if len(out) > max_chars else out
 
     def _verify_started(
         self,

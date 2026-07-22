@@ -100,16 +100,25 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         (skipped if _is_server_only(j.name) else ship).append(j)
     cfg = _config_dirs(server) if include_config else []
 
+    if fmt not in {"mrpack", "prism", "curseforge"}:
+        return ExportResult(error=f"Unknown format: {fmt}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    partial = out_path.with_suffix(out_path.suffix + ".partial")
     try:
+        partial.unlink(missing_ok=True)
         if fmt == "mrpack":
-            _build_mrpack(out_path, name, mc, loader, loader_version, ship, cfg)
+            _build_mrpack(partial, name, mc, loader, loader_version, ship, cfg)
         elif fmt == "prism":
-            _build_prism(out_path, name, mc, loader, loader_version, ship, cfg)
-        elif fmt == "curseforge":
-            _build_curseforge(out_path, name, mc, loader, loader_version, ship, cfg)
+            _build_prism(partial, name, mc, loader, loader_version, ship, cfg)
         else:
-            return ExportResult(error=f"Unknown format: {fmt}")
+            _build_curseforge(partial, name, mc, loader, loader_version, ship, cfg)
+        with zipfile.ZipFile(partial, "r") as check:
+            bad = check.testzip()
+            if bad:
+                raise OSError(f"ZIP verification failed at {bad}")
+        partial.replace(out_path)
     except (OSError, zipfile.BadZipFile) as e:
+        partial.unlink(missing_ok=True)
         return ExportResult(error=f"Could not write {fmt} file: {e}")
 
     return ExportResult(path=str(out_path), fmt=fmt, mod_count=len(ship),
@@ -117,9 +126,16 @@ def export(instance, out_path, fmt: str = "mrpack", *,
 
 
 def _add_dir(zf: zipfile.ZipFile, src: Path, arc_prefix: str) -> None:
+    root = src.resolve()
     for f in src.rglob("*"):
-        if f.is_file():
-            zf.write(f, f"{arc_prefix}/{f.relative_to(src.parent).as_posix()}")
+        if not f.is_file() or f.is_symlink():
+            continue
+        resolved = f.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        zf.write(resolved, f"{arc_prefix}/{f.relative_to(src.parent).as_posix()}")
 
 
 def _build_mrpack(out_path, name, mc, loader, loader_version, jars, cfg_dirs):

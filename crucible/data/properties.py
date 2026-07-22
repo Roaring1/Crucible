@@ -239,13 +239,14 @@ class PropertiesDoc:
         return [t[1] for t in self._lines if t[0] == "kv"]
 
     def get(self, key: str) -> Optional[str]:
-        for t in self._lines:
+        for t in reversed(self._lines):
             if t[0] == "kv" and t[1] == key:
                 return t[2]
         return None
 
     def set(self, key: str, value: str) -> None:
-        for i, t in enumerate(self._lines):
+        for i in range(len(self._lines) - 1, -1, -1):
+            t = self._lines[i]
             if t[0] == "kv" and t[1] == key:
                 self._lines[i] = ("kv", key, value)
                 return

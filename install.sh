@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Crucible v0.3.4 — Install Script
+# Crucible v0.6.0 — Install Script
 # Target: Nobara 41–43 / Fedora (dnf) · Python 3.11+
 #
 # Works from ANYWHERE — Downloads, Desktop, /tmp, it doesn't matter.
@@ -36,7 +36,7 @@ BACKUP_HOME="$HOME/.local/share/crucible-backups"
 
 echo -e ""
 echo -e "${BOLD}${CYAN}  ╔════════════════════════════════════╗"
-echo -e "  ║   C R U C I B L E   v0.3.4        ║"
+echo -e "  ║   C R U C I B L E   v0.6.0        ║"
 echo -e "  ║   GTNH Server Manager              ║"
 echo -e "  ║   Nobara 41–43  ·  Python 3.11+    ║"
 echo -e "  ╚════════════════════════════════════╝${RESET}"
@@ -104,7 +104,7 @@ ok "Backup store confirmed at $BACKUP_HOME"
 
 # Install for real — not editable, so the zip/extracted folder is now disposable
 "$PYTHON" -m pip install --user --quiet "$APP_HOME"
-ok "Crucible v0.3.4 installed"
+ok "Crucible v0.6.0 installed"
 
 # PATH guard
 if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
@@ -162,7 +162,7 @@ fi
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo -e ""
 echo -e "${BOLD}${GREEN}┌─────────────────────────────────────────────────────┐"
-echo -e "│   Done!  Crucible v0.3.4 is installed.              │"
+echo -e "│   Done!  Crucible v0.6.0 is installed.              │"
 echo -e "└─────────────────────────────────────────────────────┘${RESET}"
 echo -e ""
 echo -e "  ${BOLD}Launch:${RESET}  search 'Crucible' in your app launcher"

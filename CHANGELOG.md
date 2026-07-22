@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.6.0 — deep reliability and safety audit
+
+- Detect immediate start-script failure without an unbounded duplicate log.
+- Prevent config boolean/key desynchronization and fix Prism export crash.
+- Reject modpack path traversal, symlink escapes, and non-HTTPS download URLs.
+- Make backups atomic, unique, and ZIP-verified; warn and flush before live backup.
+- Reject ambiguous IDs, invalid/duplicate tmux sessions, and unsafe recursive deletes.
+- Never fabricate player UUIDs; use the running Minecraft server to resolve profiles.
+- Remove generated package metadata/patch artifacts and add regression tests.
+
 ## v0.5.1 — 2026-06-21
 
 Follow-up to the v0.5.0 release: audited the v0.5.0 fixes (all confirmed good)

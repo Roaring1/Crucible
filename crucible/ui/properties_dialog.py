@@ -20,7 +20,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
-    QComboBox, QFrame, QScrollArea, QWidget, QMessageBox, QCheckBox,
+    QComboBox, QFrame, QScrollArea, QWidget, QMessageBox,
 )
 
 from . import theme

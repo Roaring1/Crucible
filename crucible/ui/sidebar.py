@@ -7,10 +7,10 @@ Left sidebar: lists registered server instances with live status dots.
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QSize, QUrl, QMimeData, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QFont, QDrag
+from PyQt6.QtGui import QColor, QPainter, QDrag
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QLabel, QHBoxLayout, QMenu, QAbstractItemView,
+    QPushButton, QLabel, QMenu, QAbstractItemView,
 )
 
 from ..data.instance_model import ServerInstance
@@ -299,11 +299,11 @@ class Sidebar(QWidget):
 
         menu = QMenu(self)
         menu.setStyleSheet(
-            f"QMenu {{ background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; "
-            f"border-radius: 6px; padding: 4px; }}"
-            f"QMenu::item {{ padding: 6px 20px 6px 12px; border-radius: 4px; }}"
-            f"QMenu::item:selected {{ background: #313244; }}"
-            f"QMenu::separator {{ height: 1px; background: #45475a; margin: 3px 8px; }}"
+            "QMenu { background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; "
+            "border-radius: 6px; padding: 4px; }"
+            "QMenu::item { padding: 6px 20px 6px 12px; border-radius: 4px; }"
+            "QMenu::item:selected { background: #313244; }"
+            "QMenu::separator { height: 1px; background: #45475a; margin: 3px 8px; }"
         )
 
         title_act = menu.addAction(f"  {inst.name}")

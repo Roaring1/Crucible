@@ -11,7 +11,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QProgressBar, QPlainTextEdit, QMessageBox,
@@ -134,7 +134,7 @@ class DownloadModsDialog(QDialog):
         if total > 0:
             self._bar.setRange(0, total)
             self._bar.setValue(completed)
-            self._bar.setFormat(f"%v / %m  (%p%)")
+            self._bar.setFormat("%v / %m  (%p%)")
 
     def _on_cancel(self) -> None:
         if self._done:

@@ -9,6 +9,7 @@ Persists to ~/.config/crucible/instances.json using atomic writes
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from .instance_model import ServerInstance
@@ -18,6 +19,19 @@ from .instance_model import ServerInstance
 CONFIG_DIR     = Path.home() / ".config" / "crucible"
 REGISTRY_FILE  = CONFIG_DIR / "instances.json"
 REGISTRY_VERSION = 1
+
+_SESSION_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+
+
+def validate_session_name(name: str) -> str:
+    name = name.strip()
+    if name in {"", ".", ".."} or not _SESSION_RE.fullmatch(name):
+        raise ValueError(
+            "tmux session names must be 1-80 characters using only letters, "
+            "numbers, dot, underscore, or hyphen"
+        )
+    return name
+
 
 
 # Manager
@@ -49,11 +63,13 @@ class InstanceManager:
         try:
             raw  = self.registry_file.read_text(encoding="utf-8")
             data = json.loads(raw)
-            self.instances = [
-                ServerInstance.from_dict(d)
-                for d in data.get("instances", [])
-            ]
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            if not isinstance(data, dict):
+                raise TypeError("registry root must be a JSON object")
+            rows = data.get("instances", [])
+            if not isinstance(rows, list):
+                raise TypeError("registry instances must be a JSON list")
+            self.instances = [ServerInstance.from_dict(d) for d in rows]
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
             # Corrupted file -- surface the error but don't crash the app
             print(f"[crucible] Warning: registry parse error ({exc}) — starting empty")
             self.instances = []
@@ -95,11 +111,21 @@ class InstanceManager:
         Raises ValueError on duplicate path.
         """
         resolved = str(Path(path).expanduser().resolve())
+        requested_session = tmux_session.strip()
+        if requested_session:
+            requested_session = validate_session_name(requested_session)
+        else:
+            requested_session = ServerInstance._derive_session_name(name)
 
         for existing in self.instances:
             if existing.path == resolved:
                 raise ValueError(
                     f"'{resolved}' is already registered as '{existing.name}'"
+                )
+            if existing.tmux_session == requested_session:
+                raise ValueError(
+                    f"tmux session '{requested_session}' is already used by "
+                    f"'{existing.name}'"
                 )
 
         inst = ServerInstance(
@@ -111,7 +137,7 @@ class InstanceManager:
             loader       = loader,
             loader_version = loader_version,
             prism_source = prism_source,
-            tmux_session = tmux_session,  # empty → auto-derived in __post_init__
+            tmux_session = requested_session,
         )
 
         problems = inst.validate()
@@ -159,10 +185,11 @@ class InstanceManager:
     # Lookups
 
     def get_by_id(self, instance_id: str) -> ServerInstance | None:
-        for i in self.instances:
-            if i.id == instance_id or i.id.startswith(instance_id):
-                return i
-        return None
+        exact = [i for i in self.instances if i.id == instance_id]
+        if exact:
+            return exact[0]
+        matches = [i for i in self.instances if i.id.startswith(instance_id)]
+        return matches[0] if len(matches) == 1 else None
 
     def get_by_name(self, name: str) -> ServerInstance | None:
         name_lower = name.lower()

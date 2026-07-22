@@ -23,7 +23,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
-    QMainWindow, QSplitter, QWidget, QStatusBar, QLabel,
+    QMainWindow, QSplitter, QStatusBar, QLabel,
     QMessageBox, QApplication,
 )
 
@@ -238,42 +238,9 @@ class MainWindow(QMainWindow):
             + "\n\nYou can start the server again now.")
 
     def _on_export_requested(self, instance: ServerInstance) -> None:
-        """Zip a server folder so it can be imported into Prism / shared."""
-        import zipfile
-        src = Path(instance.path)
-        if not src.is_dir():
-            QMessageBox.warning(self, "Export for Prism",
-                                "This server's folder no longer exists.")
-            return
-        suggested = str(Path.home() / f"{instance.name}.zip")
-        dest, _ = QFileDialog.getSaveFileName(
-            self, "Export server as .zip", suggested, "Zip archives (*.zip)")
-        if not dest:
-            return
-        if not dest.lower().endswith(".zip"):
-            dest += ".zip"
-        skip = {".crucible", "crash-reports", "logs"}
-        try:
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            try:
-                with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for f in src.rglob("*"):
-                        if f.is_dir():
-                            continue
-                        rel = f.relative_to(src)
-                        if rel.parts and rel.parts[0] in skip:
-                            continue
-                        zf.write(f, rel.as_posix())
-            finally:
-                QApplication.restoreOverrideCursor()
-        except Exception as e:  # noqa: BLE001 - surface export failure to user
-            QMessageBox.critical(self, "Export for Prism",
-                                 f"Could not export server:\n\n{e}")
-            return
-        QMessageBox.information(
-            self, "Export for Prism",
-            f"Exported to:\n{dest}\n\nIn Prism Launcher choose "
-            "Add Instance → Import from zip, and select this file.")
+        """Open the safe client exporter (mods/config only; no worlds/admin files)."""
+        from .client_export_dialog import ClientExportDialog
+        ClientExportDialog(instance, self).exec()
 
     def _on_status_changed(self, instance_id: str, status: str) -> None:
         self._sidebar.update_status(instance_id, status)
@@ -288,7 +255,7 @@ class MainWindow(QMainWindow):
             "(you can re-add them later).\n"
             "\u2022 Delete files too permanently removes the entire server "
             f"folder:\n   {instance.path}\n\nThis cannot be undone.")
-        remove_btn = box.addButton("Remove from list",
+        box.addButton("Remove from list",
                                    QMessageBox.ButtonRole.AcceptRole)
         delete_btn = box.addButton("Delete files too",
                                    QMessageBox.ButtonRole.DestructiveRole)
@@ -303,6 +270,15 @@ class MainWindow(QMainWindow):
         path = getattr(instance, "path", "") or ""
 
         if clicked is delete_btn:
+            resolved = Path(path).expanduser().resolve() if path else None
+            forbidden = {Path("/"), Path.home(), Path.home().parent}
+            if resolved is None or resolved in forbidden or len(resolved.parts) < 4:
+                QMessageBox.critical(
+                    self, "Unsafe delete blocked",
+                    f"Crucible refused to recursively delete this unusually broad path:\n\n{path}\n\n"
+                    "Remove the instance from the list instead and inspect the path manually.",
+                )
+                return
             # Second confirmation for the irreversible option.
             confirm = QMessageBox.warning(
                 self, "Delete files from disk",
@@ -400,6 +376,14 @@ class MainWindow(QMainWindow):
     # Close
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._panel.has_active_operations():
+            QMessageBox.information(
+                self, "Operation in progress",
+                "Crucible is still starting, stopping, restarting, or backing up a server. "
+                "Wait for that operation to finish before closing.",
+            )
+            event.ignore()
+            return
         self._health_timer.stop()
-        self._panel.closeEvent(event)
+        self._panel.shutdown()
         super().closeEvent(event)

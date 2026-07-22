@@ -36,6 +36,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -46,6 +47,7 @@ _DEFAULT_TIMEOUT = 30
 _MAX_RETRIES = 3
 _RETRY_BACKOFF_S = 2.0
 _CHUNK = 64 * 1024
+_MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 
 ProgressCb = Callable[[int, int], None]      # (completed_files, total_files)
 LogCb = Callable[[str], None]                # human-readable status line
@@ -104,13 +106,9 @@ def _is_cancelled(cancel) -> bool:
 
 
 def _opener() -> urllib.request.OpenerDirector:
-    # Build an opener with a sane TLS context and our UA.  Falls back to an
-    # unverified context only if the system has no CA bundle (rare, but we do
-    # not want a missing CA store to make every download fail outright).
-    try:
-        ctx = ssl.create_default_context()
-    except Exception:
-        ctx = ssl._create_unverified_context()  # noqa: SLF001 - deliberate fallback
+    # Always verify TLS. A missing/broken CA store must fail closed rather than
+    # silently accepting a forged Modrinth/CurseForge response.
+    ctx = ssl.create_default_context()
     handler = urllib.request.HTTPSHandler(context=ctx)
     opener = urllib.request.build_opener(handler)
     opener.addheaders = [("User-Agent", _USER_AGENT), ("Accept", "*/*")]
@@ -146,9 +144,16 @@ def _download_one(item: DownloadItem, dest: Path, opener, timeout: int,
     """Download a single item to dest.  Raises on unrecoverable failure."""
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    urls = [u for u in item.urls if u]
+    urls = []
+    for url in item.urls:
+        try:
+            parsed = urllib.parse.urlparse(url)
+        except ValueError:
+            continue
+        if parsed.scheme == "https" and parsed.hostname:
+            urls.append(url)
     if not urls:
-        raise RuntimeError("no download URL available")
+        raise RuntimeError("no safe HTTPS download URL available")
 
     last_err: str = ""
     for url in urls:
@@ -161,12 +166,20 @@ def _download_one(item: DownloadItem, dest: Path, opener, timeout: int,
                 os.close(tmp_fd)
                 req = urllib.request.Request(url)
                 with opener.open(req, timeout=timeout) as resp, tmp_path.open("wb") as out:
+                    limit = min(item.size, _MAX_FILE_BYTES) if item.size > 0 else _MAX_FILE_BYTES
+                    declared = resp.headers.get("Content-Length")
+                    if declared and int(declared) > limit:
+                        raise RuntimeError("download exceeds safe size limit")
+                    received = 0
                     while True:
                         if _is_cancelled(cancel):
                             raise _Cancelled()
                         chunk = resp.read(_CHUNK)
                         if not chunk:
                             break
+                        received += len(chunk)
+                        if received > limit:
+                            raise RuntimeError("download exceeds safe size limit")
                         out.write(chunk)
                 if not _verify(tmp_path, item):
                     last_err = "hash/size verification failed"
@@ -267,7 +280,7 @@ def _curseforge_items(manifest: dict, api_key: str) -> tuple[list[DownloadItem],
                              "User-Agent": _USER_AGENT},
                 )
                 with opener.open(req, timeout=_DEFAULT_TIMEOUT) as resp:
-                    data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                    data = json.loads(resp.read(16 * 1024 * 1024 + 1).decode("utf-8", errors="replace"))
                 file_data = data.get("data", {}) if isinstance(data, dict) else {}
                 file_name = str(file_data.get("fileName", "")) or name
                 download_url = file_data.get("downloadUrl")
@@ -350,6 +363,20 @@ def build_items(index_path: Path) -> tuple[list[DownloadItem], list[str]]:
     return [], [f"Unrecognized pack index format: {index_path.name}"]
 
 
+def _safe_destination(root: Path, rel_path: str) -> Path | None:
+    """Resolve an index path below root; reject traversal and symlink escapes."""
+    rel = rel_path.replace("\\", "/").lstrip("/")
+    if not rel or "\x00" in rel:
+        return None
+    root = root.resolve()
+    candidate = (root / rel).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate
+
+
 def download_pack_mods(
     target: str | Path,
     *,
@@ -409,7 +436,13 @@ def download_pack_mods(
                 progress_cb(i, total)
             continue
 
-        dest = target / item.rel_path
+        dest = _safe_destination(target, item.rel_path)
+        if dest is None:
+            result.failed.append((item.name, "unsafe path outside server folder"))
+            log(f" ✗ {item.name}: unsafe path rejected")
+            if progress_cb:
+                progress_cb(i, total)
+            continue
         if dest.exists() and not overwrite:
             result.already_present.append(item.name)
             log(f" = {item.name}: already present")

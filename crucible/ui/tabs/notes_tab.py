@@ -7,7 +7,7 @@ Plain text — no markdown rendering needed at this stage.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTextEdit, QLabel, QHBoxLayout
 
 from ...data.instance_manager import InstanceManager

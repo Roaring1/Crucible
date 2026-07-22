@@ -31,10 +31,10 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .data.instance_manager import InstanceManager
+from .data.instance_manager import InstanceManager, validate_session_name
 from .process.tmux_manager import TmuxManager
 from .utils import (
-    BOLD, DIM, GREEN, YELLOW, RED, CYAN, RESET,
+    BOLD, DIM, GREEN, YELLOW, CYAN, RESET,
     ok, warn, err, info, dim, banner, status_dot,
 )
 
@@ -46,7 +46,7 @@ def resolve_instance(manager: InstanceManager, key: str):
     inst = manager.get_by_name_or_id(key)
     if inst is None:
         err(f"No instance found for: {key!r}")
-        dim(f"Run 'crucible list' to see registered instances.")
+        dim("Run 'crucible list' to see registered instances.")
         sys.exit(1)
     return inst
 
@@ -787,7 +787,17 @@ def cmd_edit(manager: InstanceManager, args) -> None:
         changed = True
 
     if args.session:
-        inst.tmux_session = args.session
+        try:
+            session = validate_session_name(args.session)
+        except ValueError as exc:
+            err(str(exc))
+            sys.exit(2)
+        conflict = next((i for i in manager.instances
+                         if i.id != inst.id and i.tmux_session == session), None)
+        if conflict:
+            err(f"tmux session '{session}' is already used by '{conflict.name}'")
+            sys.exit(2)
+        inst.tmux_session = session
         ok(f"tmux session set to '{inst.tmux_session}'")
         changed = True
 
@@ -816,7 +826,6 @@ def cmd_edit(manager: InstanceManager, args) -> None:
 def cmd_gui(manager: InstanceManager) -> None:
     try:
         from PyQt6.QtWidgets import QApplication
-        from PyQt6.QtCore import Qt
         from PyQt6.QtGui import QIcon
     except ImportError:
         err("PyQt6 is not installed.")

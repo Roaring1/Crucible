@@ -36,6 +36,7 @@ from PyQt6.QtCore import (
     QObject,
     QTimer,
     pyqtSignal,
+    pyqtSlot,
 )
 
 from ..data.instance_model import ServerInstance
@@ -113,6 +114,7 @@ class LogWatcher(QObject):
 
     # Lifecycle
 
+    @pyqtSlot()
     def start(self) -> None:
         """Call this after moveToThread() + thread.start()."""
         self._active = True
@@ -130,6 +132,7 @@ class LogWatcher(QObject):
         self._attach_watchers()
         self._on_file_changed()
 
+    @pyqtSlot()
     def stop(self) -> None:
         self._active = False
         if self._poll_timer is not None:
@@ -138,6 +141,7 @@ class LogWatcher(QObject):
             self._poll_timer = None
         self._watcher.deleteLater()
 
+    @pyqtSlot(object)
     def reset(self, instance: ServerInstance) -> None:
         """Switch to watching a different instance."""
         self._instance        = instance

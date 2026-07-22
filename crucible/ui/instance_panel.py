@@ -19,14 +19,11 @@ Only the log event does that.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal, pyqtSlot, QUrl
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtCore import QObject, Qt, QThread, QTimer, QMetaObject, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QTabWidget, QFrame,
-    QMessageBox,
+    QLabel, QPushButton, QTabWidget, QMessageBox,
 )
 
 from ..data.instance_manager import InstanceManager
@@ -75,6 +72,8 @@ class InstancePanel(QWidget):
     """
 
     status_changed = pyqtSignal(str, str)
+    watchdog_watch_requested = pyqtSignal(object, bool)
+    watchdog_unwatch_requested = pyqtSignal(str)
 
     def __init__(self, manager: InstanceManager, parent=None):
         super().__init__(parent)
@@ -323,7 +322,7 @@ class InstancePanel(QWidget):
         # Start watchdog once
         self._ensure_watchdog()
         if status == "running":
-            self._watchdog.watch(instance, instance.auto_restart)
+            self.watchdog_watch_requested.emit(instance, instance.auto_restart)
             self._update_tps_polling()
 
         # Load tabs
@@ -390,6 +389,8 @@ class InstancePanel(QWidget):
         self._wd_thread = QThread()
         self._watchdog  = Watchdog()
         self._watchdog.moveToThread(self._wd_thread)
+        self.watchdog_watch_requested.connect(self._watchdog.watch)
+        self.watchdog_unwatch_requested.connect(self._watchdog.unwatch)
         self._wd_thread.started.connect(self._watchdog.start)
         self._watchdog.crash_detected.connect(self._on_crash)
         self._watchdog.restarted.connect(self._on_auto_restarted)
@@ -442,7 +443,10 @@ class InstancePanel(QWidget):
                 self._watcher.log_rotated.disconnect(self._on_log_rotated)
             except (RuntimeError, TypeError):
                 pass
-            self._watcher.stop()
+            if self._w_thread and self._w_thread.isRunning():
+                QMetaObject.invokeMethod(
+                    self._watcher, "stop", Qt.ConnectionType.BlockingQueuedConnection
+                )
             self._watcher = None
         if self._w_thread:
             self._w_thread.quit()
@@ -459,7 +463,7 @@ class InstancePanel(QWidget):
             self.status_changed.emit(self._instance.id, "running")
             self._update_tps_polling()
             if self._watchdog:
-                self._watchdog.watch(self._instance, self._instance.auto_restart)
+                self.watchdog_watch_requested.emit(self._instance, self._instance.auto_restart)
 
     @pyqtSlot()
     def _on_log_server_stopping(self) -> None:
@@ -649,7 +653,7 @@ class InstancePanel(QWidget):
         if not self._instance:
             return
         if self._watchdog:
-            self._watchdog.unwatch(self._instance.id)
+            self.watchdog_unwatch_requested.emit(self._instance.id)
         self._tps_timer.stop()
         self._btn_stop.setEnabled(False)
         self._btn_stop.setText("Stopping…")
@@ -707,7 +711,7 @@ class InstancePanel(QWidget):
             # msg is "running" or "stopped" -- ok is always True
             if msg == "running":
                 if self._watchdog:
-                    self._watchdog.unwatch(inst.id)
+                    self.watchdog_unwatch_requested.emit(inst.id)
 
                 def _on_stop_done(stop_ok: bool, _stop_msg: str) -> None:
                     if not stop_ok:
@@ -740,15 +744,32 @@ class InstancePanel(QWidget):
 
     # Cleanup
 
-    def closeEvent(self, event) -> None:
+    def has_active_operations(self) -> bool:
+        """True while closing could destroy a live worker or partial backup."""
+        tmux_busy = any(t.isRunning() for t in self._worker_threads)
+        backup_thread = getattr(self._backup, "_thread", None)
+        backup_busy = bool(backup_thread and backup_thread.isRunning())
+        return tmux_busy or backup_busy
+
+    def shutdown(self) -> None:
+        """Stop worker-owned timers in their own threads, then join threads."""
         self._notes.flush()
         self._tps_timer.stop()
+        self._transition_timer.stop()
         self._stop_watcher()
-        if self._watchdog is not None:
-            self._watchdog.stop()
+        if self._watchdog is not None and self._wd_thread is not None:
+            if self._wd_thread.isRunning():
+                QMetaObject.invokeMethod(
+                    self._watchdog, "stop", Qt.ConnectionType.BlockingQueuedConnection
+                )
             self._watchdog = None
-        if self._wd_thread is not None:
             self._wd_thread.quit()
-            self._wd_thread.wait(1000)
+            self._wd_thread.wait(2000)
             self._wd_thread = None
+
+    def closeEvent(self, event) -> None:
+        if self.has_active_operations():
+            event.ignore()
+            return
+        self.shutdown()
         super().closeEvent(event)
