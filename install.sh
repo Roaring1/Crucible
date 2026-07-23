@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Crucible v0.6.10 installer — Nobara/Fedora, Python 3.11+
+# Crucible installer — Nobara/Fedora, Python 3.11+
 set -Eeuo pipefail
 
-VERSION="0.6.10"
+# Keep installer validation in lockstep with the source being installed.
+# A hard-coded stale value previously made every v0.6.11+ update fail its
+# stage validation and silently roll back to the old installed copy.
+VERSION="$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/crucible/__init__.py")"
+[[ -n "$VERSION" ]] || { echo "Could not read Crucible version" >&2; exit 1; }
 BOLD="\033[1m"; GREEN="\033[32m"; YELLOW="\033[33m"
 RED="\033[31m"; CYAN="\033[36m"; DIM="\033[2m"; RESET="\033[0m"
 ok()   { printf '  %b✓%b  %s\n' "$GREEN" "$RESET" "$*"; }

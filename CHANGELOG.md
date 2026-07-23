@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.6.16
+
+- **Fixed the updater silently rolling back every attempted upgrade to v0.6.11.** `install.sh` still hard-coded `VERSION="0.6.10"` while validating staged source. Installing v0.6.12–v0.6.15 therefore failed validation, the installer restored the previous v0.6.11 tree, and the outer helper script continued because it did not use `set -e`. Its final version check ran from the Git checkout and accidentally imported the checkout’s newer source, falsely printing “Installed version: 0.6.15.” The installer now derives its expected version directly from `crucible/__init__.py`, so source and validation cannot drift. The helper script now stops on any installer failure and verifies the version from the published install directory explicitly.
+- This release actually deploys all prior fixes: the persistent health thread (GUI abort), deterministic tmux exit-1 handling (“Status check unavailable”), and whole-host crash recovery.
+
 ## v0.6.15
 
 - **Fixed the remaining “Status check unavailable” state that kept Start disabled.** `tmux list-sessions` has a stable exit-status contract: exit 1 means there is no tmux server/session to list, but its stderr wording varies across versions, locales, socket states, and distro builds. Crucible was still requiring recognized English error text before interpreting exit 1 as zero sessions, so an unrecognized diagnostic became `unknown`. Exit 1 now always maps to an empty session list and therefore `stopped`; the Start button remains enabled. Unexpected errors and real timeouts still remain `unknown` rather than being guessed offline.
