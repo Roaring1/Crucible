@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 
 from ..mods import modrinth
 from . import theme
+from .thread_lifecycle import connect_thread_cleanup
 
 
 # ----------------------------- workers ---------------------------------
@@ -294,7 +295,7 @@ class AddModDialog(QDialog):
         self._threads.append(pair)
         for sig in quit_signals:
             sig.connect(thread.quit)
-        thread.finished.connect(lambda: self._thread_finished(pair))
+        connect_thread_cleanup(thread, lambda: self._thread_finished(pair))
         thread.start()
         return worker
 

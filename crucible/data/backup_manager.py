@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import json
 import shutil
+import stat
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -333,6 +334,7 @@ class BackupManager:
 
         world_root = self._instance.world_root_path()
         self._verify_backup_matches_world_root(entry, world_root)
+        self._validate_backup_archive(entry, world_root)
 
         # Step 2: mandatory safety backup of whatever world is about to be
         # replaced. Skipped only if there is no existing world to back up
@@ -354,13 +356,7 @@ class BackupManager:
             # Step 4: extract into a fresh world root. Archive members are
             # stored relative to the SERVER root (not the world root), e.g.
             # "World/level.dat", "World/DIM1/region/..." -- see create_backup.
-            with zipfile.ZipFile(entry.path, "r") as zf:
-                names = zf.namelist()
-                total = len(names)
-                for i, name in enumerate(names):
-                    zf.extract(name, path=self._instance.path_obj)
-                    if progress_cb and total > 0:
-                        progress_cb(int((i + 1) / total * 90))  # leave 90-100% for verify
+            self._extract_validated_backup(entry, world_root, progress_cb)
 
             # Step 5: verify.
             self._verify_swapped_world(world_root, entry)
@@ -381,6 +377,66 @@ class BackupManager:
             pre_swap_backup_path=pre_swap_backup_path,
             pre_swap_dir=pre_swap_dir if renamed else None,
         )
+
+    def _validated_backup_members(self, entry: BackupEntry, world_root: Path) -> tuple[list[zipfile.ZipInfo], int]:
+        server_root = self._instance.path_obj.resolve()
+        expected_top = world_root.name
+        members: list[zipfile.ZipInfo] = []
+        expanded = 0
+        with zipfile.ZipFile(entry.path, "r") as zf:
+            infos = zf.infolist()
+            if not infos or len(infos) > 2_000_000:
+                raise ValueError("Backup archive is empty or contains an unsafe number of entries")
+            seen: set[str] = set()
+            for info in infos:
+                name = info.filename
+                path = PurePosixPath(name)
+                mode = (info.external_attr >> 16) & 0xFFFF
+                if "\x00" in name or "\\" in name or path.is_absolute() or ".." in path.parts or not path.parts:
+                    raise ValueError(f"Backup contains an unsafe path: {name!r}")
+                if path.parts[0] != expected_top:
+                    raise ValueError(f"Backup contains data outside the active world folder: {name!r}")
+                file_type = stat.S_IFMT(mode)
+                if stat.S_ISLNK(mode) or (file_type and not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))):
+                    raise ValueError(f"Backup contains an unsupported link/device: {name!r}")
+                normalized = "/".join(path.parts).rstrip("/")
+                if normalized in seen:
+                    raise ValueError(f"Backup contains a duplicate path: {name!r}")
+                seen.add(normalized)
+                destination = (server_root / Path(*path.parts)).resolve()
+                try: destination.relative_to(server_root)
+                except ValueError as exc: raise ValueError(f"Backup path escapes the server folder: {name!r}") from exc
+                expanded += info.file_size
+                members.append(info)
+        return members, expanded
+
+    def _validate_backup_archive(self, entry: BackupEntry, world_root: Path) -> None:
+        _members, expanded = self._validated_backup_members(entry, world_root)
+        free = shutil.disk_usage(self._instance.path_obj).free
+        reserve = max(512 * 1024 * 1024, int(free * 0.05))
+        if expanded > max(0, free - reserve):
+            raise OSError(f"Not enough free disk space to restore this backup safely ({expanded / 1024**3:.1f} GiB needed).")
+
+    def _extract_validated_backup(self, entry: BackupEntry, world_root: Path, progress_cb: Callable[[int], None] | None) -> None:
+        members, _expanded = self._validated_backup_members(entry, world_root)
+        server_root = self._instance.path_obj.resolve()
+        with zipfile.ZipFile(entry.path, "r") as zf:
+            total = len(members)
+            for i, info in enumerate(members):
+                path = PurePosixPath(info.filename)
+                destination = server_root / Path(*path.parts)
+                if info.is_dir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                else:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    remaining = info.file_size
+                    with zf.open(info, "r") as src, destination.open("wb") as out:
+                        while remaining:
+                            chunk = src.read(min(1024 * 1024, remaining))
+                            if not chunk: raise OSError(f"Backup member was truncated: {info.filename!r}")
+                            out.write(chunk); remaining -= len(chunk)
+                        if src.read(1): raise OSError(f"Backup member exceeded its declared size: {info.filename!r}")
+                if progress_cb and total: progress_cb(int((i + 1) / total * 90))
 
     def _verify_backup_matches_world_root(self, entry: BackupEntry, world_root: Path) -> None:
         """Refuse to swap a backup whose stored world-folder name doesn't

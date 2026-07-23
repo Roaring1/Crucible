@@ -11,6 +11,8 @@ JVM is tagged with -Dcrucible.session=<name> so it is easy to spot there too.
 
 from __future__ import annotations
 
+import os
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QFrame, QProgressBar, QGridLayout,
 )
@@ -87,10 +89,21 @@ class SystemTab(QWidget):
         grid.addWidget(mem_l, 1, 1)
         grid.addWidget(cpu_v, 2, 0)
         grid.addWidget(mem_v, 2, 1)
+        cpu_bar = QProgressBar()
+        cpu_bar.setRange(0, max(100, (os.cpu_count() or 1) * 100))
+        cpu_bar.setTextVisible(False)
+        cpu_bar.setAccessibleName(f"{title} CPU usage")
+        mem_bar = QProgressBar()
+        mem_bar.setRange(0, 100)
+        mem_bar.setTextVisible(False)
+        mem_bar.setAccessibleName(f"{title} memory usage")
+        grid.addWidget(cpu_bar, 3, 0)
+        grid.addWidget(mem_bar, 3, 1)
         pid_v = QLabel("")
         pid_v.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:10px;")
-        grid.addWidget(pid_v, 3, 0, 1, 2)
-        return {"frame": frame, "cpu": cpu_v, "mem": mem_v, "pid": pid_v}
+        grid.addWidget(pid_v, 4, 0, 1, 2)
+        return {"frame": frame, "cpu": cpu_v, "mem": mem_v, "pid": pid_v,
+                "cpu_bar": cpu_bar, "mem_bar": mem_bar}
 
     def load(self, instance) -> None:
         self._instance = instance
@@ -110,6 +123,7 @@ class SystemTab(QWidget):
         server_pids = self._sampler.find_instance_pids(inst) if inst else []
         gui_pid = self._sampler.gui_pid()
         stats = self._sampler.sample_pids(server_pids + [gui_pid])
+        used, total = system_memory_mb()
 
         if server_pids:
             s_cpu = sum(stats[p].cpu_pct for p in server_pids if p in stats)
@@ -118,18 +132,25 @@ class SystemTab(QWidget):
             self._server_card["mem"].setText(self._fmt_mb(s_mem))
             self._server_card["pid"].setText(
                 "PID " + ", ".join(str(p) for p in server_pids))
+            self._server_card["cpu_bar"].setValue(int(s_cpu))
+            self._server_card["mem_bar"].setMaximum(max(1, int(total)))
+            self._server_card["mem_bar"].setValue(int(s_mem))
         else:
             self._server_card["cpu"].setText("\u2014")
             self._server_card["mem"].setText("offline")
             self._server_card["pid"].setText("Server not running")
+            self._server_card["cpu_bar"].setValue(0)
+            self._server_card["mem_bar"].setValue(0)
 
         g = stats.get(gui_pid)
         if g:
             self._gui_card["cpu"].setText(f"{g.cpu_pct:.0f}%")
             self._gui_card["mem"].setText(self._fmt_mb(g.rss_mb))
             self._gui_card["pid"].setText(f"PID {gui_pid}")
+            self._gui_card["cpu_bar"].setValue(int(g.cpu_pct))
+            self._gui_card["mem_bar"].setMaximum(max(1, int(total)))
+            self._gui_card["mem_bar"].setValue(int(g.rss_mb))
 
-        used, total = system_memory_mb()
         if total > 0:
             self._mem_bar.setMaximum(int(total))
             self._mem_bar.setValue(int(used))

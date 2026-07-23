@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 from ...data.instance_model import ServerInstance
 from ...mods.mod_manager import ModManager, ModEntry
 from .. import theme
+from ..thread_lifecycle import connect_thread_cleanup
 
 
 # Background inspection worker
@@ -426,7 +427,7 @@ class ModsTab(QWidget):
         def _cleanup():
             self._net_thread = None
             self._net_worker = None
-        self._net_thread.finished.connect(_cleanup)
+        connect_thread_cleanup(self._net_thread, _cleanup)
         self._net_thread.start()
 
     def _on_net_error(self, msg: str) -> None:
@@ -590,7 +591,7 @@ class ModsTab(QWidget):
             self._inspect_pending = False
             if pending:
                 self._start_inspect_pass()
-        thread.finished.connect(_cleanup)
+        connect_thread_cleanup(thread, _cleanup)
         thread.start()
 
     def _on_inspect_result(self, generation: int, row: int, mod: ModEntry) -> None:

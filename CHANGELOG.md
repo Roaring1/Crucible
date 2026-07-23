@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.0 — Final pre-publish hardening
+
+- Eliminated remaining short-lived QThread destructor races across server actions, mods, players, imports, downloads, setup, and world operations using confirmed deferred cleanup.
+- Hardened world restore against traversal paths, links, special files, duplicate destinations, wrong roots, truncation, and insufficient free space; extraction is now streamed manually.
+- Fixed public release URLs, dynamic package-version metadata, and stale network User-Agent versions.
+- Added accessible CPU and memory progress bars and friendlier primary wording.
+- Retains v0.6.17’s bounded/batched log rendering, persistent health/log threads, and deterministic stopped status.
+
 ## v0.6.17
 
 - **Major GUI responsiveness fix for large/active Minecraft logs.** Selecting a server created a new log-watcher QThread and started reading `latest.log` from byte zero. On large modpacks that could replay hundreds of megabytes in 4 MiB chunks, enqueue thousands of formatted QTextEdit insertions, and make KDE report Crucible as “Not responding.” Initial attachment now starts at a real line boundary within only the last 256 KiB of the existing log. Live reading is capped at 256 KiB per worker turn, event parsing stays off the GUI thread, visible console delivery is capped to 500 lines per batch, and backlog draining yields 25 ms between chunks.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crucible"
-version = "0.6.10"
+dynamic = ["version"]
 description = "Minecraft Server Manager"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,3 +19,6 @@ include = ["crucible*"]
 
 [tool.setuptools.package-data]
 crucible = ["assets/*.png"]
+
+[tool.setuptools.dynamic]
+version = {attr = "crucible.__version__"}

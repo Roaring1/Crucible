@@ -35,6 +35,7 @@ from ...data.instance_model import ServerInstance
 from ...process.log_watcher import LogWatcher
 from ...process.tmux_manager import TmuxManager
 from .. import theme
+from ..thread_lifecycle import connect_thread_cleanup
 
 _AVATAR_CACHE_DIR = Path.home() / ".local" / "share" / "crucible" / "avatars"
 _AVATAR_MAX_AGE_S = 7 * 24 * 3600
@@ -427,7 +428,7 @@ class PlayersTab(QWidget):
             if fetcher in self._avatar_fetchers:
                 self._avatar_fetchers.remove(fetcher)
 
-        thread.finished.connect(_cleanup)
+        connect_thread_cleanup(thread, _cleanup)
         self._avatar_threads.append(thread)
         self._avatar_fetchers.append(fetcher)
         thread.start()

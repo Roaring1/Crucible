@@ -267,10 +267,10 @@ class MainWindow(QMainWindow):
             f"{n} instance{'s' if n != 1 else ''}"
         )
         if self._tmux.tmux_available():
-            self._sb_tmux.setText("tmux ✓")
+            self._sb_tmux.setText("Console service ready")
             self._sb_tmux.setStyleSheet(f"color: {theme.GREEN};")
         else:
-            self._sb_tmux.setText("tmux not found")
+            self._sb_tmux.setText("Console service unavailable")
             self._sb_tmux.setStyleSheet(f"color: {theme.RED};")
 
     # Event handlers

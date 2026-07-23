@@ -1,4 +1,4 @@
 """Crucible — Minecraft Server Manager."""
 
-__version__ = "0.6.17"
+__version__ = "0.7.0"
 __app_name__ = "Crucible"

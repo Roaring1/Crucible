@@ -40,7 +40,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-_USER_AGENT = "Crucible/0.6.10 (Minecraft server manager)"
+from crucible import __version__
+
+_USER_AGENT = f"Crucible/{__version__} (Minecraft server manager)"
 _TIMEOUT = 30
 _MAX_RETRIES = 3
 _MAX_METADATA_BYTES = 16 * 1024 * 1024

@@ -22,6 +22,7 @@ from ..data.instance_manager import InstanceManager
 from ..data.instance_model import ServerInstance
 from ..importers.prism import import_prism_source
 from . import theme
+from .thread_lifecycle import connect_thread_cleanup
 
 
 class _PrismImportWorker(QObject):
@@ -213,11 +214,11 @@ class AddInstanceDialog(QDialog):
         self._session_edit = QLineEdit()
         self._session_edit.setPlaceholderText("auto-derived from name  (e.g. my-server)")
         self._session_edit.setMinimumWidth(320)
-        form.addRow("tmux session:", self._session_edit)
+        form.addRow("Console session (advanced):", self._session_edit)
 
         hint = QLabel(
             "Leave session blank to auto-derive from the name.  "
-            "If a tmux session already exists (e.g. 'gtnh'), enter it here to match."
+            "If this server already runs in a named tmux session (for example, 'gtnh'), enter that technical session name here."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
@@ -332,8 +333,7 @@ class AddInstanceDialog(QDialog):
         self._import_worker.finished.connect(self._on_prism_imported)
         self._import_worker.finished.connect(self._import_thread.quit)
         self._import_worker.finished.connect(self._import_worker.deleteLater)
-        self._import_thread.finished.connect(self._import_thread.deleteLater)
-        self._import_thread.finished.connect(self._import_thread_finished)
+        connect_thread_cleanup(self._import_thread, self._import_thread_finished)
         self._import_thread.start()
 
     @pyqtSlot(object, str)
@@ -344,7 +344,7 @@ class AddInstanceDialog(QDialog):
         pending = self._import_pending
         if error or info is None or pending is None:
             self._warn_label.hide()
-            QMessageBox.critical(self, "Prism Import Failed", error or "Import failed")
+            QMessageBox.critical(self, "Could not import Prism server", error or "Import failed")
             return
         source, target, want_download = pending
         try:
@@ -360,7 +360,7 @@ class AddInstanceDialog(QDialog):
                 prism_source=source,
             )
         except Exception as exc:
-            QMessageBox.critical(self, "Prism Import Failed", str(exc))
+            QMessageBox.critical(self, "Could not import Prism server", str(exc))
             return
 
         self._path_edit.setText(target)

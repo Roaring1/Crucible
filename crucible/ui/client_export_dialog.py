@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 
 from ..exporters import client_export
 from . import theme
+from .thread_lifecycle import connect_thread_cleanup
 
 _FORMATS = [
     ("Prism / MultiMC (.zip)", "prism", "zip"),
@@ -116,8 +117,7 @@ class ClientExportDialog(QDialog):
         self._worker.done.connect(self._on_done)
         self._worker.done.connect(self._thread.quit)
         self._worker.done.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._thread_finished)
+        connect_thread_cleanup(self._thread, self._thread_finished)
         self._thread.start()
 
     def _on_done(self, res):

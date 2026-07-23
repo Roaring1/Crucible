@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 from ..data.instance_manager import InstanceManager
 from ..data.instance_model import ServerInstance
 from . import theme
+from .thread_lifecycle import connect_thread_cleanup
 
 _LOADERS = [
     ("Vanilla (no mods — easiest)", "vanilla"),
@@ -274,7 +275,7 @@ class NewServerDialog(QDialog):
         self._vthread.started.connect(self._vworker.run)
         self._vworker.finished.connect(self._on_versions_loaded)
         self._vworker.finished.connect(self._vthread.quit)
-        self._vthread.finished.connect(self._version_thread_finished)
+        connect_thread_cleanup(self._vthread, self._version_thread_finished)
         self._vthread.start()
 
     def _on_versions_loaded(self, versions, latest) -> None:
@@ -412,7 +413,7 @@ class NewServerDialog(QDialog):
         self._cworker.log.connect(lambda m: self._log.appendPlainText(m))
         self._cworker.finished.connect(self._on_created)
         self._cworker.finished.connect(self._cthread.quit)
-        self._cthread.finished.connect(self._create_thread_finished)
+        connect_thread_cleanup(self._cthread, self._create_thread_finished)
         self._cthread.start()
 
     def _on_created(self, result) -> None:

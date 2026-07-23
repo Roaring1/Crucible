@@ -35,6 +35,7 @@ from ..process.log_watcher import LogWatcher
 from ..process.watchdog import Watchdog
 from ..process.startup_patterns import RE_SERVER_DONE
 from . import theme
+from .thread_lifecycle import connect_thread_cleanup
 from .tabs import ConsoleTab, ModsTab, NotesTab, InfoTab, ConfigTab, BackupTab, WorldTab, PlayersTab, SetupTab
 
 # Fallback "Done (Xs)!" detector used only while "starting", read straight off
@@ -141,7 +142,7 @@ class InstancePanel(QWidget):
             if worker in self._workers:
                 self._workers.remove(worker)
 
-        thread.finished.connect(_cleanup)
+        connect_thread_cleanup(thread, _cleanup)
         self._worker_threads.append(thread)
         self._workers.append(worker)   # MUST hold ref — PyQt6 won't
         thread.start()
@@ -751,10 +752,10 @@ class InstancePanel(QWidget):
             "stopped":      "○ SERVER OFFLINE",
             "starting":     "⚡ STARTING…",
             "stopping":     "◌ STOPPING…",
-            "tmux_missing": "⚠ TMUX MISSING",
+            "tmux_missing": "⚠ CONSOLE SERVICE UNAVAILABLE",
             "missing":      "⚠ SERVER FILES MISSING",
             "unmanaged":    "⚠ RUNNING OUTSIDE MANAGED TMUX",
-            "unknown":      "? STATUS CHECK UNAVAILABLE",
+            "unknown":      "? STATUS TEMPORARILY UNAVAILABLE",
         }.get(status, status.upper())
 
         self._status_label.setText(label_text)
@@ -881,7 +882,7 @@ class InstancePanel(QWidget):
                 self._update_status_display("starting")
                 self.status_changed.emit(inst.id, "running")
             else:
-                QMessageBox.critical(self, "Start Failed", msg)
+                QMessageBox.critical(self, "Could not start server", msg)
                 self._btn_start.setEnabled(True)
             self._btn_start.setText("▶  Start")
 
@@ -919,7 +920,7 @@ class InstancePanel(QWidget):
 
             reply = QMessageBox.question(
                 self,
-                "Stop Failed",
+                "Could not stop server",
                 f"{msg}\n\nForce-kill? (no world save)",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             )
@@ -965,7 +966,7 @@ class InstancePanel(QWidget):
                     self._update_status_display("starting")
                     self.status_changed.emit(inst.id, "running")
                 else:
-                    QMessageBox.critical(self, "Start Failed", msg)
+                    QMessageBox.critical(self, "Could not start server", msg)
                 self._btn_restart.setText("↺  Restart")
                 self._btn_restart.setEnabled(True)
             self._preflight_properties(inst)

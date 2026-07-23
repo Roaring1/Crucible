@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from . import theme
+from .thread_lifecycle import connect_thread_cleanup
 
 
 class _DownloadWorker(QObject):
@@ -127,8 +128,7 @@ class DownloadModsDialog(QDialog):
         self._worker.finished.connect(self._on_finished)
         self._worker.finished.connect(self._thread.quit)
         self._worker.finished.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._thread_finished)
+        connect_thread_cleanup(self._thread, self._thread_finished)
         self._thread.start()
 
     def _append(self, msg: str) -> None:

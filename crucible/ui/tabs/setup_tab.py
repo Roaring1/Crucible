@@ -29,6 +29,7 @@ from ...data.instance_manager import InstanceManager
 from ...data.instance_model import ServerInstance
 from ...process.resource_monitor import system_memory_mb
 from .. import theme
+from ..thread_lifecycle import connect_thread_cleanup
 
 
 def _suggest_memory_mb(total_mb: float | None) -> int:
@@ -616,8 +617,7 @@ class SetupTab(QWidget):
         self._install_worker.finished.connect(self._on_server_install_finished)
         self._install_worker.finished.connect(self._install_thread.quit)
         self._install_worker.finished.connect(self._install_worker.deleteLater)
-        self._install_thread.finished.connect(self._install_thread.deleteLater)
-        self._install_thread.finished.connect(self._install_thread_finished)
+        connect_thread_cleanup(self._install_thread, self._install_thread_finished)
         self._install_thread.start()
 
     @pyqtSlot(object, str)

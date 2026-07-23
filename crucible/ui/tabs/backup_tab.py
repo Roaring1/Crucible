@@ -35,6 +35,7 @@ from ...data.instance_model import ServerInstance
 from ...data.backup_manager import BackupManager, BackupWorker, BackupEntry
 from ...process.tmux_manager import TmuxManager
 from .. import theme
+from ..thread_lifecycle import connect_thread_cleanup
 
 
 class BackupTab(QWidget):
@@ -246,8 +247,7 @@ class BackupTab(QWidget):
         self._worker.failed.connect(self._thread.quit)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.failed.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._thread_finished)
+        connect_thread_cleanup(self._thread, self._thread_finished)
         self._thread.start()
 
     def _on_done(self, path: str) -> None:

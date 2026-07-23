@@ -47,6 +47,7 @@ from ...data.backup_manager import (
 )
 from ...process.tmux_manager import TmuxManager
 from .. import theme
+from ..thread_lifecycle import connect_thread_cleanup
 
 # Dimension lists longer than this are collapsed behind a "Show all" toggle --
 # GTNH-style packs can have 80-90+ dimensions, which as one giant paragraph of
@@ -421,12 +422,11 @@ class WorldTab(QWidget):
         worker.done.connect(lambda size, total: self._on_stats_done(generation, size, total))
         worker.done.connect(thread.quit)
         worker.done.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
         # Only clear the tracked refs if THIS thread is still the current one
         # -- a rapid Refresh click or tab re-load can start a newer scan
         # before an older one finishes, and that older thread's cleanup must
         # never clobber the newer thread's live reference.
-        thread.finished.connect(lambda t=thread: self._stats_thread_finished(t))
+        connect_thread_cleanup(thread, lambda t=thread: self._stats_thread_finished(t))
         self._stats_thread = thread
         self._stats_worker = worker
         thread.start()
@@ -522,8 +522,7 @@ class WorldTab(QWidget):
         self._worker.failed.connect(self._thread.quit)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.failed.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._thread_finished)
+        connect_thread_cleanup(self._thread, self._thread_finished)
         self._thread.start()
 
     def _on_backup_done(self, path: str) -> None:
@@ -583,8 +582,7 @@ class WorldTab(QWidget):
         self._worker.failed.connect(self._thread.quit)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.failed.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._thread_finished)
+        connect_thread_cleanup(self._thread, self._thread_finished)
         self._thread.start()
 
     def _on_swap_done(self, result: SwapResult) -> None:
@@ -743,8 +741,7 @@ class WorldTab(QWidget):
         self._worker.failed.connect(self._thread.quit)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.failed.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._thread_finished)
+        connect_thread_cleanup(self._thread, self._thread_finished)
         self._thread.start()
 
     def _on_reset_done(self, result: SwapResult) -> None:
@@ -806,8 +803,7 @@ class WorldTab(QWidget):
         self._worker.failed.connect(self._thread.quit)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.failed.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._thread_finished)
+        connect_thread_cleanup(self._thread, self._thread_finished)
         self._thread.start()
 
     def _on_wipe_done(self, result: SwapResult) -> None:

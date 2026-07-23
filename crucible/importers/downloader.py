@@ -41,8 +41,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from crucible import __version__
+
 # Public, polite identification.  Some CDNs reject the default urllib UA.
-_USER_AGENT = "Crucible-ServerManager/0.4.1 (+https://github.com/; minecraft server hoster)"
+_USER_AGENT = f"Crucible/{__version__} (+https://github.com/Roaring1/Crucible; Minecraft server manager)"
 _DEFAULT_TIMEOUT = 30
 _MAX_RETRIES = 3
 _RETRY_BACKOFF_S = 2.0

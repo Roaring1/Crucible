@@ -30,6 +30,7 @@ from ..data.instance_manager import InstanceManager
 from ..data.instance_model import ServerInstance
 from .add_mod_dialog import _IconWorker  # reuse the best-effort icon fetcher
 from . import theme
+from .thread_lifecycle import connect_thread_cleanup
 
 _ICON_PX = 46
 
@@ -198,7 +199,7 @@ class ModpackDialog(QDialog):
         for sig in quit_signals:
             sig.connect(thread.quit)
         pair = (thread, worker)
-        thread.finished.connect(lambda: self._thread_finished(pair))
+        connect_thread_cleanup(thread, lambda: self._thread_finished(pair))
         self._threads.append(pair)
         thread.start()
         return worker
@@ -370,8 +371,7 @@ class ModpackDialog(QDialog):
         w.finished.connect(self._on_installed)
         w.finished.connect(self._ithread.quit)
         w.finished.connect(w.deleteLater)
-        self._ithread.finished.connect(self._ithread.deleteLater)
-        self._ithread.finished.connect(self._install_thread_finished)
+        connect_thread_cleanup(self._ithread, self._install_thread_finished)
         self._ithread.start()
 
     def _on_log(self, msg):
