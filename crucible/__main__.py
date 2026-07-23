@@ -836,6 +836,37 @@ def cmd_edit(manager: InstanceManager, args) -> None:
         dim("Nothing changed. Use --help to see edit options.")
 
 
+def _enable_fatal_trace_dump() -> None:
+    """Dump every live Python thread's stack to a log file the instant a
+    fatal native signal (SIGABRT/SIGSEGV/etc.) is raised.
+
+    Qt's qFatal() (e.g. "QThread: Destroyed while thread is still running")
+    calls abort() -- a native C++ abort that Python-level try/except can
+    never catch. faulthandler installs a low-level signal handler for
+    exactly this case and writes out where every thread actually was in
+    *Python* source at the moment of the crash, which is far more useful
+    for this class of bug than a stripped native backtrace. This costs
+    nothing at runtime and has no effect unless a fatal signal occurs.
+    """
+    import faulthandler
+    from pathlib import Path
+    import datetime
+
+    log_dir = Path.home() / ".local" / "share" / "crucible"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "fatal-trace.log"
+    fh = open(log_path, "a", buffering=1)
+    fh.write(
+        f"\n===== Crucible launch {datetime.datetime.now().isoformat()} "
+        f"(pid {__import__('os').getpid()}) =====\n"
+    )
+    fh.flush()
+    # Keep this handle open for the whole process lifetime -- faulthandler
+    # writes directly to its file descriptor from the signal handler.
+    globals()["_fatal_trace_file"] = fh
+    faulthandler.enable(file=fh, all_threads=True)
+
+
 def cmd_gui(manager: InstanceManager) -> None:
     try:
         from PyQt6.QtWidgets import QApplication
@@ -844,6 +875,8 @@ def cmd_gui(manager: InstanceManager) -> None:
         err("PyQt6 is not installed.")
         dim("Install with:  pip install PyQt6")
         sys.exit(1)
+
+    _enable_fatal_trace_dump()
 
     import sys as _sys
     from pathlib import Path

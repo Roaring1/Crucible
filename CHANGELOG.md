@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.6.13
+
+- **Instrumented the still-unresolved fatal `QThread: Destroyed while thread is still running` abort** instead of guessing at a fourth fix blind. Two prior fixes (v0.6.11's health-thread teardown, and general QThread teardown auditing) did not stop it -- the exact same native stack trace recurred again. A native gdb backtrace off the coredump only shows generic Qt/sip teardown internals (identical every time, since that's just how Qt reports *any* "thread destroyed while running" case) and needs matching debuginfo packages that are a pain to track down. Instead, `crucible gui` now calls Python's own `faulthandler.enable(all_threads=True)` at startup, which installs a low-level handler for SIGABRT (and SIGSEGV etc.) that dumps every live Python thread's *actual source-line* stack the instant the fatal signal fires -- before the process dies. This requires no extra packages and pinpoints exactly which QThread and which line of Crucible's own code was reassigning/dropping it. Output goes to `~/.local/share/crucible/fatal-trace.log` (appended, with a timestamp header per launch).
+- Everything from v0.6.12 (tmux "no server" detection fix) is included.
+
 ## v0.6.12
 
 - **Fixed: every instance could get stuck showing "Status check unavailable" with the Start button permanently disabled**, whenever tmux itself had no server running yet (e.g. right after the whole tmux server was torn down alongside a crashed Crucible session). `TmuxManager.list_sessions()` only recognized tmux's older "no server running"/"failed to connect to server" wording as "zero sessions" -- newer tmux reports this instead as "error connecting to /tmp/tmux-<uid>/default (No such file or directory)", which fell through to "unknown" status for literally every instance, disabling Start (`_btn_start.setEnabled(status == "stopped")` never sees "stopped"). `list_sessions()` now also recognizes "no such file or directory", "connection refused", and "error connecting to" as "no sessions", not "unknown". Added a regression test; suite is now 133 tests, all passing.
