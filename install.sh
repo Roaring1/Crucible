@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Crucible v0.6.10 installer — Nobara/Fedora, Python 3.11+
+# Crucible v0.6.11 installer — Nobara/Fedora, Python 3.11+
 set -Eeuo pipefail
 
-VERSION="0.6.10"
+VERSION="0.6.11"
 BOLD="\033[1m"; GREEN="\033[32m"; YELLOW="\033[33m"
 RED="\033[31m"; CYAN="\033[36m"; DIM="\033[2m"; RESET="\033[0m"
 ok()   { printf '  %b✓%b  %s\n' "$GREEN" "$RESET" "$*"; }

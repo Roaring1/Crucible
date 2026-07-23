@@ -21,6 +21,7 @@ from __future__ import annotations
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 
 from ..data.instance_model import ServerInstance
+from .crash_recovery import HeartbeatStore
 from .tmux_manager import TmuxManager
 
 POLL_INTERVAL_MS   = 10_000   # 10 seconds
@@ -47,7 +48,8 @@ class Watchdog(QObject):
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._tmux   = TmuxManager()
+        self._tmux       = TmuxManager()
+        self._heartbeats = HeartbeatStore()
         self._active = False
 
         # Per-instance state
@@ -95,6 +97,11 @@ class Watchdog(QObject):
         self._auto_restart[iid] = auto_restart
         self._miss_count[iid] = 0
         self._java_miss_count[iid] = 0
+        # Record that this instance is now believed running under the CURRENT
+        # boot session. If the whole host dies before unwatch()/_handle_crash()
+        # ever run again, crash_recovery.reconcile() detects the stale
+        # "running" heartbeat against a new boot id on the next launch.
+        self._heartbeats.mark_running(iid, instance.tmux_session)
         # A manual stop removes the instance entirely, so a later manual start
         # resets the sequence. Re-watching after an automatic restart preserves
         # the count until the server has remained healthy for STABLE_UPTIME_MS.
@@ -114,6 +121,7 @@ class Watchdog(QObject):
         Call BEFORE a graceful Stop — otherwise we'd mistake a clean
         shutdown for a crash.
         """
+        self._heartbeats.mark_stopped_clean(instance_id)
         self._watching.pop(instance_id, None)
         self._instances.pop(instance_id, None)
         self._auto_restart.pop(instance_id, None)
@@ -177,6 +185,10 @@ class Watchdog(QObject):
         count = self._crash_count.get(iid, 0) + 1
         self._crash_count[iid] = count
 
+        # This crash was witnessed live -- mark it handled so a later
+        # Crucible restart never re-reports it as an unseen host-level crash.
+        self._heartbeats.mark_crashed_handled(iid)
+
         self.crash_detected.emit(iid)
 
         if not self._auto_restart.get(iid, False):
@@ -212,6 +224,7 @@ class Watchdog(QObject):
         if ok:
             self._watching[iid] = True   # resume monitoring
             self._miss_count[iid] = 0
+            self._heartbeats.mark_running(iid, instance.tmux_session)
             self.restarted.emit(iid)
         else:
             self.restart_failed.emit(iid, msg)

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import shutil
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal, pyqtSlot
@@ -30,6 +31,7 @@ from PyQt6.QtWidgets import (
 
 from ..data.instance_manager import InstanceManager, validate_delete_target
 from ..data.instance_model import ServerInstance
+from ..process.crash_recovery import reconcile as reconcile_crash_recovery
 from ..process.tmux_manager import TmuxManager
 from . import theme
 from .sidebar import Sidebar
@@ -74,6 +76,11 @@ class MainWindow(QMainWindow):
         # Auto-select first instance
         if manager.instances:
             self._sidebar.select_by_id(manager.instances[0].id)
+
+        # Detect + self-heal instances that went down together with the
+        # whole host (power loss, hard freeze) since Crucible last ran.
+        # Deferred one tick so the window is on screen before any dialog.
+        QTimer.singleShot(0, self._run_crash_recovery)
 
     # UI construction
 
@@ -128,6 +135,65 @@ class MainWindow(QMainWindow):
         status_map = {inst.id: initial for inst in self._manager.instances}
         self._sidebar.populate(self._manager.instances, status_map)
         self._update_status_bar()
+
+    # Crash recovery (whole-host crashes, e.g. power loss, that no live
+    # Watchdog could have witnessed because Crucible itself was not running)
+
+    def _run_crash_recovery(self) -> None:
+        if not self._tmux.tmux_available():
+            return
+        try:
+            reports = reconcile_crash_recovery(self._manager.instances, self._tmux)
+        except Exception as exc:
+            print(f"[crucible] crash recovery check failed: {exc}")
+            return
+        if not reports:
+            return
+
+        by_id = {inst.id: inst for inst in self._manager.instances}
+        restarted: list[str] = []
+        not_restarted: list[str] = []
+
+        for report in reports:
+            instance = by_id.get(report.instance_id)
+            if instance is not None and instance.auto_restart:
+                ok, msg = self._tmux.start(instance)
+                if ok:
+                    instance.last_started = datetime.now().isoformat()
+                    try:
+                        self._manager.update_instance(instance)
+                    except Exception as exc:
+                        print(f"[crucible] could not persist auto-restart: {exc}")
+                    restarted.append(instance.name)
+                else:
+                    not_restarted.append(f"{instance.name} (restart failed: {msg})")
+            else:
+                not_restarted.append(report.instance_name)
+
+        lines = [
+            "Crucible found that one or more servers were still marked running "
+            "the last time it saw them, but the system has since rebooted "
+            "without a normal stop ever being recorded. This points to the "
+            "whole PC losing power or freezing, not a Crucible or server bug.",
+            "",
+        ]
+        for report in reports:
+            lines.append(f"• {report.message}")
+            if report.log_evidence:
+                lines.append(f"  {report.log_evidence}")
+        if restarted:
+            lines.append("")
+            lines.append("Auto-restarted (auto-restart was enabled): " + ", ".join(restarted))
+        if not_restarted:
+            lines.append("")
+            lines.append(
+                "Not auto-restarted (enable auto-restart on the server's settings "
+                "to do this automatically next time): " + ", ".join(not_restarted)
+            )
+
+        QMessageBox.warning(self, "Recovered from an unexpected shutdown", "\n".join(lines))
+        self._populate_sidebar()
+        self._health_check()
 
     # Health check timer
 

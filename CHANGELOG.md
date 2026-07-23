@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.6.11
+
+- **Added crash recovery for whole-host crashes** (power loss, hard freeze, forced reset) that a live-only Watchdog can never see, because Crucible itself wasn't running to witness them (`crucible/process/crash_recovery.py`, new). Every time an instance is confirmed running, a small heartbeat file records the current Linux boot id + tmux session + state. On the next launch, if a heartbeat still says "running" but the boot id has changed and tmux confirms no live session exists, Crucible knows the whole machine went down while nobody was watching -- not an ordinary Stop, and not a live-witnessed crash (both of those always update the heartbeat immediately, so neither is ever misreported).
+- On startup, Crucible now reconciles heartbeats against the current boot and shows a clear "Recovered from an unexpected shutdown" dialog explaining what happened, auto-restarting any affected instance that has auto-restart enabled and reporting the rest so they can be restarted manually.
+- `Watchdog` now records/clears heartbeats alongside its existing live crash detection (`crucible/process/watchdog.py`); `MainWindow` runs the reconciliation check once on launch (`crucible/ui/main_window.py`).
+- Added `tests/test_crash_recovery.py`. Suite is now 132 tests, all passing.
+
 ## v0.6.10
 
 - **Fixed:** importing a Prism source that was already a complete, ready-to-run dedicated server (e.g. an official modpack "Server Pack" download such as GTNH's) silently dropped the real start script and server jar/loader. The importer only ever copied a narrow client-import allowlist (mods/config/etc.), which is correct for a bare Prism *client* instance but was quietly deleting the actual launcher for anyone importing a pre-built server. Crucible now detects this case (start script or server jar/loader present at the top level of the source) and copies the entire folder instead, and never overwrites a real copied start script with its own placeholder.
