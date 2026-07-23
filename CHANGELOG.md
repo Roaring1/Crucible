@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.6.12
+
+- **Fixed: every instance could get stuck showing "Status check unavailable" with the Start button permanently disabled**, whenever tmux itself had no server running yet (e.g. right after the whole tmux server was torn down alongside a crashed Crucible session). `TmuxManager.list_sessions()` only recognized tmux's older "no server running"/"failed to connect to server" wording as "zero sessions" -- newer tmux reports this instead as "error connecting to /tmp/tmux-<uid>/default (No such file or directory)", which fell through to "unknown" status for literally every instance, disabling Start (`_btn_start.setEnabled(status == "stopped")` never sees "stopped"). `list_sessions()` now also recognizes "no such file or directory", "connection refused", and "error connecting to" as "no sessions", not "unknown". Added a regression test; suite is now 133 tests, all passing.
+- Still investigating: the underlying fatal `QThread: Destroyed while thread is still running` abort (identical stack trace across the last three coredumps) was not resolved by the v0.6.11 health-thread teardown fix either. This needs a real backtrace off the next coredump to pin down precisely which QThread it is -- see the follow-up message for exact commands.
+
 ## v0.6.11
 
 - **Added: whole-host crash recovery.** Watchdog only ever detected a crash while Crucible itself was open and polling tmux -- if the entire PC lost power or hard-froze, Crucible, tmux, and the server all died together and nobody was left to notice, so the next launch looked identical to a normal, intentional stop. `crucible/process/crash_recovery.py` now records a small heartbeat (current Linux boot id + tmux session) whenever an instance is confirmed running, and updates it on every graceful stop or live-witnessed crash. On startup, if a heartbeat still says "running" under a *different* boot id than the current one, with tmux confirming the session is gone, Crucible now knows the whole host went down and reports it -- and auto-restarts that instance if Auto-Restart is enabled for it.

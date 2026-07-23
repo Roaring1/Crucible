@@ -230,6 +230,27 @@ class TmuxCommandTests(unittest.TestCase):
             self.assertTrue(self.tm.is_running(self.inst))
         self.assertEqual(run.call_args.args[0], ["tmux", "has-session", "-t", "=gtnh"])
 
+    def test_status_map_treats_missing_socket_dir_as_no_sessions(self):
+        """When tmux's own server/socket dir is gone (e.g. wiped alongside a
+        crashed app cgroup), 'tmux list-sessions' reports 'error connecting
+        to /tmp/tmux-<uid>/default (No such file or directory)' rather than
+        the older 'no server running'/'failed to connect to server'
+        wording. That must still resolve to zero sessions (status 'stopped'),
+        not 'unknown' -- otherwise every instance gets stuck showing
+        'Status check unavailable' and the Start button stays disabled."""
+        import subprocess
+        with patch.object(
+            self.tm, "_run",
+            return_value=subprocess.CompletedProcess(
+                [], 1, "",
+                "error connecting to /tmp/tmux-1000/default (No such file or directory)\n",
+            ),
+        ):
+            self.assertEqual(self.tm.list_sessions(), [])
+            self.assertEqual(
+                self.tm.status_map([self.inst]), {self.inst.id: "stopped"}
+            )
+
     def test_capture_pane_tail_reads_exact_session_target(self):
         import subprocess
         with patch.object(

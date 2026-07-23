@@ -214,7 +214,25 @@ class TmuxManager:
         result = self._run(["tmux", "list-sessions", "-F", "#{session_name}"], timeout=2)
         if result.returncode != 0:
             detail = (result.stderr or "").strip().lower()
-            if "no server running" in detail or "failed to connect to server" in detail:
+            if detail == "timeout":
+                return None
+            # tmux's wording for "there is no server to talk to" varies by
+            # version/platform: "no server running on ...", "failed to
+            # connect to server", or (when the socket dir itself is gone,
+            # e.g. wiped alongside a crashed app's cgroup) "error connecting
+            # to /tmp/tmux-<uid>/default (No such file or directory)" /
+            # "connection refused". All of these mean "zero sessions", not
+            # "we couldn't tell" -- treating them as unknown left every
+            # instance stuck showing "Status check unavailable" forever
+            # whenever no tmux server happened to be running yet.
+            no_server_markers = (
+                "no server running",
+                "failed to connect to server",
+                "no such file or directory",
+                "connection refused",
+                "error connecting to",
+            )
+            if any(marker in detail for marker in no_server_markers):
                 return []
             return None
         sessions = [s.strip() for s in result.stdout.splitlines() if s.strip()]
