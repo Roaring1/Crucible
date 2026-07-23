@@ -44,24 +44,43 @@ HEALTH_CHECK_INTERVAL_MS = 5_000
 class _HealthWorker(QObject):
     finished = pyqtSignal(object)
 
-    def __init__(self, tmux: TmuxManager, instances: list[ServerInstance]):
+    def __init__(self, tmux: TmuxManager):
         super().__init__()
         self._tmux = tmux
-        self._instances = list(instances)
 
-    def run(self) -> None:
-        self.finished.emit(self._tmux.status_map(self._instances))
+    @pyqtSlot(object)
+    def run(self, instances) -> None:
+        # Work from a snapshot supplied with each request. The worker and its
+        # QThread are persistent for the full GUI lifetime; only this job is
+        # repeated. This avoids destroying/replacing QThread wrappers from a
+        # queued callback while Qt is inside a nested event loop (notably
+        # QDrag.exec when a sidebar row is moved).
+        self.finished.emit(self._tmux.status_map(list(instances)))
 
 
 class MainWindow(QMainWindow):
     """Crucible main window."""
 
+    health_check_requested = pyqtSignal(object)
+
     def __init__(self, manager: InstanceManager):
         super().__init__()
         self._manager = manager
         self._tmux = TmuxManager()
-        self._health_thread: QThread | None = None
-        self._health_worker: _HealthWorker | None = None
+        # One persistent health thread for the entire window lifetime.
+        # Previously every 5-second poll created a QThread and a queued
+        # finished callback nulled the last Python reference. During a sidebar
+        # drag, QDrag.exec runs a nested Qt event loop; that callback could be
+        # delivered in the middle of the drag and PyQt destroyed a QThread
+        # whose native thread had not fully unwound, causing Qt's fatal abort.
+        self._health_thread = QThread(self)
+        self._health_thread.setObjectName("CrucibleHealthThread")
+        self._health_worker = _HealthWorker(self._tmux)
+        self._health_worker.moveToThread(self._health_thread)
+        self.health_check_requested.connect(self._health_worker.run)
+        self._health_worker.finished.connect(self._apply_health_status)
+        self._health_busy = False
+        self._health_thread.start()
         self._external_registry_warning_shown = False
 
         self.setWindowTitle("Crucible — Minecraft Server Manager")
@@ -226,40 +245,19 @@ class MainWindow(QMainWindow):
                 )
         else:
             self._external_registry_warning_shown = False
-        if self._health_thread is not None and self._health_thread.isRunning():
+        if self._health_busy:
             return
-        self._health_thread = QThread()
-        self._health_worker = _HealthWorker(self._tmux, self._manager.instances)
-        self._health_worker.moveToThread(self._health_thread)
-        self._health_thread.started.connect(self._health_worker.run)
-        self._health_worker.finished.connect(self._apply_health_status)
-        self._health_worker.finished.connect(self._health_thread.quit)
-        self._health_worker.finished.connect(self._health_worker.deleteLater)
-        self._health_thread.finished.connect(self._health_thread.deleteLater)
-        self._health_thread.finished.connect(self._health_thread_finished)
-        self._health_thread.start()
+        self._health_busy = True
+        self.health_check_requested.emit(list(self._manager.instances))
 
     @pyqtSlot(object)
     def _apply_health_status(self, status_map) -> None:
+        self._health_busy = False
         self._sidebar.update_all_statuses(status_map)
         selected = self._sidebar.selected_instance()
         if selected and selected.id in status_map:
             self._panel.update_status(status_map[selected.id])
         self._update_status_bar()
-
-    def _health_thread_finished(self) -> None:
-        # finished() can fire a hair before the underlying OS thread has
-        # fully unwound (a documented Qt/PyQt6 race). Dropping the last
-        # Python reference to a QThread that PyQt still considers "running"
-        # triggers a fatal "QThread: Destroyed while thread is still
-        # running" abort. Match the safe teardown pattern already used in
-        # InstancePanel._stop_watcher(): never null the reference until
-        # wait() has actually confirmed the thread stopped.
-        if self._health_thread is not None:
-            if not self._health_thread.wait(2000):
-                self._health_thread.wait()
-        self._health_thread = None
-        self._health_worker = None
 
     # Status bar
 
@@ -558,7 +556,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self._health_timer.stop()
-        if self._health_thread is not None and self._health_thread.isRunning():
+        if self._health_thread.isRunning():
             self._health_thread.quit()
             if not self._health_thread.wait(3000):
                 QMessageBox.information(

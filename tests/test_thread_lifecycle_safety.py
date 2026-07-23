@@ -102,6 +102,18 @@ class ThreadWaitThenNoneTests(unittest.TestCase):
             "Unsafe QThread wait()-then-None pattern(s) found:\n" + "\n".join(violations),
         )
 
+    def test_health_check_uses_one_persistent_thread(self) -> None:
+        """The periodic health poll must never replace/drop a QThread from a
+        queued callback. QDrag.exec() runs a nested event loop, which exposed
+        that lifecycle race as a fatal abort while moving a sidebar row."""
+        path = CRUCIBLE_SRC / "ui" / "main_window.py"
+        src = path.read_text(encoding="utf-8")
+        self.assertEqual(src.count("self._health_thread = QThread(self)"), 1)
+        self.assertNotIn("self._health_thread = None", src)
+        self.assertIn("health_check_requested = pyqtSignal(object)", src)
+        self.assertIn("self.health_check_requested.emit(", src)
+        self.assertIn('setObjectName("CrucibleHealthThread")', src)
+
     def test_stop_watcher_and_shutdown_check_wait_result(self) -> None:
         """
         Named regression test for the exact reported crash: InstancePanel

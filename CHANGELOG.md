@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.14
+
+- **Fixed the recurring GUI abort while dragging a server in the sidebar.** The latest native trace finally exposed the missing context: the main thread was inside `QDrag.exec()` / `QListWidget.startDrag()` when a queued health-check completion callback destroyed the previous short-lived `QThread`. Dragging runs a nested Qt event loop, so the callback could execute at a lifecycle point where PyQt still considered that thread running, producing `QThread: Destroyed while thread is still running` and SIGABRT. The periodic health checker now owns one named, persistent `CrucibleHealthThread` for the entire window lifetime and sends each 5-second status job to it; it is never replaced or nulled during normal GUI operation and is stopped/waited only during window shutdown.
+- Added a regression guard requiring the persistent health-thread design and forbidding runtime nulling of that reference. Full suite: 134 tests passing.
+- Includes the v0.6.12 tmux missing-socket/no-server status fix, so a dead tmux socket resolves to Stopped and Start remains usable.
+
 ## v0.6.13
 
 - **Instrumented the still-unresolved fatal `QThread: Destroyed while thread is still running` abort** instead of guessing at a fourth fix blind. Two prior fixes (v0.6.11's health-thread teardown, and general QThread teardown auditing) did not stop it -- the exact same native stack trace recurred again. A native gdb backtrace off the coredump only shows generic Qt/sip teardown internals (identical every time, since that's just how Qt reports *any* "thread destroyed while running" case) and needs matching debuginfo packages that are a pain to track down. Instead, `crucible gui` now calls Python's own `faulthandler.enable(all_threads=True)` at startup, which installs a low-level handler for SIGABRT (and SIGSEGV etc.) that dumps every live Python thread's *actual source-line* stack the instant the fatal signal fires -- before the process dies. This requires no extra packages and pinpoints exactly which QThread and which line of Crucible's own code was reassigning/dropping it. Output goes to `~/.local/share/crucible/fatal-trace.log` (appended, with a timestamp header per launch).
