@@ -248,6 +248,16 @@ class MainWindow(QMainWindow):
         self._update_status_bar()
 
     def _health_thread_finished(self) -> None:
+        # finished() can fire a hair before the underlying OS thread has
+        # fully unwound (a documented Qt/PyQt6 race). Dropping the last
+        # Python reference to a QThread that PyQt still considers "running"
+        # triggers a fatal "QThread: Destroyed while thread is still
+        # running" abort. Match the safe teardown pattern already used in
+        # InstancePanel._stop_watcher(): never null the reference until
+        # wait() has actually confirmed the thread stopped.
+        if self._health_thread is not None:
+            if not self._health_thread.wait(2000):
+                self._health_thread.wait()
         self._health_thread = None
         self._health_worker = None
 
