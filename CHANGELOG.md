@@ -2,10 +2,8 @@
 
 ## v0.6.11
 
-- **Added crash recovery for whole-host crashes** (power loss, hard freeze, forced reset) that a live-only Watchdog can never see, because Crucible itself wasn't running to witness them (`crucible/process/crash_recovery.py`, new). Every time an instance is confirmed running, a small heartbeat file records the current Linux boot id + tmux session + state. On the next launch, if a heartbeat still says "running" but the boot id has changed and tmux confirms no live session exists, Crucible knows the whole machine went down while nobody was watching -- not an ordinary Stop, and not a live-witnessed crash (both of those always update the heartbeat immediately, so neither is ever misreported).
-- On startup, Crucible now reconciles heartbeats against the current boot and shows a clear "Recovered from an unexpected shutdown" dialog explaining what happened, auto-restarting any affected instance that has auto-restart enabled and reporting the rest so they can be restarted manually.
-- `Watchdog` now records/clears heartbeats alongside its existing live crash detection (`crucible/process/watchdog.py`); `MainWindow` runs the reconciliation check once on launch (`crucible/ui/main_window.py`).
-- Added `tests/test_crash_recovery.py`. Suite is now 132 tests, all passing.
+- **Added: whole-host crash recovery.** Watchdog only ever detected a crash while Crucible itself was open and polling tmux -- if the entire PC lost power or hard-froze, Crucible, tmux, and the server all died together and nobody was left to notice, so the next launch looked identical to a normal, intentional stop. `crucible/process/crash_recovery.py` now records a small heartbeat (current Linux boot id + tmux session) whenever an instance is confirmed running, and updates it on every graceful stop or live-witnessed crash. On startup, if a heartbeat still says "running" under a *different* boot id than the current one, with tmux confirming the session is gone, Crucible now knows the whole host went down and reports it -- and auto-restarts that instance if Auto-Restart is enabled for it.
+- Added `tests/test_crash_recovery.py` (15 tests) covering heartbeat persistence, boot-id reconciliation, and torn-log corroboration. Suite is now 132 tests, all passing.
 
 ## v0.6.10
 

@@ -193,7 +193,12 @@ class MainWindow(QMainWindow):
 
         QMessageBox.warning(self, "Recovered from an unexpected shutdown", "\n".join(lines))
         self._populate_sidebar()
-        self._health_check()
+        # Do NOT call self._health_check() here. Forcing a second health-check
+        # thread churn moments after the one _start_health_timer() already
+        # kicked off can race with that first QThread's teardown and hit Qt's
+        # fatal "QThread: Destroyed while thread is still running" abort. The
+        # existing 5s self._health_timer will pick up the new state shortly
+        # on its own -- no need to force it.
 
     # Health check timer
 
