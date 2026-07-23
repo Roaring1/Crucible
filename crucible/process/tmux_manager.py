@@ -216,6 +216,14 @@ class TmuxManager:
             detail = (result.stderr or "").strip().lower()
             if detail == "timeout":
                 return None
+            # `tmux list-sessions` documents exit status 1 when there is no
+            # server/session to list. The diagnostic text is not stable across
+            # tmux versions, locales, socket states, or distro patches, so do
+            # not require an English substring before accepting this normal
+            # "zero sessions" result. This is also consistent with
+            # probe_running(), where exit 1 means the target is absent.
+            if result.returncode == 1:
+                return []
             # tmux's wording for "there is no server to talk to" varies by
             # version/platform: "no server running on ...", "failed to
             # connect to server", or (when the socket dir itself is gone,

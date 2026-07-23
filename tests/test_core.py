@@ -230,6 +230,21 @@ class TmuxCommandTests(unittest.TestCase):
             self.assertTrue(self.tm.is_running(self.inst))
         self.assertEqual(run.call_args.args[0], ["tmux", "has-session", "-t", "=gtnh"])
 
+    def test_list_sessions_exit_one_is_always_no_sessions(self):
+        """tmux exit 1 is its stable API for no server/sessions; stderr text
+        varies by version and locale and must not control Start availability."""
+        import subprocess
+        with patch.object(
+            self.tm, "_run",
+            return_value=subprocess.CompletedProcess(
+                [], 1, "", "some distro-specific untranslated diagnostic\n"
+            ),
+        ):
+            self.assertEqual(self.tm.list_sessions(), [])
+            self.assertEqual(
+                self.tm.status_map([self.inst]), {self.inst.id: "stopped"}
+            )
+
     def test_status_map_treats_missing_socket_dir_as_no_sessions(self):
         """When tmux's own server/socket dir is gone (e.g. wiped alongside a
         crashed app cgroup), 'tmux list-sessions' reports 'error connecting

@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.6.15
+
+- **Fixed the remaining “Status check unavailable” state that kept Start disabled.** `tmux list-sessions` has a stable exit-status contract: exit 1 means there is no tmux server/session to list, but its stderr wording varies across versions, locales, socket states, and distro builds. Crucible was still requiring recognized English error text before interpreting exit 1 as zero sessions, so an unrecognized diagnostic became `unknown`. Exit 1 now always maps to an empty session list and therefore `stopped`; the Start button remains enabled. Unexpected errors and real timeouts still remain `unknown` rather than being guessed offline.
+- Includes v0.6.14’s persistent health-thread fix for the sidebar-drag abort. Full suite: 135 tests passing.
+
 ## v0.6.14
 
 - **Fixed the recurring GUI abort while dragging a server in the sidebar.** The latest native trace finally exposed the missing context: the main thread was inside `QDrag.exec()` / `QListWidget.startDrag()` when a queued health-check completion callback destroyed the previous short-lived `QThread`. Dragging runs a nested Qt event loop, so the callback could execute at a lifecycle point where PyQt still considered that thread running, producing `QThread: Destroyed while thread is still running` and SIGABRT. The periodic health checker now owns one named, persistent `CrucibleHealthThread` for the entire window lifetime and sends each 5-second status job to it; it is never replaced or nulled during normal GUI operation and is stopped/waited only during window shutdown.
