@@ -428,8 +428,12 @@ class ConsoleTab(QWidget):
 
     @pyqtSlot(list)
     def _on_new_lines(self, lines: list[str]) -> None:
+        # One document transaction + one repaint per batch. Re-layout/repaint
+        # after every individual Minecraft log line is dramatically slower.
         cursor = self._view.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.beginEditBlock()
+        self._view.setUpdatesEnabled(False)
 
         for line in lines:
             # Optionally drop the repeating TPS/tick-poll responses (still parsed
@@ -449,6 +453,9 @@ class ConsoleTab(QWidget):
             else:
                 cursor.insertText(line + "\n", fmt)
 
+        cursor.endEditBlock()
+        self._view.setUpdatesEnabled(True)
+        self._view.viewport().update()
         if self._auto_scroll:
             self._view.verticalScrollBar().setValue(
                 self._view.verticalScrollBar().maximum()

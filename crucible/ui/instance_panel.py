@@ -85,6 +85,7 @@ class InstancePanel(QWidget):
     status_changed = pyqtSignal(str, str)
     watchdog_watch_requested = pyqtSignal(object, bool)
     watchdog_unwatch_requested = pyqtSignal(str)
+    watcher_reset_requested = pyqtSignal(object)
 
     def __init__(self, manager: InstanceManager, parent=None):
         super().__init__(parent)
@@ -365,7 +366,8 @@ class InstancePanel(QWidget):
         if self._instance is not None and not self._config.confirm_discard_or_save():
             return False
         self._notes.flush()
-        self._stop_watcher()
+        # Do not synchronously stop/wait/recreate the log QThread on every
+        # sidebar click. _start_watcher() reuses it and queues a cheap reset.
         self._tps_timer.stop()
         self._ip_request_generation += 1
         self._btn_ip.setEnabled(True)
@@ -511,19 +513,30 @@ class InstancePanel(QWidget):
     # Log watcher lifecycle
 
     def _start_watcher(self, instance: ServerInstance) -> None:
-        self._w_thread = QThread()
-        self._watcher  = LogWatcher(instance)
-        self._watcher.moveToThread(self._w_thread)
-        # Connect signals BEFORE starting the thread so the initial read
-        # (fired immediately in start()) doesn't race with attach().
+        if self._watcher is None:
+            self._w_thread = QThread(self)
+            self._w_thread.setObjectName("CrucibleLogWatcherThread")
+            self._watcher = LogWatcher(instance)
+            self._watcher.moveToThread(self._w_thread)
+            self.watcher_reset_requested.connect(self._watcher.reset)
+            # Panel-level hooks are connected once for the persistent worker.
+            self._watcher.server_started.connect(self._on_log_server_started)
+            self._watcher.server_stopping.connect(self._on_log_server_stopping)
+            self._watcher.log_rotated.connect(self._on_log_rotated)
+            self._w_thread.started.connect(self._watcher.start)
+            self._console.attach(instance, self._watcher)
+            self._players.attach_watcher(self._watcher)
+            self._w_thread.start()
+            return
+
+        # Switching servers is now non-blocking: disconnect only the visible
+        # consumers, reconnect them to the same worker, and queue a reset in
+        # that worker's event loop. No BlockingQueuedConnection and no wait().
+        self._console.detach()
+        self._players.detach_watcher()
         self._console.attach(instance, self._watcher)
         self._players.attach_watcher(self._watcher)
-        # Panel-level hooks (server state transitions)
-        self._watcher.server_started.connect(self._on_log_server_started)
-        self._watcher.server_stopping.connect(self._on_log_server_stopping)
-        self._watcher.log_rotated.connect(self._on_log_rotated)
-        self._w_thread.started.connect(self._watcher.start)
-        self._w_thread.start()
+        self.watcher_reset_requested.emit(instance)
 
     def _stop_watcher(self) -> None:
         self._console.detach()

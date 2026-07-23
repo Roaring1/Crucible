@@ -11,6 +11,18 @@ class LogTailReaderTests(unittest.TestCase):
         self.log = self.root / "latest.log"
         self.log.write_bytes(b"")
 
+    def test_prime_tail_skips_old_history_and_starts_on_line_boundary(self):
+        reader = LogTailReader()
+        old = b"".join(f"old-{i:05d}\n".encode() for i in range(20000))
+        self.log.write_bytes(old + b"recent-one\nrecent-two\n")
+        reader.prime_tail(self.log, max_bytes=128)
+        result = reader.read(self.log)
+        self.assertLess(result.bytes_read, 256)
+        self.assertIn("recent-one", result.lines)
+        self.assertIn("recent-two", result.lines)
+        self.assertNotIn("old-00000", result.lines)
+        self.assertFalse(result.lines[0].startswith("-"))
+
     def test_incomplete_line_is_buffered_then_emitted_once(self):
         reader = LogTailReader()
         self.log.write_bytes(b"alpha\nbeta")

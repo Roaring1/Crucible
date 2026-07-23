@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.6.17
+
+- **Major GUI responsiveness fix for large/active Minecraft logs.** Selecting a server created a new log-watcher QThread and started reading `latest.log` from byte zero. On large modpacks that could replay hundreds of megabytes in 4 MiB chunks, enqueue thousands of formatted QTextEdit insertions, and make KDE report Crucible as “Not responding.” Initial attachment now starts at a real line boundary within only the last 256 KiB of the existing log. Live reading is capped at 256 KiB per worker turn, event parsing stays off the GUI thread, visible console delivery is capped to 500 lines per batch, and backlog draining yields 25 ms between chunks.
+- **Sidebar switching is now non-blocking.** Crucible keeps one named `CrucibleLogWatcherThread` alive and queues a reset when another server is selected. It no longer performs a `BlockingQueuedConnection`, thread quit, wait, destruction, and recreation on every sidebar click.
+- **Console text rendering is batched.** Each incoming line batch now uses one QTextDocument edit transaction and one repaint instead of triggering layout/repaint work line by line.
+- Added regression coverage for bounded tail attachment, persistent watcher switching, paced/capped log delivery, and batched console rendering. Full suite: 138 tests passing.
+- Includes the corrected v0.6.16 installer, so this build is verified from the actual published install rather than silently rolling back.
+
 ## v0.6.16
 
 - **Fixed the updater silently rolling back every attempted upgrade to v0.6.11.** `install.sh` still hard-coded `VERSION="0.6.10"` while validating staged source. Installing v0.6.12–v0.6.15 therefore failed validation, the installer restored the previous v0.6.11 tree, and the outer helper script continued because it did not use `set -e`. Its final version check ran from the Git checkout and accidentally imported the checkout’s newer source, falsely printing “Installed version: 0.6.15.” The installer now derives its expected version directly from `crucible/__init__.py`, so source and validation cannot drift. The helper script now stops on any installer failure and verifies the version from the published install directory explicitly.

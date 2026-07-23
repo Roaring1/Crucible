@@ -136,6 +136,7 @@ class LogWatcher(QObject):
         self._poll_timer.start(1000)
 
         self._attach_watchers()
+        self._prime_tail()
         self._on_file_changed()
 
     @pyqtSlot()
@@ -156,6 +157,7 @@ class LogWatcher(QObject):
         self._backlog_drain_pending = False
         self._log_was_missing = False
         self._attach_watchers()
+        self._prime_tail()
         self._on_file_changed()
 
     # Watcher setup
@@ -172,6 +174,11 @@ class LogWatcher(QObject):
             self._watcher.addPath(str(log))
         if logs_dir.exists():
             self._watcher.addPath(str(logs_dir))
+
+    def _prime_tail(self) -> None:
+        log = self._instance.get_log_path()
+        if log is not None:
+            self._tail.prime_tail(log, max_bytes=256 * 1024)
 
     # Event handlers
 
@@ -196,7 +203,9 @@ class LogWatcher(QObject):
         self._log_was_missing = False
 
         try:
-            result = self._tail.read(log)
+            # Keep each worker turn short. Parsing stays off the GUI thread,
+            # and console rendering below is separately capped.
+            result = self._tail.read(log, max_read_bytes=256 * 1024)
         except OSError:
             # File disappeared between resolution and open (e.g. mid-rotation).
             if not self._log_was_missing:
@@ -207,15 +216,19 @@ class LogWatcher(QObject):
         if result.rotated:
             self.log_rotated.emit()   # clear stale player/state data
         if result.lines:
-            self.new_lines.emit(result.lines)
+            # Parse every event in the worker, but never ask QTextEdit on the
+            # GUI thread to format thousands of records in one event.
             for line in result.lines:
                 self._parse(line)
+            self.new_lines.emit(result.lines[-500:])
 
         # A poll is intentionally capped. If a burst exceeded that cap, queue
         # another pass in this worker's event loop instead of waiting a second.
         if result.backlog and self._active and not self._backlog_drain_pending:
             self._backlog_drain_pending = True
-            QTimer.singleShot(0, self._drain_backlog)
+            # Yield between chunks so queued GUI input/paint events remain
+            # responsive even during an extreme server-log burst.
+            QTimer.singleShot(25, self._drain_backlog)
 
     def _drain_backlog(self) -> None:
         self._backlog_drain_pending = False

@@ -114,6 +114,22 @@ class ThreadWaitThenNoneTests(unittest.TestCase):
         self.assertIn("self.health_check_requested.emit(", src)
         self.assertIn('setObjectName("CrucibleHealthThread")', src)
 
+    def test_sidebar_switch_reuses_log_thread_without_blocking_wait(self) -> None:
+        panel = (CRUCIBLE_SRC / "ui" / "instance_panel.py").read_text(encoding="utf-8")
+        load_body = panel.split("    def load(self, instance:", 1)[1].split("    def current_instance_id", 1)[0]
+        self.assertNotIn("self._stop_watcher()", load_body)
+        self.assertIn("watcher_reset_requested.emit(instance)", panel)
+        self.assertIn('setObjectName("CrucibleLogWatcherThread")', panel)
+
+    def test_log_attach_is_bounded_and_console_updates_are_batched(self) -> None:
+        watcher = (CRUCIBLE_SRC / "process" / "log_watcher.py").read_text(encoding="utf-8")
+        console = (CRUCIBLE_SRC / "ui" / "tabs" / "console_tab.py").read_text(encoding="utf-8")
+        self.assertIn("prime_tail(log, max_bytes=256 * 1024)", watcher)
+        self.assertIn("result.lines[-500:]", watcher)
+        self.assertIn("QTimer.singleShot(25, self._drain_backlog)", watcher)
+        self.assertIn("cursor.beginEditBlock()", console)
+        self.assertIn("cursor.endEditBlock()", console)
+
     def test_stop_watcher_and_shutdown_check_wait_result(self) -> None:
         """
         Named regression test for the exact reported crash: InstancePanel

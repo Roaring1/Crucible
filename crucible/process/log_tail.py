@@ -52,6 +52,29 @@ class LogTailReader:
         self._partial = b""
         self._partial_was_truncated = False
 
+    def prime_tail(self, path: str | Path, *, max_bytes: int = 256 * 1024) -> None:
+        """Start near the end of an existing log instead of replaying all history.
+
+        The first visible record begins at a real newline boundary. This is
+        specifically for GUI attachment: a large modpack latest.log can be
+        hundreds of MB, and replaying it from byte zero floods the Qt event
+        queue with formatted text and makes the whole window appear hung.
+        """
+        self.reset()
+        path = Path(path)
+        try:
+            with path.open("rb") as fh:
+                st = os.fstat(fh.fileno())
+                self._identity = (st.st_dev, st.st_ino)
+                start = max(0, st.st_size - max(0, max_bytes))
+                if start:
+                    fh.seek(start)
+                    fh.readline()  # discard a partial first record
+                    start = fh.tell()
+                self._position = start
+        except OSError:
+            self.reset()
+
     def read(
         self,
         path: str | Path,
