@@ -59,6 +59,24 @@ def _read_cmd(pid: int) -> str:
         return ""
 
 
+def _read_comm(pid: int) -> str:
+    """Return the kernel-reported executable name for a PID (e.g. 'java',
+    'dolphin'), as opposed to the full command line.
+
+    ``_read_cmd()`` returns the whole argv joined together, which can
+    accidentally contain "java" as a substring of a *path argument* rather
+    than the binary actually being run -- GTNH server folders are
+    conventionally named "..._Server_Java_<ver>", so a file manager, editor,
+    or anything else merely pointed at that folder would otherwise
+    false-positive as a live JVM. /proc/pid/comm has no such ambiguity.
+    """
+    try:
+        with open(f"/proc/{pid}/comm") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def _proc_cwd(pid: int) -> str:
     try:
         return os.readlink(f"/proc/{pid}/cwd")
@@ -126,7 +144,11 @@ class ResourceSampler:
             if marker and marker in cmd:
                 pids.append(pid)
                 continue
-            if "java" in cmd.lower() and path and (path in cmd or _proc_cwd(pid) == path):
+            # Match the actual executable, not a substring of the full
+            # command line -- see _read_comm() for why that matters.
+            if _read_comm(pid).lower() == "java" and path and (
+                path in cmd or _proc_cwd(pid) == path
+            ):
                 pids.append(pid)
         return pids
 
