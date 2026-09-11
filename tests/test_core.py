@@ -426,6 +426,33 @@ class TmuxCommandTests(unittest.TestCase):
         ]
         self.assertEqual(len(ctrl_c_calls), 1)
 
+    def test_stop_resends_ctrl_c_while_reboot_loop_keeps_surviving_it(self):
+        """A single Ctrl-C is not reliable enough in practice -- the pane can
+        still be alive on the next poll even after one was sent (this is the
+        exact failure a live GTNH server hit: 'reboot-loop countdown was
+        interrupted, but the session did not close in time'). stop() must
+        keep re-sending Ctrl-C on every subsequent poll for as long as java
+        stays absent, rather than giving up after the first attempt.
+        """
+        import subprocess
+        with (
+            patch.object(self.tm, "probe_running", side_effect=[True, True, True, False]),
+            patch.object(self.tm, "send_command_result", return_value=(True, "ok")),
+            patch.object(self.tm, "is_java_foreground", side_effect=[False, False]),
+            patch.object(self.tm, "_run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run,
+            patch("crucible.process.tmux_manager.time.sleep"),
+        ):
+            ok, message = self.tm.stop(
+                self.inst, graceful=True, timeout_s=6, poll_interval_s=1
+            )
+        self.assertTrue(ok)
+        self.assertIn("stopped gracefully", message)
+        ctrl_c_calls = [
+            call for call in run.call_args_list
+            if call.args and call.args[0][:2] == ["tmux", "send-keys"] and "C-c" in call.args[0]
+        ]
+        self.assertEqual(len(ctrl_c_calls), 2)
+
     def test_stop_reports_interrupted_reboot_loop_on_timeout(self):
         """If Ctrl-C is sent but the wrapper script still never exits within
         the timeout, stop() must report that clearly and still never

@@ -16,6 +16,7 @@ tmux command reference (matching the user's current manual workflow):
 
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 import subprocess
@@ -250,7 +251,7 @@ class TmuxManager:
 
     # Lifecycle
 
-    def start(self, instance: ServerInstance) -> tuple[bool, str]:
+    def start(self, instance: ServerInstance, fml_query_result: str | None = None) -> tuple[bool, str]:
         """
         Start the server in a new detached tmux session.
 
@@ -282,6 +283,13 @@ class TmuxManager:
         # "Address family not supported by protocol"). Covers Crucible's own
         # start.sh via CRUCIBLE_JAVA_ARGS...
         java_args = netfix.ensure_ipv4(instance.java_args)
+        fml_choice = fml_query_result if fml_query_result in {"confirm", "cancel"} else instance.fml_query_result
+        if fml_choice not in {"confirm", "cancel"}:
+            fml_choice = None
+        java_args = netfix.ensure_fml_query_result(java_args, fml_choice)
+        java_tool_options = os.environ.get("JAVA_TOOL_OPTIONS", "")
+        if fml_choice:
+            java_tool_options = netfix.ensure_fml_query_result(java_tool_options, fml_choice)
         # ...and Forge/NeoForge run scripts that read user_jvm_args.txt instead.
         try:
             netfix.ensure_user_jvm_args_file(instance.path)
@@ -298,8 +306,13 @@ class TmuxManager:
             marker.unlink()
         except OSError:
             pass
+        env_prefix = "env CRUCIBLE_JAVA_ARGS=" + shlex.quote(start_env)
+        # The JVM itself consumes JAVA_TOOL_OPTIONS, even when a pack's script
+        # ignores CRUCIBLE_JAVA_ARGS.
+        if fml_choice:
+            env_prefix += " JAVA_TOOL_OPTIONS=" + shlex.quote(java_tool_options)
         inner = (
-            "env CRUCIBLE_JAVA_ARGS=" + shlex.quote(start_env)
+            env_prefix
             + " bash " + shlex.quote(script.name)
             + "; _crucible_code=$?; printf '%s' \"$_crucible_code\" > "
             + shlex.quote(str(marker))
@@ -454,9 +467,12 @@ class TmuxManager:
         # session alive forever, even after a clean in-game stop, and will
         # relaunch a fresh java before has-session ever reports False. As
         # soon as java is no longer the pane's foreground command (session
-        # still alive) we send Ctrl-C once to interrupt that countdown so
-        # the wrapper script itself exits instead of rebooting the server
-        # out from under a Stop click.
+        # still alive) we send Ctrl-C to interrupt that countdown so the
+        # wrapper script itself exits instead of rebooting the server out
+        # from under a Stop click. A single attempt is not reliable enough
+        # in practice -- keep sending it on every remaining poll for as
+        # long as java stays absent, since a repeated no-op interrupt is
+        # harmless once the wrapper has actually exited.
         elapsed = 0
         saw_unknown = False
         sent_interrupt = False
@@ -469,14 +485,13 @@ class TmuxManager:
             if running is None:
                 saw_unknown = True
                 continue
-            if not sent_interrupt:
-                java_up = self.is_java_foreground(instance)
-                if java_up is False:
-                    self._run(
-                        ["tmux", "send-keys", "-t", self._pane_target(instance), "C-c"],
-                        timeout=2,
-                    )
-                    sent_interrupt = True
+            java_up = self.is_java_foreground(instance)
+            if java_up is False:
+                self._run(
+                    ["tmux", "send-keys", "-t", self._pane_target(instance), "C-c"],
+                    timeout=2,
+                )
+                sent_interrupt = True
 
         if saw_unknown and self.probe_running(instance) is None:
             return False, (
