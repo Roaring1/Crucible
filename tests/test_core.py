@@ -536,6 +536,96 @@ class TmuxCommandTests(unittest.TestCase):
         self.assertEqual(result[other.id], "running")
 
 
+class ForceKillTests(unittest.TestCase):
+    """tmux kill-session tears down the pty but does not reliably kill a
+    JVM attached to it (it can trap SIGHUP mid-shutdown-hook, or simply not
+    exit). A live GTNH server needed manual killing several different ways
+    after 'force-kill' reported success, leaving the process running
+    outside tmux (status: 'unmanaged'). _force_kill must verify the process
+    is actually gone before reporting success, escalating to SIGTERM then
+    SIGKILL rather than trusting kill-session alone.
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.inst = ServerInstance(str(self.root), "GTNH", tmux_session="gtnh")
+        self.tm = TmuxManager()
+
+    def test_succeeds_immediately_with_no_leftover_process(self):
+        import subprocess
+        with (
+            patch.object(self.tm, "_run", return_value=subprocess.CompletedProcess([], 0, "", "")),
+            patch.object(self.tm, "_unmanaged_pids", return_value=[]) as pids,
+            patch("crucible.process.tmux_manager.os.kill") as kill,
+            patch("crucible.process.tmux_manager.time.sleep"),
+        ):
+            ok, message = self.tm._force_kill(self.inst)
+        self.assertTrue(ok)
+        self.assertIn("force-killed", message)
+        pids.assert_called_once()
+        kill.assert_not_called()
+
+    def test_escalates_to_sigterm_when_process_survives_kill_session(self):
+        import subprocess
+        with (
+            patch.object(self.tm, "_run", return_value=subprocess.CompletedProcess([], 0, "", "")),
+            patch.object(self.tm, "_unmanaged_pids", side_effect=[[555], []]),
+            patch("crucible.process.tmux_manager.os.kill") as kill,
+            patch("crucible.process.tmux_manager.time.sleep"),
+        ):
+            ok, message = self.tm._force_kill(self.inst)
+        self.assertTrue(ok)
+        self.assertIn("SIGTERM", message)
+        kill.assert_called_once()
+        import signal
+        self.assertEqual(kill.call_args.args, (555, signal.SIGTERM))
+
+    def test_escalates_to_sigkill_when_sigterm_is_not_enough(self):
+        import subprocess
+        with (
+            patch.object(self.tm, "_run", return_value=subprocess.CompletedProcess([], 0, "", "")),
+            patch.object(self.tm, "_unmanaged_pids", side_effect=[[555], [555], []]),
+            patch("crucible.process.tmux_manager.os.kill") as kill,
+            patch("crucible.process.tmux_manager.time.sleep"),
+        ):
+            ok, message = self.tm._force_kill(self.inst)
+        self.assertTrue(ok)
+        self.assertIn("SIGKILL", message)
+        import signal
+        self.assertEqual(
+            [c.args for c in kill.call_args_list],
+            [(555, signal.SIGTERM), (555, signal.SIGKILL)],
+        )
+
+    def test_reports_failure_when_process_survives_sigkill(self):
+        """SIGKILL cannot be blocked -- if the PID is still reported after
+        it, be honest about that instead of claiming success."""
+        import subprocess
+        with (
+            patch.object(self.tm, "_run", return_value=subprocess.CompletedProcess([], 0, "", "")),
+            patch.object(self.tm, "_unmanaged_pids", side_effect=[[555], [555], [555]]),
+            patch("crucible.process.tmux_manager.os.kill"),
+            patch("crucible.process.tmux_manager.time.sleep"),
+        ):
+            ok, message = self.tm._force_kill(self.inst)
+        self.assertFalse(ok)
+        self.assertIn("555", message)
+        self.assertIn("survived", message)
+
+    def test_kill_session_failure_never_attempts_a_process_kill(self):
+        import subprocess
+        with (
+            patch.object(self.tm, "_run", return_value=subprocess.CompletedProcess([], 1, "", "no such session")),
+            patch.object(self.tm, "_unmanaged_pids") as pids,
+            patch("crucible.process.tmux_manager.os.kill") as kill,
+        ):
+            ok, message = self.tm._force_kill(self.inst)
+        self.assertFalse(ok)
+        self.assertIn("kill-session failed", message)
+        pids.assert_not_called()
+        kill.assert_not_called()
+
+
 class StartTests(unittest.TestCase):
     def test_start_wrapper_has_no_unbounded_tee(self):
         d = Path(tempfile.mkdtemp())

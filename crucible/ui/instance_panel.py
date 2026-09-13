@@ -21,6 +21,8 @@ Only the log event does that.
 
 from __future__ import annotations
 
+import time
+
 from PyQt6.QtCore import QObject, Qt, QThread, QTimer, QMetaObject, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtWidgets import (
@@ -33,7 +35,7 @@ from ..data.instance_model import ServerInstance
 from ..process.tmux_manager import TmuxManager
 from ..process.log_watcher import LogWatcher
 from ..process.watchdog import Watchdog
-from ..process.startup_patterns import RE_SERVER_DONE
+from ..process.startup_patterns import RE_SERVER_DONE, stale_starting_should_promote
 from . import theme
 from .thread_lifecycle import connect_thread_cleanup
 from .tabs import ConsoleTab, ModsTab, NotesTab, InfoTab, ConfigTab, BackupTab, WorldTab, PlayersTab, SetupTab
@@ -96,6 +98,7 @@ class InstancePanel(QWidget):
         self._watcher:  LogWatcher | None     = None
         self._w_thread: QThread | None        = None
         self._current_status: str             = "stopped"
+        self._starting_since: float | None    = None
         self._ip_request_generation: int       = 0
         self._manual_stop_generation: int       = 0
         self._watchdog:       Watchdog | None = None
@@ -238,7 +241,7 @@ class InstancePanel(QWidget):
 
         self._setup   = SetupTab(self._manager)
         self._console = ConsoleTab()
-        self._mods    = ModsTab()
+        self._mods    = ModsTab(self._manager)
         self._notes   = NotesTab(self._manager)
         self._info    = InfoTab()
         self._config  = ConfigTab()
@@ -741,6 +744,10 @@ class InstancePanel(QWidget):
     # Status display
 
     def _update_status_display(self, status: str) -> None:
+        if status == "starting" and self._current_status != "starting":
+            self._starting_since = time.monotonic()
+        elif status != "starting":
+            self._starting_since = None
         self._current_status = status
         color = theme.STATUS_COLORS.get(status, theme.SURFACE2)
         self._dot.setStyleSheet(f"color: {color}; font-size: 18px;")
@@ -796,13 +803,19 @@ class InstancePanel(QWidget):
         self._transition_polling = True
         expecting = self._current_status
 
-        def _done(is_running: bool | None, tail: str) -> None:
+        def _done(is_running: bool | None, packed: str) -> None:
             self._transition_polling = False
             # Bail out if the user switched servers or the state already moved.
             if self._instance is not inst or self._current_status != expecting:
                 return
             if is_running is None:
                 return  # uncertain is not stopped; retry on the next timer tick
+            # `packed` carries a 1-char java-foreground flag ahead of the pane
+            # tail text -- _TmuxWorker's finished signal is a fixed (bool, str)
+            # pair, so a third value piggybacks on the string rather than
+            # changing that shared worker's contract.
+            java_flag, tail = (packed[:1], packed[1:]) if packed else ("?", "")
+            java_up = {"1": True, "0": False}.get(java_flag)
             if not is_running:
                 # Session gone: a stopping server is now stopped; a starting
                 # server that vanished before "Done" crashed/exited.
@@ -820,18 +833,47 @@ class InstancePanel(QWidget):
                 m = _RE_DONE_FALLBACK.search(tail)
                 if m:
                     self._on_log_server_started(float(m.group(1)))
+                    return
+            if expecting == "starting" and self._starting_since is not None:
+                # Last-resort escape hatch: both the log-watcher and the pane
+                # fallback above depend on catching "Done!" at the right
+                # moment. If that's ever missed entirely (e.g. several rapid
+                # restarts rotating the log faster than a read can keep up),
+                # nothing else can ever promote "starting" -> "running" while
+                # this instance stays selected -- the health check is
+                # deliberately barred from doing so. See
+                # stale_starting_should_promote() for the reasoning.
+                elapsed = time.monotonic() - self._starting_since
+                if stale_starting_should_promote(elapsed, java_foreground=java_up):
+                    self._update_status_display("running")
+                    self.status_changed.emit(inst.id, "running")
+                    self._update_tps_polling()
+                    if self._watchdog:
+                        self.watchdog_watch_requested.emit(inst, inst.auto_restart)
+                    self._console._append_system(
+                        "Never saw the \"Done!\" startup line, but java has "
+                        "been running steadily for several minutes -- marking "
+                        "the server online."
+                    )
 
         def _check() -> tuple[bool | None, str]:
             running = self._tmux.probe_running(inst)
             tail = ""
-            # Only pay for a pane capture while genuinely waiting on "Done":
-            # this is the fallback path for when log-file parsing misses it.
+            java_up: bool | None = None
+            # Only pay for a pane capture / foreground check while genuinely
+            # waiting on "Done": this is the fallback path for when log-file
+            # parsing misses it.
             if running and expecting == "starting":
                 try:
                     tail = self._tmux.capture_pane_tail(inst)
                 except Exception:
                     tail = ""
-            return running, tail
+                try:
+                    java_up = self._tmux.is_java_foreground(inst)
+                except Exception:
+                    java_up = None
+            java_flag = "1" if java_up is True else "0" if java_up is False else "?"
+            return running, java_flag + tail
 
         self._run_tmux(_check, _done)
 
@@ -865,12 +907,39 @@ class InstancePanel(QWidget):
         except Exception:
             pass
 
+    def _choose_fml_query_result(self, inst: ServerInstance) -> str | None:
+        """Choose a Forge/FML startup answer entirely in the GUI."""
+        if inst.fml_query_result in {"confirm", "cancel"}:
+            return inst.fml_query_result
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Forge startup question")
+        box.setText("How should Forge handle startup confirmation questions?")
+        box.setInformativeText(
+            "Older Forge servers can pause and ask for confirm or cancel. "
+            "Continue accepts Forge's proposed registry/world changes. "
+            "Cancel rejects them and may stop startup."
+        )
+        yes = box.addButton("Continue startup", QMessageBox.ButtonRole.AcceptRole)
+        no = box.addButton("Cancel Forge changes", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("Don't start", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(yes)
+        box.exec()
+        if box.clickedButton() is yes:
+            return "confirm"
+        if box.clickedButton() is no:
+            return "cancel"
+        return None
+
     def _do_start(self) -> None:
         if not self._instance:
             return
+        inst = self._instance
+        fml_choice = self._choose_fml_query_result(inst)
+        if fml_choice is None:
+            return
         self._btn_start.setEnabled(False)
         self._btn_start.setText("Starting…")
-        inst = self._instance
         self._preflight_properties(inst)
 
         def _on_done(ok: bool, msg: str) -> None:
@@ -886,7 +955,7 @@ class InstancePanel(QWidget):
                 self._btn_start.setEnabled(True)
             self._btn_start.setText("▶  Start")
 
-        self._run_tmux(lambda: self._tmux.start(inst), _on_done)
+        self._run_tmux(lambda: self._tmux.start(inst, fml_query_result=fml_choice), _on_done)
 
     def _restore_after_failed_stop(self, inst: ServerInstance) -> None:
         """A failed/cancelled stop means the live server must be monitored again."""

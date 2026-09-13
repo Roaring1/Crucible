@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -511,12 +512,59 @@ class TmuxManager:
         )
 
     def _force_kill(self, instance: ServerInstance) -> tuple[bool, str]:
-        """Kill the tmux session immediately."""
+        """Kill the tmux session immediately, then make sure the server
+        process actually died.
+
+        ``tmux kill-session`` tears down the pane's pty, which sends SIGHUP
+        to whatever was attached to it -- but a JVM does not reliably die
+        from that. It can be mid-shutdown-hook, or simply not exit the way a
+        plain shell would from a hung-up terminal. A "force-kill" that only
+        destroys the terminal and leaves the actual java process running is
+        worse than doing nothing: it reports success while the instance then
+        shows up as "unmanaged" and still holds the world files and port.
+        Once the session itself is gone, escalate directly to the process --
+        SIGTERM, then SIGKILL if it's still alive a moment later -- since
+        this is already the explicit, no-save, "kill it" path.
+        """
         session = self.session_name(instance)
-        result  = self._run(["tmux", "kill-session", "-t", "=" + session])
-        if result.returncode == 0:
+        result = self._run(["tmux", "kill-session", "-t", "=" + session])
+        if result.returncode != 0:
+            return False, f"kill-session failed: {result.stderr.strip()}"
+
+        pids = self._unmanaged_pids(instance)
+        if not pids:
             return True, f"Session '{session}' force-killed"
-        return False, f"kill-session failed: {result.stderr.strip()}"
+
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        time.sleep(1.0)
+        pids = self._unmanaged_pids(instance)
+        if not pids:
+            return True, (
+                f"Session '{session}' force-killed (java needed SIGTERM after "
+                "the session closed)"
+            )
+
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        time.sleep(0.5)
+        pids = self._unmanaged_pids(instance)
+        if pids:
+            return False, (
+                f"Session '{session}' was torn down, but the server process "
+                f"(PID(s): {', '.join(map(str, pids))}) survived SIGTERM and "
+                "SIGKILL and is still running outside any tmux session"
+            )
+        return True, (
+            f"Session '{session}' force-killed (java needed SIGKILL after "
+            "the session closed)"
+        )
 
     # Console interaction
 
