@@ -60,7 +60,8 @@ See `CHANGELOG.md` and GitHub Release notes for full history.
 
 - Inspect the latest GitHub Actions test run, including redacted failure excerpts: `python scripts/ci_report.py`.
 - Inspect a notification's exact run: `python scripts/ci_report.py --run-id RUN_ID`.
-- Prepare a folder of local screenshots for review without copying base64 into chat: `python scripts/prepare_ui_evidence.py ~/Pictures/CrucibleAudit/inbox`.
+- Capture the main UI and setup screens offscreen: `python scripts/capture_ui_previews.py`.
+- Prepare a folder of screenshots for review without copying base64 into chat: `python scripts/prepare_ui_evidence.py ~/.cache/crucible/ui-previews`.
 
 See [CI and UI evidence](docs/development/ci-and-ui-evidence.md) for details. Screenshot folders synchronized locally by Dropbox can be passed directly to the tool.
 
