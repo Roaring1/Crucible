@@ -13,7 +13,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
-    QCheckBox, QFileDialog, QMessageBox, QApplication,
+    QCheckBox, QFileDialog, QMessageBox, QApplication, QLineEdit,
 )
 
 from ..exporters import client_export
@@ -30,14 +30,14 @@ _FORMATS = [
 class _ExportWorker(QObject):
     done = pyqtSignal(object)
 
-    def __init__(self, instance, out_path, fmt, include_config):
+    def __init__(self, instance, out_path, fmt, include_config, client_source=""):
         super().__init__()
-        self._a = (instance, out_path, fmt, include_config)
+        self._a = (instance, out_path, fmt, include_config, client_source)
 
     def run(self):
-        inst, out, fmt, cfg = self._a
+        inst, out, fmt, cfg, source = self._a
         try:
-            result = client_export.export(inst, out, fmt=fmt, include_config=cfg)
+            result = client_export.export(inst, out, fmt=fmt, include_config=cfg, client_source=source)
         except Exception as exc:
             result = client_export.ExportResult(error=f"Unexpected export error: {exc}")
         self.done.emit(result)
@@ -51,19 +51,19 @@ class ClientExportDialog(QDialog):
         self._worker = None
         self._busy = False
         self.setWindowTitle("Create client instance")
-        self.resize(470, 250)
+        self.resize(620, 390)
         self._build_ui()
 
     def _build_ui(self):
         lay = QVBoxLayout(self)
-        head = QLabel(f"Make a playable client from \u201c{self._instance.name}\u201d")
+        head = QLabel(f"Create a client pack from “{self._instance.name}”")
         head.setStyleSheet(f"font-weight:700; color:{theme.TEXT};")
         head.setWordWrap(True)
         lay.addWidget(head)
 
         info = QLabel(
             "Bundles this server's mods and shared config into a client pack. "
-            "The actual mod files are included, so nothing needs re-downloading.")
+            "Mod JARs are included; the launcher still downloads Minecraft and its loader.")
         info.setWordWrap(True)
         info.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:11px;")
         lay.addWidget(info)
@@ -79,6 +79,20 @@ class ClientExportDialog(QDialog):
         self._cfg = QCheckBox("Include config/ and kubejs/ (recommended)")
         self._cfg.setChecked(True)
         lay.addWidget(self._cfg)
+        source_row = QHBoxLayout()
+        self._source = QLineEdit()
+        self._source.setPlaceholderText("Optional: matching Prism instance for client-only mods")
+        suggested = getattr(self._instance, "prism_source", "") or ""
+        if Path(suggested).is_dir() and (Path(suggested)/"mmc-pack.json").is_file():
+            self._source.setText(suggested)
+        source_row.addWidget(self._source, 1)
+        pick = QPushButton("Browse…")
+        pick.clicked.connect(self._pick_source)
+        source_row.addWidget(pick)
+        lay.addLayout(source_row)
+        caution = QLabel("Client-only extras are added only from a matching Prism instance. Unknown compatibility is reported, never guessed. Test in Prism before sharing; respect mod licenses.")
+        caution.setWordWrap(True)
+        lay.addWidget(caution)
 
         self._status = QLabel("")
         self._status.setWordWrap(True)
@@ -87,7 +101,7 @@ class ClientExportDialog(QDialog):
 
         btns = QHBoxLayout()
         btns.addStretch()
-        self._export_btn = QPushButton("Export\u2026")
+        self._export_btn = QPushButton("Export…")
         self._export_btn.setObjectName("PrimaryButton")
         self._export_btn.clicked.connect(self._do_export)
         btns.addWidget(self._export_btn)
@@ -95,6 +109,11 @@ class ClientExportDialog(QDialog):
         self._close_btn.clicked.connect(self.reject)
         btns.addWidget(self._close_btn)
         lay.addLayout(btns)
+
+    def _pick_source(self):
+        path = QFileDialog.getExistingDirectory(self, "Choose matching Prism instance")
+        if path:
+            self._source.setText(path)
 
     def _do_export(self):
         idx = self._fmt.currentIndex()
@@ -107,11 +126,11 @@ class ClientExportDialog(QDialog):
         self._busy = True
         self._export_btn.setEnabled(False)
         self._close_btn.setEnabled(False)
-        self._status.setText("Building\u2026")
+        self._status.setText("Building…")
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         self._thread = QThread()
         self._worker = _ExportWorker(self._instance, out, fmt,
-                                     self._cfg.isChecked())
+                                     self._cfg.isChecked(), self._source.text().strip())
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.done.connect(self._on_done)
@@ -123,12 +142,12 @@ class ClientExportDialog(QDialog):
     def _on_done(self, res):
         QApplication.restoreOverrideCursor()
         if res.ok:
-            self._status.setText("\u2713 " + res.summary())
+            self._status.setText("✓ " + res.summary())
             QMessageBox.information(self, "Client instance",
                                     "Done!\n\n" + res.summary() +
-                                    f"\n\nSaved to:\n{res.path}")
+                                    f"\n\nSaved to:\n{res.path}\n\n" + "\n".join(res.warnings))
         else:
-            self._status.setText("\u26a0 " + res.summary())
+            self._status.setText("⚠ " + res.summary())
             QMessageBox.warning(self, "Client instance", res.summary())
     def _thread_finished(self):
         self._thread = None

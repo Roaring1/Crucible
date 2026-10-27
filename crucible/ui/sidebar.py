@@ -182,6 +182,7 @@ class Sidebar(QWidget):
     restart_requested = pyqtSignal(object)  # ServerInstance
     remove_requested  = pyqtSignal(object)  # ServerInstance
     fix_loading_requested = pyqtSignal(object)  # ServerInstance
+    rename_requested = pyqtSignal(object)
     export_requested  = pyqtSignal(object)  # ServerInstance
     # Drag & drop
     order_changed     = pyqtSignal(list)    # list[str] of instance ids (new order)
@@ -212,6 +213,9 @@ class Sidebar(QWidget):
         self._list.currentItemChanged.connect(self._on_selection_changed)
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._on_context_menu)
+        from PyQt6.QtGui import QShortcut, QKeySequence
+        self._rename_shortcut = QShortcut(QKeySequence("F2"), self)
+        self._rename_shortcut.activated.connect(lambda: self.rename_requested.emit(self.selected_instance()) if self.selected_instance() else None)
         # Forward drag & drop signals upward.
         self._list.order_changed.connect(self.order_changed)
         self._list.paths_dropped.connect(self.paths_dropped)
@@ -226,6 +230,11 @@ class Sidebar(QWidget):
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_btn.clicked.connect(self.add_requested)
         layout.addWidget(add_btn)
+
+        rename_btn = QPushButton("Rename selected…  F2")
+        rename_btn.setToolTip("Change the display name without moving files or changing the running session")
+        rename_btn.clicked.connect(lambda: self.rename_requested.emit(self.selected_instance()) if self.selected_instance() else None)
+        layout.addWidget(rename_btn)
 
         # Small version footer
         footer = QLabel(f"Crucible v{__version__}")
@@ -320,6 +329,7 @@ class Sidebar(QWidget):
         title_act.setEnabled(False)
         menu.addSeparator()
 
+        rename_act = menu.addAction("Rename server…")
         start_act   = menu.addAction("▶  Start")
         stop_act    = menu.addAction("■  Stop")
         restart_act = menu.addAction("↺  Restart")
@@ -340,7 +350,9 @@ class Sidebar(QWidget):
         restart_act.setEnabled(running or stopped)
 
         chosen = menu.exec(self._list.mapToGlobal(pos))
-        if chosen == start_act:
+        if chosen == rename_act:
+            self.rename_requested.emit(inst)
+        elif chosen == start_act:
             self.start_requested.emit(inst)
         elif chosen == stop_act:
             self.stop_requested.emit(inst)

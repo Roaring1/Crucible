@@ -12,7 +12,7 @@ A focused Linux desktop app for creating, importing, running, and protecting Min
 | Mods/players | Mod inspection and controls; whitelist, ban, op, and player lists |
 | World safety | Verified backups, named slots, safe swap/rollback, reset, and wipe confirmation |
 
-Crucible intentionally remains a **local server manager**—not a cloud control plane, router configurator, or Prism Launcher replacement.
+Crucible provides **Prism-style local server management and client-pack exchange**—not a cloud control plane or router configurator.
 
 ## Install
 
@@ -55,3 +55,21 @@ Data locations:
 - Backups: `~/.local/share/crucible-backups/`
 
 See `CHANGELOG.md` and GitHub Release notes for full history.
+
+## Everyday controls (v0.8)
+
+- **Rename:** select a server and press F2, or use Rename selected below the server list. Display names do not move files or change tmux sessions.
+- **Import:** drop a server folder or ZIP/mrpack anywhere in the main window. Your chosen folder name becomes the imported server name.
+- **Console:** type to see suggestions above the input; use arrows to select, Tab/Shift+Tab to cycle, Escape to dismiss. Arrow keys use command history when suggestions are hidden. Suggestions are a local vocabulary, not a server-provided command tree.
+- **Mods:** select a mod and choose Change version to upgrade or downgrade. Identify online matches exact Modrinth file hashes; custom builds with no match remain unlinked. Set the installed Minecraft/loader versions with Server version.
+- **CurseForge:** choose CurseForge in Add a mod. Supply a session-only API key in the app or CURSEFORGE_API_KEY before launch. A private ~/.config/crucible/curseforge-api-key file (mode 600) is loaded automatically for both browsing and pack imports. Restricted files must be downloaded from the author’s page; no CDN URL is guessed.
+- **Compatibility:** Runs on badges reflect declared loader metadata. Unknown means unverified. Never assume a dependency-side declaration describes the whole mod.
+- **Players:** drag the horizontal divider to resize Online now; right-click/double-click players for actions.
+- **Resources:** CPU is the server’s fraction of all logical CPUs, from 0–100%. Hover to see the one-core value. Memory is resident RAM, not configured Java heap.
+- **Clients:** Make client exports Prism, mrpack or CurseForge-style archives. An optional matching installed Prism instance contributes declared client-only extras. Test the export in the target launcher before sharing and respect mod licenses.
+
+### Mod-change safety
+
+Stop the server before changing mods. Downloads and required dependencies are staged and SHA-1 verified before publication. Previous JARs and an identity-record snapshot are retained in `<server>/.crucible/mod-history/<operation>/`, alongside a receipt. Normal publication failures roll back; sudden power loss may require recovery from that receipt. Back up worlds separately before changing content mods: replacing a JAR does not migrate a world.
+
+No software can guarantee every third-party mod combination or future upstream release. See RELEASE_NOTES_v0.8.0.md for the tested scope and limits.

@@ -140,6 +140,8 @@ class InfoTab(QWidget):
         if getattr(instance, "prism_source", ""):
             add_row(16, "PRISM SOURCE", getattr(instance, "prism_source", ""), theme.SURFACE2)
 
+        self._layout.addWidget(self._system)
+        self._system.load(instance)
         self._layout.addLayout(grid)
 
         # Validation warnings
@@ -160,13 +162,5 @@ class InfoTab(QWidget):
                 w.setStyleSheet(f"color: {theme.YELLOW}; font-size: 12px;")
                 w.setWordWrap(True)
                 self._layout.addWidget(w)
-
-        # Performance section (merged System tab) -- always shown last.
-        perf_sep = QFrame()
-        perf_sep.setFrameShape(QFrame.Shape.HLine)
-        perf_sep.setStyleSheet(f"color: {theme.SURFACE1};")
-        self._layout.addWidget(perf_sep)
-        self._layout.addWidget(self._system)
-        self._system.load(instance)
 
         self._layout.addStretch()

@@ -83,6 +83,8 @@ class ModHit:
         return ""
 
     def page_url(self) -> str:
+        if self.project_id.startswith("cf:"):
+            return "https://www.curseforge.com/minecraft/mc-mods/" + (self.slug or self.project_id[3:])
         return "https://modrinth.com/mod/" + (self.slug or self.project_id)
 
     def human_downloads(self) -> str:
@@ -246,7 +248,25 @@ def _pick_primary(files: list):
 
 
 def resolve_file(project_id: str, *, loader: str, mc_version: str) -> ModFile:
-    """Find the newest matching version file for a project."""
+    """Find the newest matching version file for a project.
+
+    Refuses to guess. Modrinth's version endpoint treats a missing facet as
+    "any", so asking with an unknown loader or Minecraft version returns the
+    newest build for ANY platform -- which is how a NeoForge 1.21 jar can end
+    up installed on a Forge 1.7.10 server. Better to stop and make the caller
+    fill in the instance metadata.
+    """
+    if not mc_version or not loader:
+        missing = " and ".join(
+            part for part, ok in (("Minecraft version", mc_version), ("mod loader", loader))
+            if not ok
+        )
+        raise ModrinthError(
+            f"This server's {missing} is unknown, so Modrinth cannot be asked for "
+            "a compatible build -- it would return the newest file for any "
+            "platform. Fill it in on the instance first (Setup tab, or "
+            "'crucible edit --minecraft-version ... --loader ...')."
+        )
     params = {}
     if loader and loader != "vanilla":
         params["loaders"] = json.dumps([loader])
@@ -287,8 +307,8 @@ def resolve_with_deps(project_id: str, *, loader: str, mc_version: str,
         try:
             out.extend(resolve_with_deps(dep, loader=loader,
                                          mc_version=mc_version, _seen=seen))
-        except ModrinthError:
-            continue
+        except ModrinthError as exc:
+            raise ModrinthError(f"Required dependency {dep} could not be resolved: {exc}") from exc
     return out
 
 
@@ -357,12 +377,23 @@ def install_files(server_path, files: list, *, verify: bool = True) -> InstallRe
     record_path = server / ".crucible" / "added-mods.json"
     record = _load_record(record_path)
     for mf in files:
+        if (not mf.filename or Path(mf.filename).name != mf.filename
+                or "\\" in mf.filename or not mf.filename.lower().endswith(".jar")):
+            res.failed.append(f"{mf.filename} (unsafe mod filename)")
+            continue
         dest = mods / mf.filename
+        if dest.is_symlink():
+            res.failed.append(mf.filename + " (symlinked destination)")
+            continue
         if dest.exists():
+            if not mf.sha1 or _sha1(dest).lower() != mf.sha1.lower():
+                res.failed.append(mf.filename + " (different file already exists; use Change version to replace safely)")
+                continue
             res.skipped.append(mf.filename)
+            record[mf.filename] = {"project_id": mf.project_id, "title": mf.title, "version": mf.version_number, "version_id": mf.version_id, "sha1": mf.sha1, "size": mf.size}
             continue
         if not mf.url:
-            res.failed.append(mf.filename)
+            res.failed.append(mf.filename + " (direct download unavailable or author-restricted; download from the project page and use Add .jar)")
             continue
         try:
             _download(mf.url, dest)
@@ -384,7 +415,8 @@ def install_files(server_path, files: list, *, verify: bool = True) -> InstallRe
 
 def _load_record(path: Path) -> dict:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, dict)} if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
 
@@ -427,25 +459,8 @@ def check_update(server_path, filename: str, *, loader: str,
 def apply_update(server_path, old_filename: str, new_file, *,
                  verify: bool = True):
     """Install new_file, then remove the old jar it replaces (and its record)."""
-    server = Path(server_path)
-    mods = server / "mods"
-    res = install_files(server_path, [new_file], verify=verify)
-    record_path = server / ".crucible" / "added-mods.json"
-    if new_file.filename != old_filename:
-        base = old_filename[:-9] if old_filename.endswith(".disabled") else old_filename
-        for cand in {old_filename, base, base + ".disabled"}:
-            if cand == new_file.filename:
-                continue
-            p = mods / cand
-            try:
-                if p.exists():
-                    p.unlink()
-            except OSError:
-                pass
-            rec = _load_record(record_path)
-            if rec.pop(cand, None) is not None:
-                _save_record(record_path, rec)
-    return res
+    from .versions import replace_files
+    return replace_files(server_path, old_filename, [new_file])
 
 
 def verify_dependencies(server_path, *, loader: str, mc_version: str):
@@ -460,19 +475,28 @@ def verify_dependencies(server_path, *, loader: str, mc_version: str):
     present = set()
     if mods.exists():
         for p in mods.iterdir():
-            if p.is_file():
+            if p.is_file() and not p.name.endswith(".disabled"):
                 present.add(p.name)
-                if p.name.endswith(".disabled"):
-                    present.add(p.name[:-9])
     rec = added_mods(server_path)
     missing = {}
     notes = []
     for fname, meta in rec.items():
+        if fname.endswith(".disabled") or fname not in present:
+            continue
         pid = meta.get("project_id")
         if not pid:
             continue
         try:
-            files = resolve_with_deps(pid, loader=loader, mc_version=mc_version)
+            from .versions import list_versions, resolve_selected, _mod_file
+            if pid.startswith("cf:"):
+                options = list_versions(pid, loader=loader, mc_version=mc_version)
+                main = next((v for v in options if v.version_id == meta.get("version_id")), None)
+                if main is None: raise ModrinthError("Installed CurseForge version was not found; refusing to verify a different release.")
+            elif meta.get("version_id"):
+                main = _mod_file(_get(f"{_API}/version/{urllib.parse.quote(meta['version_id'], safe='')}"))
+            else:
+                raise ModrinthError("Installed version is unknown; use Identify online first.")
+            files = resolve_selected(main, loader=loader, mc_version=mc_version)
         except ModrinthError as e:
             notes.append(f"{fname}: {e}")
             continue

@@ -20,6 +20,79 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertIn("$APP_HOME/bin/crucible", text)
 
 
+    def test_installer_prefers_an_interpreter_that_already_has_pyqt6(self):
+        text = (ROOT / "install.sh").read_text()
+        after = text.split('step "1 / 6', 1)[1]
+        block = after.split("\n", 1)[1].split('\nok "Using ', 1)[0]
+        prelude = (
+            "set -Eeuo pipefail\n"
+            "ok() { :; }\nwarn() { :; }\nerr() { :; }\n"
+            "info() { :; }\nstep() { :; }\n"
+        )
+        script = prelude + block + '\necho "$PYTHON"\n'
+
+        def stub(path, has_pyqt):
+            path.write_text(
+                "#!/bin/bash\n"
+                'for arg in "$@"; do\n'
+                '  case "$arg" in\n'
+                "    *PyQt6*) exit " + ("0" if has_pyqt else "1") + " ;;\n"
+                "  esac\n"
+                "done\n"
+                "exit 0\n"
+            )
+            path.chmod(0o755)
+
+        none_have_it = {
+            "python3.13": False, "python3.12": False,
+            "python3.11": False, "python3": False,
+        }
+        cases = (
+            (
+                "prefers the interpreter that can import PyQt6",
+                {**none_have_it, "python3": True},
+                None,
+                "python3",
+            ),
+            (
+                "keeps the documented order when none of them can",
+                dict(none_have_it),
+                None,
+                "python3.13",
+            ),
+            (
+                "honours an explicit CRUCIBLE_PYTHON override",
+                {**none_have_it, "python3.9": True},
+                "python3.9",
+                "python3.9",
+            ),
+            (
+                "ignores an override that is not installed",
+                {**none_have_it, "python3.13": True},
+                "python3.99",
+                "python3.13",
+            ),
+        )
+        for label, interpreters, override, expected in cases:
+            with self.subTest(label):
+                with tempfile.TemporaryDirectory() as raw:
+                    stub_bin = Path(raw) / "bin"
+                    stub_bin.mkdir()
+                    for name, has_pyqt in interpreters.items():
+                        stub(stub_bin / name, has_pyqt)
+                    env = {
+                        "PATH": str(stub_bin) + ":" + os.environ.get("PATH", ""),
+                        "HOME": raw,
+                    }
+                    if override:
+                        env["CRUCIBLE_PYTHON"] = override
+                    result = subprocess.run(
+                        ["bash", "-c", script], text=True, capture_output=True,
+                        check=True, cwd=raw, env=env,
+                    )
+                    self.assertEqual(result.stdout.strip(), expected)
+
+
     def test_installed_launcher_resolves_symlink_before_locating_venv(self):
         text = (ROOT / "install.sh").read_text()
         marker = 'cat > "$STAGE/app/bin/crucible" <<\'EOF\'\n'

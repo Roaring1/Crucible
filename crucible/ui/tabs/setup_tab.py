@@ -86,6 +86,7 @@ class SetupTab(QWidget):
         self._xms_unit: QComboBox | None = None
         self._xmx_unit: QComboBox | None = None
         self._mem_status: QLabel | None = None
+        self._fml_combo: QComboBox | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -238,8 +239,13 @@ class SetupTab(QWidget):
         # Server performance (memory) section
         self._add_memory_section(inst)
 
+        self._add_fml_query_section(inst)
+
         # Download-from-pack section (only when an index exists)
         self._maybe_add_download_section()
+
+        # Modpack version: check, update from anywhere, roll back
+        self._maybe_add_update_section()
 
         self._layout.addStretch()
 
@@ -504,7 +510,149 @@ class SetupTab(QWidget):
         dl_btn.clicked.connect(self._download_mods)
         self._layout.addWidget(dl_btn, alignment=Qt.AlignmentFlag.AlignLeft)
 
+    def _add_fml_query_section(self, inst: ServerInstance) -> None:
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        self._layout.addWidget(sep)
+        head = QLabel("🧩  Legacy Forge startup questions")
+        head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
+        self._layout.addWidget(head)
+        info = QLabel("Older Forge/FML servers can pause before the world opens and ask for confirm or cancel. Crucible passes your choice to Java on the next GUI start. Continue can accept registry/world changes, so choose Ask every time if unsure.")
+        info.setWordWrap(True); info.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
+        self._layout.addWidget(info)
+        row = QHBoxLayout(); row.addWidget(QLabel("When Forge asks:"))
+        self._fml_combo = QComboBox()
+        for label, value in (("Ask me when I press Start", "ask"), ("Continue automatically (confirm)", "confirm"), ("Cancel the Forge changes", "cancel")):
+            self._fml_combo.addItem(label, value)
+        self._fml_combo.setCurrentIndex(max(0, self._fml_combo.findData(inst.fml_query_result)))
+        self._fml_combo.currentIndexChanged.connect(self._save_fml_query_result)
+        row.addWidget(self._fml_combo); row.addStretch(); self._layout.addLayout(row)
+
+    def _save_fml_query_result(self) -> None:
+        if self._instance is None or self._fml_combo is None:
+            return
+        value = self._fml_combo.currentData()
+        if value not in {"ask", "confirm", "cancel"}:
+            return
+        self._instance.fml_query_result = value
+        if self._manager is not None:
+            try:
+                self._manager.update_instance(self._instance)
+            except Exception as exc:
+                QMessageBox.warning(self, "Forge startup setting", f"Could not save this setting:\n{exc}")
+
+    def _maybe_add_update_section(self) -> None:
+        """Modpack updates: check, install from anywhere, and roll back.
+
+        Offered even when Crucible cannot name the installed pack — the user
+        can still paste a link or point at a downloaded zip, and the dialog
+        says what it found before anything is touched.
+        """
+        inst = self._instance
+        if inst is None:
+            return
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {theme.SURFACE1};")
+        self._layout.addWidget(sep)
+
+        head = QLabel("⬆  Modpack version")
+        head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
+        self._layout.addWidget(head)
+
+        try:
+            from ...importers.pack_update import identify_pack
+            installed = identify_pack(inst).label()
+        except Exception:
+            installed = ""
+
+        info = QLabel(
+            (f"Installed: {installed}.  " if installed else "")
+            + "Crucible can update this modpack from its own release list, or "
+              "from any link or downloaded file you give it. You see the full "
+              "plan first, your world and added mods come along, and the old "
+              "install is kept so you can go back."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
+        self._layout.addWidget(info)
+
+        try:
+            from ...importers.pack_update import list_previous_installs
+            kept = list(list_previous_installs(inst))
+        except Exception:
+            kept = []
+
+        row = QHBoxLayout()
+        check_btn = QPushButton("Check for updates…")
+        check_btn.setToolTip("Look for a newer version of this modpack (needs internet)")
+        check_btn.clicked.connect(self._check_pack_updates)
+        row.addWidget(check_btn)
+
+        src_btn = QPushButton("Update from a link or file…")
+        src_btn.setToolTip(
+            "Install a server pack you downloaded, or paste any pack link or "
+            "version number"
+        )
+        src_btn.clicked.connect(self._update_pack_from_source)
+        row.addWidget(src_btn)
+
+        rb_btn = QPushButton("Roll back…")
+        rb_btn.setEnabled(bool(kept))
+        rb_btn.setToolTip(
+            f"Put an earlier install back ({len(kept)} kept)" if kept
+            else "Nothing to roll back to yet — Crucible keeps the old install "
+                 "the first time you update"
+        )
+        rb_btn.clicked.connect(self._open_rollback)
+        row.addWidget(rb_btn)
+
+        row.addStretch()
+        self._layout.addLayout(row)
+
     # Actions
+
+    def _open_pack_updater(self, *, check_now: bool) -> None:
+        """Shared opener for both update buttons."""
+        inst = self._instance
+        if inst is None:
+            return
+        try:
+            from ..pack_update_dialog import PackUpdateDialog
+            dlg = PackUpdateDialog(inst, manager=self._manager, parent=self)
+            if check_now:
+                dlg.start_check()
+            else:
+                dlg.focus_source()
+            dlg.exec()
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Modpack update",
+                f"Could not open the modpack updater:\n{exc}"
+            )
+        # Version, mod counts and readiness may all have changed.
+        self._rebuild()
+
+    def _check_pack_updates(self) -> None:
+        self._open_pack_updater(check_now=True)
+
+    def _update_pack_from_source(self) -> None:
+        self._open_pack_updater(check_now=False)
+
+    def _open_rollback(self) -> None:
+        inst = self._instance
+        if inst is None:
+            return
+        try:
+            from ..pack_update_dialog import RollbackDialog
+            dlg = RollbackDialog(inst, manager=self._manager, parent=self)
+            dlg.exec()
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Roll back",
+                f"Could not open the rollback window:\n{exc}"
+            )
+        self._rebuild()
 
     def _open_folder(self) -> None:
         if self._instance is None:

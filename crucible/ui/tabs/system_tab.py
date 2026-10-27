@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QTimer
 
-from ...process.resource_monitor import ResourceSampler, system_memory_mb
+from ...process.resource_monitor import ResourceSampler, system_memory_mb, machine_cpu_percent
 from .. import theme
 
 _POLL_MS = 2000
@@ -43,10 +43,7 @@ class SystemTab(QWidget):
         head.setStyleSheet(f"font-size:15px; font-weight:700; color:{theme.TEXT};")
         lay.addWidget(head)
 
-        sub = QLabel(
-            "Live CPU and memory for this server and the Crucible app. In "
-            "Activity Monitor / Mission Control / htop, the server JVM is "
-            "labeled with \u201ccrucible.session=<name>\u201d.")
+        sub = QLabel("CPU is this process’s share of the whole computer (0–100%), not total system load. Hover for the one-core value. Memory is resident RAM, not Java’s heap limit.")
         sub.setWordWrap(True)
         sub.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:11px;")
         lay.addWidget(sub)
@@ -77,20 +74,20 @@ class SystemTab(QWidget):
         t = QLabel(title)
         t.setStyleSheet(f"color:{theme.TEXT}; font-weight:600; font-size:13px;")
         grid.addWidget(t, 0, 0, 1, 2)
-        cpu_l = QLabel("CPU")
+        cpu_l = QLabel("CPU · whole computer")
         cpu_l.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:11px;")
         mem_l = QLabel("Memory")
         mem_l.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:11px;")
-        cpu_v = QLabel("\u2014")
+        cpu_v = QLabel("—")
         cpu_v.setStyleSheet(f"color:{theme.ACCENT}; font-size:18px; font-weight:700;")
-        mem_v = QLabel("\u2014")
+        mem_v = QLabel("—")
         mem_v.setStyleSheet(f"color:{theme.ACCENT}; font-size:18px; font-weight:700;")
         grid.addWidget(cpu_l, 1, 0)
         grid.addWidget(mem_l, 1, 1)
         grid.addWidget(cpu_v, 2, 0)
         grid.addWidget(mem_v, 2, 1)
         cpu_bar = QProgressBar()
-        cpu_bar.setRange(0, max(100, (os.cpu_count() or 1) * 100))
+        cpu_bar.setRange(0, 100)
         cpu_bar.setTextVisible(False)
         cpu_bar.setAccessibleName(f"{title} CPU usage")
         mem_bar = QProgressBar()
@@ -128,15 +125,16 @@ class SystemTab(QWidget):
         if server_pids:
             s_cpu = sum(stats[p].cpu_pct for p in server_pids if p in stats)
             s_mem = sum(stats[p].rss_mb for p in server_pids if p in stats)
-            self._server_card["cpu"].setText(f"{s_cpu:.0f}%")
+            self._server_card["cpu"].setText(f"{machine_cpu_percent(s_cpu):.1f}%")
             self._server_card["mem"].setText(self._fmt_mb(s_mem))
             self._server_card["pid"].setText(
                 "PID " + ", ".join(str(p) for p in server_pids))
-            self._server_card["cpu_bar"].setValue(int(s_cpu))
+            self._server_card["cpu_bar"].setValue(round(machine_cpu_percent(s_cpu)))
+            self._server_card["cpu"].setToolTip(f"{s_cpu:.1f}% of one core across {os.cpu_count() or 1} logical CPUs. The main number is this server’s share of the entire computer, not total system CPU.")
             self._server_card["mem_bar"].setMaximum(max(1, int(total)))
             self._server_card["mem_bar"].setValue(int(s_mem))
         else:
-            self._server_card["cpu"].setText("\u2014")
+            self._server_card["cpu"].setText("—")
             self._server_card["mem"].setText("offline")
             self._server_card["pid"].setText("Server not running")
             self._server_card["cpu_bar"].setValue(0)
@@ -144,10 +142,11 @@ class SystemTab(QWidget):
 
         g = stats.get(gui_pid)
         if g:
-            self._gui_card["cpu"].setText(f"{g.cpu_pct:.0f}%")
+            self._gui_card["cpu"].setText(f"{machine_cpu_percent(g.cpu_pct):.1f}%")
+            self._gui_card["cpu"].setToolTip(f"{g.cpu_pct:.1f}% of one core across {os.cpu_count() or 1} logical CPUs")
             self._gui_card["mem"].setText(self._fmt_mb(g.rss_mb))
             self._gui_card["pid"].setText(f"PID {gui_pid}")
-            self._gui_card["cpu_bar"].setValue(int(g.cpu_pct))
+            self._gui_card["cpu_bar"].setValue(round(machine_cpu_percent(g.cpu_pct)))
             self._gui_card["mem_bar"].setMaximum(max(1, int(total)))
             self._gui_card["mem_bar"].setValue(int(g.rss_mb))
 

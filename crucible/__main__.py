@@ -900,7 +900,386 @@ def cmd_gui(manager: InstanceManager) -> None:
     win = MainWindow(manager)
     win.show()
 
-    _sys.exit(app.exec())
+    result = app.exec()
+    # Release window-owned Qt objects before Python/SIP interpreter teardown.
+    # closeEvent has already stopped and joined the window's native workers.
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    win.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
+    del win
+    _sys.exit(result)
+
+
+# Modpack updating
+
+def _confirm(prompt: str, *, assume_yes: bool = False) -> bool:
+    """Ask a yes/no question. Anything but an explicit yes is a no."""
+    if assume_yes:
+        return True
+    try:
+        answer = input(f"  {prompt} [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer in ("y", "yes")
+
+
+def _print_probe(probe) -> None:
+    print(f"  {BOLD}Archive:{RESET} {probe.label()}")
+    if probe.root_prefix:
+        dim(f"      everything is nested under {probe.root_prefix}/")
+    for note in probe.notes:
+        dim(f"      {note}")
+    for problem in probe.problems:
+        err(f"      {problem}")
+
+
+def cmd_probe_pack(args) -> None:
+    """Say what an archive actually is, without installing anything."""
+    from crucible.importers import pack_update
+
+    print()
+    probe = pack_update.probe_archive(args.path)
+    _print_probe(probe)
+    print()
+    if not probe.ok:
+        sys.exit(1)
+    ok("  This looks like a usable server pack.")
+
+
+def cmd_check_updates(manager: InstanceManager, args) -> None:
+    from crucible.importers import pack_update
+
+    instances = [resolve_instance(manager, args.name)] if args.name else manager.instances
+    if not instances:
+        warn("No instances registered yet.")
+        return
+    print()
+    for inst in instances:
+        ident, newest, releases, note = pack_update.check_for_update(
+            inst, include_prerelease=args.include_prerelease)
+        print(f"  {BOLD}{inst.name}{RESET}  {DIM}({inst.short_id()}){RESET}")
+        dim(f"      installed: {ident.label()}  [detected via {ident.confidence}]")
+        if not ident.known:
+            for line in ident.evidence:
+                dim(f"      {line}")
+            warn(f"      {note}")
+            dim("      → you can still update from a link: crucible update "
+                f"{inst.name!r} --from <url-or-file>")
+        elif newest is None:
+            ok(f"      {note}")
+        else:
+            warn(f"      {note}")
+            if newest.changelog_url:
+                dim(f"      changelog: {newest.changelog_url}")
+            dim(f"      → crucible update {inst.name!r} --to {newest.version}")
+        kept = pack_update.list_previous_installs(inst)
+        if kept:
+            dim(f"      {len(kept)} kept pre-update install(s); newest {kept[0].label()}")
+        if args.list_versions and releases:
+            print(f"      {DIM}available:{RESET}")
+            for rel in releases[:20]:
+                mark = "*" if rel.server_url(ident.variant) else " "
+                dim(f"       {mark} {rel.label()}")
+    print()
+
+
+def _resolve_target(inst, ident, args):
+    """Work out what to install. Returns (target_release, local_archive_path)."""
+    from crucible.importers import pack_update
+
+    if not args.source:
+        releases = pack_update.fetch_releases()
+        if args.to:
+            target = pack_update.find_release(releases, args.to)
+            if target is None:
+                err(f"Version {args.to!r} is not in the pack index.")
+                dim("      run: crucible check-updates --list-versions")
+                sys.exit(1)
+        else:
+            target = pack_update.newest_release(
+                releases, include_prerelease=args.include_prerelease)
+            if target is None:
+                ok("Already on the newest release in the index.")
+                sys.exit(0)
+        return target, None
+
+    source = pack_update.resolve_pack_source(
+        args.source, expected_variant=ident.variant)
+    print()
+    print(f"  {BOLD}Source:{RESET} {source.label()}")
+    if source.url:
+        dim(f"      {source.url}")
+    if source.path:
+        dim(f"      {source.path}")
+    for line in source.warnings:
+        warn(f"      {line}")
+
+    if not source.usable:
+        for q in source.questions:
+            err(f"      {q}")
+        sys.exit(1)
+
+    # A link to a release index: pick a version out of it.
+    if source.kind == pack_update.SOURCE_INDEX_URL:
+        releases = pack_update.fetch_releases(url=source.url)
+        dim(f"      {len(releases)} release(s) in that index")
+        if args.to:
+            target = pack_update.find_release(releases, args.to)
+            if target is None:
+                err(f"Version {args.to!r} is not in that index.")
+                sys.exit(1)
+        else:
+            target = pack_update.newest_release(
+                releases, include_prerelease=args.include_prerelease)
+            if target is None:
+                err("That index has no installable server pack.")
+                sys.exit(1)
+        return target, None
+
+    # A bare version string: look it up in the default index.
+    if source.kind == pack_update.SOURCE_INDEX_VERSION:
+        releases = pack_update.fetch_releases()
+        target = pack_update.find_release(releases, source.version)
+        if target is None:
+            err(f"Version {source.version!r} is not in the pack index.")
+            sys.exit(1)
+        return target, None
+
+    # A local file: probe it right now so the user sees what it is.
+    probe = None
+    if source.kind == pack_update.SOURCE_LOCAL_FILE:
+        probe = pack_update.probe_archive(source.path)
+        _print_probe(probe)
+        if probe.problems:
+            sys.exit(1)
+
+    for q in source.questions:
+        warn(f"      {q}")
+    if source.needs_confirmation and not _confirm(
+            "Use this source anyway?", assume_yes=args.yes):
+        dim("  Aborted.")
+        sys.exit(1)
+
+    target = pack_update.release_from_source(source, probe=probe)
+    if args.as_version:
+        target.version = args.as_version
+        target.channel = pack_update.channel_of(args.as_version)
+    if target.version == "custom":
+        warn("      This pack does not say which version it is; recording it as "
+             "'custom'. Use --as-version to label it.")
+    return target, (source.path or None)
+
+
+def readiness_report_for(inst) -> list:
+    """Post-update readiness lines, or [] when nothing needs attention.
+
+    The UI decision layer is imported lazily and is PyQt-free, so this keeps
+    working on a headless box with no PyQt installed.
+    """
+    try:
+        from crucible.ui import pack_update_model as pum
+        return pum.readiness_report(inst)
+    except Exception:
+        return []
+
+
+def cmd_update_pack(manager: InstanceManager, tmux: TmuxManager, args) -> None:
+    from crucible.data.backup_manager import BackupManager
+    from crucible.importers import pack_update
+
+    inst = resolve_instance(manager, args.name)
+    ident = pack_update.identify_pack(inst)
+    target, local_archive = _resolve_target(inst, ident, args)
+
+    variant = args.variant or ident.variant
+    plan = pack_update.plan_update(
+        inst, target,
+        running=tmux.probe_running(inst),
+        identity=ident,
+        installed_java=pack_update.installed_java_major(),
+        allow_downgrade=args.allow_downgrade,
+        local_archive=local_archive,
+    )
+    if variant:
+        plan.variant = variant
+
+    print()
+    print(f"  {BOLD}{inst.name}{RESET}: {ident.label()} -> {target.version}")
+    if plan.download_url:
+        dim(f"      download: {plan.download_url}")
+    if plan.local_archive:
+        dim(f"      install from: {plan.local_archive}")
+    if target.changelog_url:
+        dim(f"      changelog: {target.changelog_url}")
+
+    print(f"\n  {BOLD}Kept from the current install ({len(plan.preserve)}):{RESET}")
+    for name in plan.preserve:
+        dim(f"      {name}")
+    if plan.carry_mods:
+        print(f"\n  {BOLD}Your added mods, carried over ({len(plan.carry_mods)}):{RESET}")
+        for name in plan.carry_mods:
+            dim(f"      {name}")
+
+    if plan.warnings:
+        print()
+        for line in plan.warnings:
+            warn(f"      {line}")
+    if plan.blockers:
+        print()
+        for line in plan.blockers:
+            err(f"      {line}")
+        dim("\n  Nothing was changed.")
+        sys.exit(1)
+
+    if args.dry_run:
+        print()
+        ok("  Plan looks runnable. Dry run, so nothing was changed.")
+        return
+
+    print()
+    if not args.yes:
+        try:
+            typed = input(f"  Type {target.version!r} to confirm: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            typed = ""
+        if typed != target.version:
+            dim("  Aborted; nothing was changed.")
+            return
+
+    bm = BackupManager(inst)
+    world = inst.world_root_path()
+
+    def _backup() -> str:
+        label = f"Before update {ident.version or 'unknown'} -> {target.version}"
+        return str(bm.create_backup(slot_name=label))
+
+    res = pack_update.apply_update(
+        inst, plan,
+        backup_cb=_backup if world.is_dir() else None,
+        log_cb=lambda m: dim(f"      {m}"),
+        keep_previous=not args.no_keep_previous,
+    )
+
+    print()
+    for line in res.messages:
+        dim(f"      {line}")
+    if not res.ok:
+        err(f"  {res.summary()}")
+        sys.exit(1)
+
+    ok(f"  {res.summary()}")
+    if res.backup_path:
+        dim(f"      world backup: {res.backup_path}")
+    if res.previous_dir:
+        dim(f"      previous install: {res.previous_dir}")
+        dim(f"      undo with: crucible rollback {inst.name!r}")
+
+    # Keep the registry honest about what is now installed.
+    inst.version = target.version
+    if not inst.minecraft_version and ident.provider == "gtnh":
+        inst.minecraft_version = "1.7.10"
+    if not inst.loader and ident.provider == "gtnh":
+        inst.loader = "forge"
+    try:
+        manager.update_instance(inst)
+        dim(f"      registry updated: version = {target.version}")
+    except KeyError:
+        pass
+
+    print()
+    report = readiness_report_for(inst)
+    if report:
+        warn(f"  {report[0]}")
+        for line in report[1:]:
+            dim(f"      {line}")
+    else:
+        ok("  Readiness check: this server looks ready to start.")
+
+    print()
+    warn("  First start after an update: watch the console. If it asks about "
+         "removed blocks/items, answer '/fml confirm' only once you are happy "
+         "to lose them -- the backup above is your way back.")
+
+
+def cmd_rollback(manager: InstanceManager, tmux: TmuxManager, args) -> None:
+    from pathlib import Path
+
+    from crucible.importers import pack_update
+
+    inst = resolve_instance(manager, args.name)
+    kept = pack_update.list_previous_installs(inst)
+
+    if args.list or not args.to_dir and not kept:
+        print()
+        if not kept:
+            warn("  No kept pre-update installs for this server.")
+            dim("      Restore a world backup instead: crucible gui -> Backups")
+            return
+        print(f"  {BOLD}Kept pre-update installs:{RESET}")
+        for entry in kept:
+            dim(f"      {entry.label()}")
+            dim(f"        {entry.path}")
+        print()
+        if args.list:
+            return
+
+    chosen = args.to_dir or (kept[0].path if kept else None)
+    print()
+    print(f"  {BOLD}{inst.name}{RESET}: rolling back to {Path(chosen).name}")
+    if args.keep_current_world:
+        warn("      The CURRENT world will be carried onto the old pack. If the "
+             "new version damaged it, that carries the damage back too.")
+    else:
+        dim("      The world from before the update will be restored with it.")
+    dim("      The install that is live now will be moved aside, not deleted.")
+
+    if not _confirm("Roll back?", assume_yes=args.yes):
+        dim("  Aborted.")
+        return
+
+    res = pack_update.rollback_update(
+        inst, chosen,
+        running=tmux.probe_running(inst),
+        keep_current_world=args.keep_current_world,
+        log_cb=lambda m: dim(f"      {m}"),
+    )
+    print()
+    for line in res.messages:
+        dim(f"      {line}")
+    if not res.ok:
+        err(f"  {res.failed_reason}")
+        sys.exit(1)
+    ok("  Rolled back.")
+    if res.to_version:
+        inst.version = res.to_version
+        try:
+            manager.update_instance(inst)
+            dim(f"      registry updated: version = {res.to_version}")
+        except KeyError:
+            pass
+
+
+def cmd_prune_previous(manager: InstanceManager, args) -> None:
+    from crucible.importers import pack_update
+
+    inst = resolve_instance(manager, args.name)
+    kept = pack_update.list_previous_installs(inst)
+    doomed = kept[max(args.keep, 0):]
+    print()
+    if not doomed:
+        ok(f"  Nothing to prune ({len(kept)} kept, keeping {args.keep}).")
+        return
+    for entry in doomed:
+        dim(f"      will delete {entry.path}")
+    if not _confirm(f"Delete {len(doomed)} old install(s) permanently?",
+                    assume_yes=args.yes):
+        dim("  Aborted.")
+        return
+    freed, removed = pack_update.prune_previous_installs(inst, keep=args.keep)
+    ok(f"  Removed {len(removed)} install(s), freed about {freed / 1024 ** 3:.1f} GiB.")
 
 
 # Argument parser
@@ -918,6 +1297,74 @@ def build_parser() -> argparse.ArgumentParser:
 
     # list
     sub.add_parser("list", help="List all registered instances")
+
+    # check-updates
+    p_chk = sub.add_parser("check-updates",
+                           help="See whether a newer modpack version exists")
+    p_chk.add_argument("name", nargs="?", help="Instance name or ID (default: all)")
+    p_chk.add_argument("--include-prerelease", action="store_true",
+                       help="Also consider beta / rc releases")
+    p_chk.add_argument("--list-versions", action="store_true",
+                       help="List the versions available in the index")
+
+    # update
+    p_upd = sub.add_parser(
+        "update",
+        help="Update a server's modpack, keeping the world and your added mods",
+        description=(
+            "Stage-and-swap modpack update. Takes a verified world backup "
+            "first, keeps the old install alongside for rollback, and never "
+            "touches a running server."
+        ),
+    )
+    p_upd.add_argument("name", help="Instance name or ID")
+    p_upd.add_argument(
+        "--from", dest="source", metavar="URL|FILE|VERSION",
+        help=("Where to get the pack: an https:// link to a server-pack zip, a "
+              "link to a versions.json index, a downloaded .zip/.mrpack, or a "
+              "bare version like 2.8.4. Omit to use the pack's own index."),
+    )
+    p_upd.add_argument("--to", metavar="VERSION",
+                       help="Target version from the index (default: newest)")
+    p_upd.add_argument("--as-version", metavar="VERSION",
+                       help="Label an unrecognised pack as this version")
+    p_upd.add_argument("--variant", choices=("java8", "java17_2X"),
+                       help="Force the Java variant of the pack to install")
+    p_upd.add_argument("--include-prerelease", action="store_true",
+                       help="Allow beta / rc releases")
+    p_upd.add_argument("--allow-downgrade", action="store_true",
+                       help="Permit installing an older version than is present")
+    p_upd.add_argument("--dry-run", action="store_true",
+                       help="Show the plan and stop")
+    p_upd.add_argument("--no-keep-previous", action="store_true",
+                       help="Delete the old install instead of keeping it for rollback")
+    p_upd.add_argument("-y", "--yes", action="store_true",
+                       help="Skip confirmation prompts")
+
+    # rollback
+    p_rb = sub.add_parser("rollback",
+                          help="Undo an update using the kept previous install")
+    p_rb.add_argument("name", help="Instance name or ID")
+    p_rb.add_argument("--list", action="store_true",
+                      help="List kept pre-update installs and stop")
+    p_rb.add_argument("--to-dir", metavar="PATH",
+                      help="Roll back to a specific kept install")
+    p_rb.add_argument("--keep-current-world", action="store_true",
+                      help="Carry the current world onto the restored pack")
+    p_rb.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+
+    # prune-previous
+    p_pp = sub.add_parser("prune-previous",
+                          help="Delete old kept pre-update installs")
+    p_pp.add_argument("name", help="Instance name or ID")
+    p_pp.add_argument("--keep", type=int, default=1,
+                      help="How many to keep (default: 1)")
+    p_pp.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+
+    # probe-pack
+    p_pr = sub.add_parser("probe-pack",
+                          help="Say what a downloaded archive actually is")
+    p_pr.add_argument("path", help="Path to a .zip / .mrpack archive")
 
     # add
     p_add = sub.add_parser("add", help="Register a server directory")
@@ -1130,6 +1577,11 @@ def main() -> None:
         "validate": lambda: cmd_validate(manager, args),
         "info":     lambda: cmd_info(manager, tmux, args),
         "edit":     lambda: cmd_edit(manager, args),
+        "check-updates": lambda: cmd_check_updates(manager, args),
+        "update":   lambda: cmd_update_pack(manager, tmux, args),
+        "rollback": lambda: cmd_rollback(manager, tmux, args),
+        "prune-previous": lambda: cmd_prune_previous(manager, args),
+        "probe-pack": lambda: cmd_probe_pack(args),
     }
 
     fn = dispatch.get(args.command)

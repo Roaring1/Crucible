@@ -209,8 +209,21 @@ def _detect_instance_dir(path: Path) -> PrismImportPlan | None:
     return PrismImportPlan(source=path, game_root=_find_game_root(path, info), info=info)
 
 
-def _extract_archive(path: Path) -> tuple[Path, list[str]]:
-    tmp = Path(tempfile.mkdtemp(prefix="crucible-prism-import-"))
+def _extract_archive(path: Path, dest_parent: Path | None = None) -> tuple[Path, list[str]]:
+    """Extract an archive into a fresh temp dir.
+
+    Defended against zip-slip, archive symlinks, oversized members and
+    compression bombs.
+
+    dest_parent chooses which filesystem that temp dir lives on. Pass the
+    eventual destination's parent so the extracted tree can be renamed into
+    place instead of copied across devices -- and so a multi-GiB modpack is
+    never unpacked into a tmpfs /tmp.
+    """
+    tmp = Path(tempfile.mkdtemp(
+        prefix="crucible-prism-import-",
+        dir=str(dest_parent) if dest_parent is not None else None,
+    ))
     warnings: list[str] = []
     try:
         with zipfile.ZipFile(path, "r") as zf:
@@ -267,6 +280,36 @@ def _find_file(root: Path, name: str, max_depth: int = 4) -> Path | None:
         if depth <= max_depth:
             return p
     return None
+
+
+def _apply_gtnh_hints(info: PrismPackInfo, *names: str) -> None:
+    """Fill blank pack metadata from a GTNH server-pack name.
+
+    A GTNH "Server Pack" ships no machine-readable manifest -- no
+    instance.cfg, no modrinth.index.json, no manifest.json -- so detection
+    used to fall through to source_type="directory" with pack_version,
+    minecraft_version and loader all empty. That left the registry unable to
+    say what was installed (breaking update checks) and made Modrinth mod
+    resolution ask for "any platform", which is how a NeoForge 1.21 jar can
+    get installed onto a Forge 1.7.10 server.
+
+    The archive/folder name carries the version, so use it.
+    """
+    from .pack_update import identify_gtnh_name
+
+    for name in names:
+        hit = identify_gtnh_name(name or "")
+        if not hit:
+            continue
+        version, _variant = hit
+        if not info.pack_version:
+            info.pack_version = version
+        # Every GTNH release to date is Forge on Minecraft 1.7.10.
+        if not info.minecraft_version:
+            info.minecraft_version = "1.7.10"
+        if not info.loader:
+            info.loader = "forge"
+        return
 
 
 def _detect_archive(path: Path) -> PrismImportPlan:
@@ -326,6 +369,7 @@ def _detect_archive(path: Path) -> PrismImportPlan:
             overrides = obj.get("overrides") or "overrides"
             return PrismImportPlan(source=path, game_root=tmp / str(overrides), info=info, cleanup_dir=tmp)
 
+    _apply_gtnh_hints(info, path.name, path.stem)
     return PrismImportPlan(source=path, game_root=tmp, info=info, cleanup_dir=tmp)
 
 
@@ -343,7 +387,9 @@ def detect_prism_source(source: str | Path) -> PrismImportPlan:
         if plan:
             plan.game_root = path
             return plan
-    return PrismImportPlan(source=path, game_root=path, info=PrismPackInfo(source_type="directory", name=path.name))
+    dir_info = PrismPackInfo(source_type="directory", name=path.name)
+    _apply_gtnh_hints(dir_info, path.name)
+    return PrismImportPlan(source=path, game_root=path, info=dir_info)
 
 
 # Names/globs that only appear at the top level of an already-complete,
@@ -650,7 +696,13 @@ def import_prism_source(
     plan.info.warnings = warnings
     summary = {
         "source": str(plan.source),
-        "game_root": str(plan.game_root),
+        # Where the server actually lives. plan.game_root is often a temporary
+        # extraction directory that is deleted before anyone reads this file,
+        # so recording it alone made the receipt point at a path that no
+        # longer exists.
+        "install_root": str(target),
+        "detected_game_root": str(plan.game_root),
+        "detected_game_root_was_temporary": bool(plan.cleanup_dir),
         "detected": plan.info.__dict__,
         "copied": copied,
         "download": download_summary,

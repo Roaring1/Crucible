@@ -23,6 +23,7 @@ starting a real server.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 # The flag that fixes EAFNOSUPPORT bind(-97). preferIPv6Addresses=false keeps
 # name resolution from handing back AAAA records first on dual-stack hosts.
@@ -84,3 +85,15 @@ def ensure_user_jvm_args_file(server_dir: str | Path) -> bool:
     except OSError:
         return False
     return True
+
+
+_FML_QUERY_RE = re.compile(r"(?<!\S)-Dfml\.queryResult=(?:confirm|cancel)(?!\S)")
+
+
+def ensure_fml_query_result(java_args: str, result: str | None) -> str:
+    """Add or replace a legacy Forge/FML preselected startup answer."""
+    value = (result or "").strip().lower()
+    if value not in {"confirm", "cancel"}:
+        return (java_args or "").strip()
+    cleaned = " ".join(_FML_QUERY_RE.sub("", java_args or "").split())
+    return f"{cleaned} -Dfml.queryResult={value}".strip()

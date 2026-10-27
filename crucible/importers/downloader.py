@@ -355,7 +355,8 @@ def build_items(index_path: Path) -> tuple[list[DownloadItem], list[str]]:
         return _modrinth_items(data), notes
 
     if data.get("manifestType") == "minecraftModpack" or index_path.name == "manifest.json":
-        api_key = os.environ.get("CURSEFORGE_API_KEY", "").strip()
+        from ..mods.curseforge import get_api_key
+        api_key = get_api_key()
         items, cf_notes = _curseforge_items(data, api_key)
         return items, cf_notes
 

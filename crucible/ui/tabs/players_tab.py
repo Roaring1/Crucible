@@ -21,7 +21,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QObject, QSize, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QIcon, QPixmap
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout,
+    QWidget, QSplitter, QVBoxLayout, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem,
     QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView,
@@ -239,7 +239,7 @@ class PlayersTab(QWidget):
         layout.addWidget(hdr)
 
         self._online_list = QListWidget()
-        self._online_list.setFixedHeight(110)
+        self._online_list.setMinimumHeight(72)
         self._online_list.setIconSize(QSize(20, 20))
         self._online_list.setStyleSheet(
             f"background: {theme.SURFACE0}; border-radius: 4px;"
@@ -252,10 +252,13 @@ class PlayersTab(QWidget):
         self._online_list.itemDoubleClicked.connect(
             lambda item: self._show_player_menu(
                 self._online_list.visualItemRect(item).center()))
-        layout.addWidget(self._online_list)
+        self._players_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._players_splitter.setChildrenCollapsible(False)
+        self._players_splitter.setHandleWidth(9)
+        self._players_splitter.setToolTip("Drag the divider to resize Online now")
+        self._players_splitter.addWidget(self._online_list)
 
-        hint = QLabel("Tip: click a player above for actions (op, kick, ban, "
-                      "gamemode, teleport, give…).")
+        hint = QLabel("Right-click or double-click a player for actions. Drag the divider below to resize Online now.")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 10px;")
         layout.addWidget(hint)
@@ -268,7 +271,9 @@ class PlayersTab(QWidget):
         sub.addTab(self._whitelist_w, "Whitelist")
         sub.addTab(self._ops_w,       "Ops")
         sub.addTab(self._banned_w,    "Banned")
-        layout.addWidget(sub, stretch=1)
+        self._players_splitter.addWidget(sub)
+        self._players_splitter.setSizes([200, 360])
+        layout.addWidget(self._players_splitter, stretch=1)
 
     # Public API
 

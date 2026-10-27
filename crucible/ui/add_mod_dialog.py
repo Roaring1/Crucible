@@ -18,7 +18,7 @@ from PyQt6.QtGui import QPixmap, QIcon, QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QListWidget, QListWidgetItem, QMessageBox, QSplitter, QWidget,
-    QTextEdit, QFrame, QSizePolicy, QCheckBox,
+    QTextEdit, QFrame, QSizePolicy, QCheckBox, QComboBox, QInputDialog,
 )
 
 from ..mods import modrinth
@@ -32,14 +32,18 @@ class _SearchWorker(QObject):
     done = pyqtSignal(int, object)   # offset, hits
     failed = pyqtSignal(str)
 
-    def __init__(self, query, loader, mc, offset=0, page=30):
+    def __init__(self, query, loader, mc, offset=0, page=30, provider="Modrinth"):
         super().__init__()
+        self._provider = provider
         self._q, self._loader, self._mc = query, loader, mc
         self._offset, self._page = offset, page
 
     def run(self):
         try:
-            if self._q:
+            if self._provider == "CurseForge":
+                from ..mods import curseforge
+                hits = curseforge.search(self._q, loader=self._loader, mc_version=self._mc, limit=self._page, offset=self._offset)
+            elif self._q:
                 hits = modrinth.search(self._q, loader=self._loader,
                                        mc_version=self._mc, limit=self._page,
                                        offset=self._offset)
@@ -91,8 +95,11 @@ class _ResolveWorker(QObject):
 
     def run(self):
         try:
-            files = modrinth.resolve_with_deps(
-                self._pid, loader=self._loader, mc_version=self._mc)
+            from ..mods.versions import list_versions, resolve_selected
+            options = list_versions(self._pid, loader=self._loader, mc_version=self._mc)
+            if not options:
+                raise modrinth.ModrinthError("No compatible version was found.")
+            files = resolve_selected(options[0], loader=self._loader, mc_version=self._mc)
             self.done.emit(self._pid, files)
         except Exception as e:  # noqa: BLE001
             self.failed.emit(self._pid, str(e))
@@ -102,13 +109,20 @@ class _InstallWorker(QObject):
     done = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, server_path, files):
+    def __init__(self, server_path, files, instance=None):
         super().__init__()
         self._path, self._files = server_path, files
+        self._instance = instance
 
     def run(self):
         try:
-            self.done.emit(modrinth.install_files(self._path, self._files))
+            from ..mods.versions import replace_files
+            from ..process.tmux_manager import TmuxManager
+            def guard():
+                if self._instance is not None and TmuxManager().get_status(self._instance) != "stopped":
+                    raise RuntimeError("Server is no longer confirmed stopped. No mod change was applied.")
+            guard()
+            self.done.emit(replace_files(self._path, None, self._files, before_commit=guard))
         except Exception as e:  # noqa: BLE001
             self.failed.emit(str(e))
 
@@ -131,6 +145,7 @@ class AddModDialog(QDialog):
         self._sel_pid = None             # currently selected project id
         self._resolved = {}              # project_id -> [ModFile, ...]
         # infinite-scroll / paging state
+        self._search_generation = 0
         self._query = ""                 # active query ("" = browse popular)
         self._offset = 0                 # next page offset to request
         self._page = 30                  # page size
@@ -154,14 +169,26 @@ class AddModDialog(QDialog):
         root = QVBoxLayout(self)
 
         head = QLabel(
-            f"Browse mods \u00b7 Minecraft {self._mc() or '?'} \u00b7 {self._loader()}")
+            f"Browse mods · Minecraft {self._mc() or '?'} · {self._loader()}")
         head.setStyleSheet(f"font-weight:700; font-size:15px; color:{theme.TEXT};")
         root.addWidget(head)
 
         row = QHBoxLayout()
+        self._provider = QComboBox()
+        self._provider.addItems(["Modrinth", "CurseForge"])
+        self._provider.setAccessibleName("Mod provider")
+        self._provider.setMinimumWidth(110)
+        self._provider.currentTextChanged.connect(lambda *_: self._do_search())
+        row.addWidget(self._provider)
+        key_btn = QPushButton("API key…")
+        self._key_btn = key_btn
+        key_btn.hide()
+        key_btn.setToolTip("CurseForge API key · kept in memory for this session only")
+        key_btn.clicked.connect(self._set_curseforge_key)
+        row.addWidget(key_btn)
         self._search = QLineEdit()
         self._search.setPlaceholderText(
-            "Search mods by name \u2014 or just browse the popular ones below\u2026")
+            "Search mods by name — or just browse the popular ones below…")
         self._search.returnPressed.connect(lambda: self._do_search())
         row.addWidget(self._search, 1)
         self._search_btn = QPushButton("Search")
@@ -187,7 +214,7 @@ class AddModDialog(QDialog):
         filt.addStretch()
         root.addLayout(filt)
 
-        self._status = QLabel("Powered by Modrinth \u00b7 no account needed")
+        self._status = QLabel("Powered by Modrinth · no account needed")
         self._status.setWordWrap(True)
         self._status.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:11px;")
         root.addWidget(self._status)
@@ -290,6 +317,7 @@ class AddModDialog(QDialog):
     def _spawn(self, worker, *quit_signals):
         thread = QThread()
         worker.moveToThread(thread)
+        thread.finished.connect(worker.deleteLater)
         thread.started.connect(worker.run)
         pair = (thread, worker)
         self._threads.append(pair)
@@ -299,8 +327,22 @@ class AddModDialog(QDialog):
         thread.start()
         return worker
 
+    def _set_curseforge_key(self):
+        from ..mods import curseforge
+        key, ok = QInputDialog.getText(self, "CurseForge API key", "API key (session only):", QLineEdit.EchoMode.Password)
+        if ok:
+            curseforge.set_api_key(key)
+            if self._provider.currentText() == "CurseForge":
+                self._do_search()
+
     # --- search ---
     def _do_search(self, initial: bool = False):
+        self._key_btn.setVisible(self._provider.currentText() == "CurseForge")
+        self._view = []
+        self._results.clear()
+        self._install_btn.setEnabled(False)
+        self._search_generation += 1
+        generation = self._search_generation
         q = self._search.text().strip()
         self._query = q
         self._offset = 0
@@ -310,13 +352,13 @@ class AddModDialog(QDialog):
         self._resolved.clear()
         self._sel_pid = None
         self._status.setText(
-            "Loading popular mods\u2026" if not q else "Searching\u2026")
+            "Loading popular mods…" if not q else "Searching…")
         self._search_btn.setEnabled(False)
         w = _SearchWorker(q, self._loader(), self._mc(),
-                          offset=0, page=self._page)
+                          offset=0, page=self._page, provider=self._provider.currentText())
         self._spawn(w, w.done, w.failed)
-        w.done.connect(self._on_results)
-        w.failed.connect(self._on_error)
+        w.done.connect(lambda offset, hits, g=generation: self._on_results(offset, hits) if g == self._search_generation else None)
+        w.failed.connect(lambda message, g=generation: self._on_error(message) if g == self._search_generation else None)
 
     def _on_filter_changed(self, *_):
         # Re-filter what we already have, then top up if the view looks short.
@@ -345,12 +387,13 @@ class AddModDialog(QDialog):
         if not near_bottom:
             return
         self._loading_more = True
-        self._status.setText("Loading more\u2026")
+        self._status.setText("Loading more…")
         w = _SearchWorker(self._query, self._loader(), self._mc(),
-                          offset=self._offset, page=self._page)
+                          offset=self._offset, page=self._page, provider=self._provider.currentText())
         self._spawn(w, w.done, w.failed)
-        w.done.connect(self._on_results)
-        w.failed.connect(self._on_error)
+        generation = self._search_generation
+        w.done.connect(lambda offset, hits, g=generation: self._on_results(offset, hits) if g == self._search_generation else None)
+        w.failed.connect(lambda message, g=generation: self._on_error(message) if g == self._search_generation else None)
 
     def _on_results(self, offset, hits):
         self._search_btn.setEnabled(True)
@@ -375,7 +418,7 @@ class AddModDialog(QDialog):
         tag = h.server_label()
         second = f"{dl} downloads"
         if tag:
-            second += f"  \u00b7  {tag}"
+            second += f"  ·  {tag}"
         item = QListWidgetItem(f"{h.title}\n{second}")
         pix = self._pixmaps.get(h.project_id)
         item.setIcon(QIcon(pix) if pix is not None else self._blank_icon())
@@ -403,14 +446,14 @@ class AddModDialog(QDialog):
         total = len(self._all_hits)
         shown = len(self._view)
         if total == 0:
-            self._status.setText("No results \u2014 try a different name.")
+            self._status.setText("No results — try a different name.")
             return
         msg = f"{shown} mod(s)"
         if shown != total:
             msg += f" shown of {total} fetched"
-        msg += " \u00b7 click for details, double-click to install"
+        msg += " · click for details, double-click to install"
         if self._has_more:
-            msg += " \u00b7 scroll for more"
+            msg += " · scroll for more"
         self._status.setText(msg)
 
     def _start_icons(self, hits):
@@ -439,7 +482,7 @@ class AddModDialog(QDialog):
         self._search_btn.setEnabled(True)
         self._loading_more = False
         self._install_btn.setEnabled(False)
-        self._status.setText("\u26a0 " + msg)
+        self._status.setText("⚠ " + msg)
 
     # --- selection / detail ---
     def _on_sel(self, row):
@@ -449,38 +492,39 @@ class AddModDialog(QDialog):
         self._sel_pid = hit.project_id
         self._install_btn.setEnabled(False)
         self._d_link.setEnabled(True)
+        self._d_link.setText("View on CurseForge" if hit.project_id.startswith("cf:") else "View on Modrinth")
 
         self._d_title.setText(hit.title)
         self._d_author.setText(f"by {hit.author}" if hit.author else "")
-        stats = f"\u2b07 {modrinth.humanize_count(hit.downloads)} downloads"
+        stats = f"⬇ {modrinth.humanize_count(hit.downloads)} downloads"
         if hit.follows:
-            stats += f"   \u2665 {modrinth.humanize_count(hit.follows)} followers"
+            stats += f"   ♥ {modrinth.humanize_count(hit.follows)} followers"
         if hit.categories:
             stats += "\n" + "  ".join(f"#{c}" for c in hit.categories[:6])
         self._d_stats.setText(stats)
 
         if hit.is_client_only:
             self._d_compat.setText(
-                "\u26a0 Client-only mod \u2014 this usually has no effect on a "
+                "⚠ Client-only mod — this usually has no effect on a "
                 "dedicated server.")
             self._d_compat.setStyleSheet(
                 f"color:{theme.ORANGE}; font-size:12px; font-weight:600;")
         elif hit.server_label():
-            self._d_compat.setText("\u2713 " + hit.server_label())
+            self._d_compat.setText("✓ " + hit.server_label())
             self._d_compat.setStyleSheet(
                 f"color:{theme.GREEN}; font-size:12px; font-weight:600;")
         else:
             self._d_compat.setText("")
 
         self._d_desc.setPlainText(hit.description or "")
-        self._d_deps.setText("Checking version & dependencies\u2026")
+        self._d_deps.setText("Checking version & dependencies…")
 
         pix = self._pixmaps.get(hit.project_id)
         if pix is not None:
             self._set_detail_icon(pix)
         else:
             self._d_icon.setPixmap(QPixmap())
-            self._d_icon.setText("\u2026")
+            self._d_icon.setText("…")
 
         # resolve dependencies for the preview (and to pre-stage the install)
         if hit.project_id in self._resolved:
@@ -520,7 +564,7 @@ class AddModDialog(QDialog):
     def _on_resolve_failed(self, pid, msg):
         if pid == self._sel_pid:
             self._install_btn.setEnabled(False)
-            self._d_deps.setText("\u26a0 " + msg)
+            self._d_deps.setText("⚠ " + msg)
 
     def _open_page(self):
         row = self._results.currentRow()
@@ -535,7 +579,7 @@ class AddModDialog(QDialog):
         hit = self._view[row]
         files = self._resolved.get(hit.project_id)
         if not files:
-            self._status.setText("Still checking versions \u2014 try again in a moment.")
+            self._status.setText("Still checking versions — try again in a moment.")
             return
         if hit.is_client_only:
             reply = QMessageBox.question(
@@ -545,18 +589,25 @@ class AddModDialog(QDialog):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
             if reply != QMessageBox.StandardButton.Yes:
                 return
+        from ..process.tmux_manager import TmuxManager
+        if TmuxManager().get_status(self._instance) != "stopped":
+            QMessageBox.warning(self, "Stop the server first", "Mod installation requires a confirmed stopped server.")
+            return
+        review = "Install these verified files?\n\n" + "\n".join("• " + f.filename for f in files) + "\n\nExisting linked versions are replaced together. Originals are retained in .crucible/mod-history. No world files are modified."
+        if QMessageBox.question(self, "Review mod installation", review, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
+            return
         self._install_btn.setEnabled(False)
         n = len(files)
         self._status.setText(
-            f"Installing {hit.title} ({n} file{'s' if n != 1 else ''})\u2026")
-        w = _InstallWorker(self._instance.path, files)
+            f"Installing {hit.title} ({n} file{'s' if n != 1 else ''})…")
+        w = _InstallWorker(self._instance.path, files, self._instance)
         self._spawn(w, w.done, w.failed)
         w.done.connect(self._on_installed)
         w.failed.connect(self._on_error)
 
     def _on_installed(self, res):
         self._install_btn.setEnabled(True)
-        self._status.setText("\u2713 " + res.summary())
+        self._status.setText("✓ " + res.summary())
         if res.failed:
             QMessageBox.warning(
                 self, "Add a mod",

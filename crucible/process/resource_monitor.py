@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
-_PAGE = 4096
+_PAGE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 
 SESSION_MARKER = "-Dcrucible.session="
 
@@ -113,7 +113,7 @@ class ResourceSampler:
         return (dj / _CLK_TCK) / dt * 100.0
 
     def sample_pids(self, pids: list[int]) -> dict[int, ProcStat]:
-        now = time.time()
+        now = time.monotonic()
         result: dict[int, ProcStat] = {}
         new_jiffies: dict[int, int] = {}
         for pid in pids:
@@ -141,7 +141,7 @@ class ResourceSampler:
         pids: list[int] = []
         for pid in _iter_pids():
             cmd = _read_cmd(pid)
-            if marker and marker in cmd:
+            if marker and marker in cmd.split():
                 pids.append(pid)
                 continue
             # Match the actual executable, not a substring of the full
@@ -169,3 +169,9 @@ def system_memory_mb() -> tuple[float, float]:
         return (total - avail, total)
     except (OSError, ValueError, KeyError, IndexError):
         return (0.0, 0.0)
+
+
+def machine_cpu_percent(core_percent: float, logical_cpus: int | None = None) -> float:
+    """Convert Linux process CPU (100% = one core) to whole-machine share."""
+    count = max(1, logical_cpus if logical_cpus is not None else (os.cpu_count() or 1))
+    return max(0.0, min(100.0, core_percent / count))

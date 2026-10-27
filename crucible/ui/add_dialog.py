@@ -13,7 +13,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
+    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea, QWidget,
     QLabel, QLineEdit, QPushButton, QFileDialog,
     QDialogButtonBox, QMessageBox, QCheckBox, QFrame, QInputDialog,
 )
@@ -69,11 +69,21 @@ class AddInstanceDialog(QDialog):
         # other field rows clipped their text/placeholders and were hard to
         # read.
         self.setMinimumWidth(680)
+        self.resize(760, 700)
+        self.setMinimumHeight(500)
         self.setModal(True)
         self._build_ui()
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        body = QWidget()
+        scroll.setWidget(body)
+        root.addWidget(scroll, 1)
+        layout = QVBoxLayout(body)
         layout.setSpacing(12)
         layout.setContentsMargins(20, 16, 20, 16)
 
@@ -84,11 +94,7 @@ class AddInstanceDialog(QDialog):
         )
         layout.addWidget(new_title)
 
-        new_sub = QLabel(
-            "No modpack? Spin up a fresh server in seconds. Vanilla is the simplest "
-            "— just pick a Minecraft version and go. Fabric, Forge, NeoForge and "
-            "Quilt are available too."
-        )
+        new_sub = QLabel("Start with Vanilla, Fabric, Forge, NeoForge or Quilt.")
         new_sub.setWordWrap(True)
         new_sub.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
         layout.addWidget(new_sub)
@@ -111,24 +117,19 @@ class AddInstanceDialog(QDialog):
         )
         layout.addWidget(rec_title)
 
-        rec_sub = QLabel(
-            "The easiest way to get started. Point Crucible at a Prism Launcher "
-            "instance or a modpack archive (.zip / .mrpack from Modrinth or "
-            "CurseForge) and it will set up a server folder for you — copying only "
-            "server-safe files and generating a start script."
-        )
+        rec_sub = QLabel("Import an installed Prism/MultiMC instance or a ZIP/mrpack. Review server compatibility before starting.")
         rec_sub.setWordWrap(True)
         rec_sub.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
         layout.addWidget(rec_sub)
 
         import_row = QHBoxLayout()
         import_folder_btn = QPushButton("📦  Import Prism Instance…")
-        import_folder_btn.setObjectName("PrimaryButton")
+        import_folder_btn.setAccessibleName("Import Prism instance")
         import_folder_btn.setFixedHeight(34)
         import_folder_btn.clicked.connect(self._import_prism_folder)
         import_row.addWidget(import_folder_btn)
         import_archive_btn = QPushButton("🗃  Import Modpack Archive…")
-        import_archive_btn.setObjectName("PrimaryButton")
+        import_archive_btn.setAccessibleName("Import modpack archive")
         import_archive_btn.setFixedHeight(34)
         import_archive_btn.clicked.connect(self._import_prism_archive)
         import_row.addWidget(import_archive_btn)
@@ -189,11 +190,13 @@ class AddInstanceDialog(QDialog):
         self._path_edit = QLineEdit()
         self._path_edit.setPlaceholderText("/path/to/my-server")
         self._path_edit.setMinimumWidth(320)
+        self._path_edit.setMinimumHeight(32)
         self._path_edit.textChanged.connect(self._auto_fill_name)
         path_row.addWidget(self._path_edit, stretch=1)
 
         browse_btn = QPushButton("Browse…")
         browse_btn.setMinimumWidth(80)
+        browse_btn.setMinimumHeight(32)
         browse_btn.clicked.connect(self._browse)
         path_row.addWidget(browse_btn)
 
@@ -203,17 +206,20 @@ class AddInstanceDialog(QDialog):
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText("My Server")
         self._name_edit.setMinimumWidth(320)
+        self._name_edit.setMinimumHeight(32)
         form.addRow("Display name:", self._name_edit)
 
         self._ver_edit = QLineEdit()
         self._ver_edit.setPlaceholderText("e.g. 2.8.4  (optional)")
         self._ver_edit.setMinimumWidth(320)
+        self._ver_edit.setMinimumHeight(32)
         form.addRow("Version:", self._ver_edit)
 
         # Session field
         self._session_edit = QLineEdit()
         self._session_edit.setPlaceholderText("auto-derived from name  (e.g. my-server)")
         self._session_edit.setMinimumWidth(320)
+        self._session_edit.setMinimumHeight(32)
         form.addRow("Console session (advanced):", self._session_edit)
 
         hint = QLabel(
@@ -241,7 +247,7 @@ class AddInstanceDialog(QDialog):
         )
         btns.accepted.connect(self._on_accept)
         btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
+        root.addWidget(btns)
 
     # Helpers
 
@@ -348,7 +354,7 @@ class AddInstanceDialog(QDialog):
             return
         source, target, want_download = pending
         try:
-            name = info.name or Path(target).name
+            name = Path(target).name or info.name
             inst = self._manager.add_instance(
                 target,
                 name,

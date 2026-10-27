@@ -106,6 +106,22 @@ def dimension_label(name: str) -> str:
     return _DIMENSION_LABELS.get(upper, f"Custom dimension ({name})")
 
 
+# Every key this version of Crucible knows how to store in the registry.
+# Anything in a registry entry that is NOT listed here is kept verbatim in
+# ServerInstance.extra and written back out untouched, so an older build can
+# never silently delete a newer build's fields (or a hand-edited one).
+_KNOWN_REGISTRY_KEYS = frozenset({
+    "id", "path", "name", "version", "pack_source", "minecraft_version",
+    "loader", "loader_version", "prism_source", "notes", "java_args",
+    "color", "tmux_session", "auto_restart", "created_at", "last_started",
+    "fml_query_result",
+})
+
+# Valid answers to FML's "missing blocks/items" prompt on first boot after a
+# modpack update. "ask" = never answer automatically; require a human.
+FML_QUERY_CHOICES = ("ask", "confirm", "cancel")
+
+
 # Data model
 
 @dataclass
@@ -133,6 +149,12 @@ class ServerInstance:
     id: str            = field(default_factory=lambda: str(uuid.uuid4()))
     created_at: str    = field(default_factory=lambda: datetime.now().isoformat())
     last_started: str | None = None
+    # How to answer FML's "missing blocks/items" prompt after a pack update.
+    # "ask" keeps a human in the loop, which is the only safe default: an
+    # automatic /fml confirm permanently deletes the removed content.
+    fml_query_result: str = "ask"
+    # Registry keys this build does not recognise, preserved on round-trip.
+    extra: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Auto-generate session name only if caller didn't provide one
@@ -151,7 +173,9 @@ class ServerInstance:
     # Serialization
 
     def to_dict(self) -> dict:
-        return {
+        # Unrecognised keys go in first so real fields always win a collision.
+        out: dict = dict(self.extra)
+        out.update({
             "id":           self.id,
             "path":         self.path,
             "name":         self.name,
@@ -166,12 +190,17 @@ class ServerInstance:
             "color":        self.color,
             "tmux_session": self.tmux_session,
             "auto_restart": self.auto_restart,
+            "fml_query_result": self.fml_query_result,
             "created_at":   self.created_at,
             "last_started": self.last_started,
-        }
+        })
+        return out
 
     @classmethod
     def from_dict(cls, d: dict) -> "ServerInstance":
+        fml = str(d.get("fml_query_result", "ask") or "ask").strip().lower()
+        if fml not in FML_QUERY_CHOICES:
+            fml = "ask"
         return cls(
             id           = d.get("id", str(uuid.uuid4())),
             path         = d["path"],
@@ -189,6 +218,9 @@ class ServerInstance:
             auto_restart = d.get("auto_restart", False),
             created_at   = d.get("created_at", datetime.now().isoformat()),
             last_started = d.get("last_started"),
+            fml_query_result = fml,
+            extra        = {k: v for k, v in d.items()
+                            if k not in _KNOWN_REGISTRY_KEYS},
         )
 
     # Validation
@@ -262,7 +294,7 @@ class ServerInstance:
 
         Resolution order (stops at the first file that exists):
           1. logs/fml-server-latest.log  — GTNH 1.7.10 primary log
-          2. logs/latest.log             — vanilla / 1.12+ Forge / fallback
+          2. logs/latest.log             �� vanilla / 1.12+ Forge / fallback
         """
         logs = self.path_obj / "logs"
         for name in ("fml-server-latest.log", "latest.log"):

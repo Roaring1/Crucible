@@ -56,12 +56,33 @@ info "Install location: $APP_HOME"
 
 step "1 / 6  Python"
 PYTHON=""
-for candidate in python3.13 python3.12 python3.11 python3; do
-    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'; then
+CANDIDATES=(python3.13 python3.12 python3.11 python3)
+[[ -n "${CRUCIBLE_PYTHON:-}" ]] && CANDIDATES=("$CRUCIBLE_PYTHON" "${CANDIDATES[@]}")
+_py_supported() {
+    command -v "$1" >/dev/null 2>&1 \
+        && "$1" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'
+}
+# Two passes over the candidates. A machine can carry several interpreters
+# where only some of them can import PyQt6, and the isolated environment is
+# built with --system-site-packages. Preferring an interpreter that already
+# has PyQt6 keeps a normal install free of a package-manager step (which needs
+# sudo) and of a ~250 MB pip download (which needs the network) for a
+# dependency this machine already satisfies. The second pass preserves the
+# original order, so behaviour is unchanged when no candidate has PyQt6.
+for candidate in "${CANDIDATES[@]}"; do
+    if _py_supported "$candidate" && "$candidate" -c 'import PyQt6' >/dev/null 2>&1; then
         PYTHON="$candidate"
         break
     fi
 done
+if [[ -z "$PYTHON" ]]; then
+    for candidate in "${CANDIDATES[@]}"; do
+        if _py_supported "$candidate"; then
+            PYTHON="$candidate"
+            break
+        fi
+    done
+fi
 [[ -n "$PYTHON" ]] || {
     err "Python 3.11 or newer is required. On Nobara/Fedora: sudo dnf install python3"
     exit 1

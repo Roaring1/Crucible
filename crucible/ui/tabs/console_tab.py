@@ -17,7 +17,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QPlainTextEdit, QLineEdit, QPushButton,
-    QLabel, QCheckBox,
+    QLabel, QCheckBox, QListWidget,
 )
 
 from ...data.instance_model import ServerInstance
@@ -87,6 +87,11 @@ _PLAYER_ARG_CMDS = {
     "trigger", "spawnpoint",
 }
 
+_BOOL_RULES = """announceAdvancements blockExplosionDropDecay commandBlockOutput disableElytraMovementCheck disableRaids doDaylightCycle doEntityDrops doFireTick doImmediateRespawn doInsomnia doLimitedCrafting doMobLoot doMobSpawning doPatrolSpawning doTileDrops doTraderSpawning doVinesSpread doWardenSpawning doWeatherCycle drowningDamage fallDamage fireDamage forgiveDeadPlayers freezeDamage globalSoundEvents keepInventory lavaSourceConversion logAdminCommands mobExplosionDropDecay mobGriefing naturalRegeneration reducedDebugInfo sendCommandFeedback showDeathMessages spectatorsGenerateChunks tntExplosionDropDecay universalAnger waterSourceConversion""".split()
+_INT_RULES = """commandModificationBlockLimit maxCommandChainLength maxCommandForkCount maxEntityCramming playersSleepingPercentage randomTickSpeed snowAccumulationHeight spawnRadius spawnChunkRadius""".split()
+_SUBCOMMANDS["gamerule"] = sorted(_BOOL_RULES + _INT_RULES)
+_SUBCOMMANDS["banlist"] = ["players", "ips"]
+
 _DIMENSIONS = ["minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"]
 
 # Lines produced by TPS / tick polling. When "Hide TPS poll output" is on these
@@ -125,7 +130,15 @@ class _CommandLineEdit(QLineEdit):
 
     def keyPressEvent(self, e):  # noqa: N802
         key = e.key()
+        if key == Qt.Key.Key_Escape:
+            self._owner._suggestions.hide()
+            return
         if key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            if self._owner._suggestions.isVisible():
+                box = self._owner._suggestions
+                step = -1 if key == Qt.Key.Key_Up else 1
+                box.setCurrentRow((box.currentRow() + step) % box.count())
+                return
             self._owner._history_key(key)
             return
         # Any other keystroke invalidates an in-progress completion cycle.
@@ -255,6 +268,15 @@ class ConsoleTab(QWidget):
 
         layout.addWidget(status_row)
 
+        # Live, keyboard-accessible suggestions immediately above the command box.
+        self._suggestions = QListWidget()
+        self._suggestions.setAccessibleName("Command suggestions; Tab to complete, arrows to select, Escape to dismiss")
+        self._suggestions.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._suggestions.setMaximumHeight(156)
+        self._suggestions.itemClicked.connect(lambda *_: self._accept_suggestion())
+        self._suggestions.hide()
+        layout.addWidget(self._suggestions)
+
         # Command input row
         cmd_row = QWidget()
         cmd_row.setStyleSheet(
@@ -275,6 +297,8 @@ class ConsoleTab(QWidget):
         self._cmd_input.setObjectName("CommandInput")
         self._cmd_input.setPlaceholderText("Send command…  (Tab to complete · ↑↓ history)")
         self._cmd_input.returnPressed.connect(self._send_command)
+        self._cmd_input.textEdited.connect(self._show_suggestions)
+        self._cmd_input.cursorPositionChanged.connect(lambda *_: self._show_suggestions())
         cr_layout.addWidget(self._cmd_input, stretch=1)
 
         send_btn = QPushButton("Send")
@@ -638,6 +662,7 @@ class ConsoleTab(QWidget):
             self._append_system(f"Failed to send: {detail}")
 
         self._cmd_input.clear()
+        self._suggestions.hide()
 
     def _history_key(self, key) -> None:
         """↑/↓ history navigation, invoked by the command line edit."""
@@ -680,14 +705,16 @@ class ConsoleTab(QWidget):
             elif loader == "neoforge":
                 vocab.add("neoforge")
             return [c for c in sorted(vocab) if c.startswith(pl)]
-        cmd = parts[0].lower()
+        cmd = parts[0].lower().lstrip("/")
+        if cmd == "gamerule" and idx == 2 and parts[1] in _BOOL_RULES:
+            return [v for v in ("true", "false") if v.startswith(pl)]
         prev = parts[idx - 1].lower() if idx >= 1 else ""
         # Dimension argument after 'in' (e.g. 'execute in <dim>').
         if prev == "in":
             return [d for d in _DIMENSIONS if d.startswith(pl)]
         # Fixed subcommand sets.
         if idx == 1 and cmd in _SUBCOMMANDS:
-            subs = [s for s in _SUBCOMMANDS[cmd] if s.startswith(pl)]
+            subs = [s for s in _SUBCOMMANDS[cmd] if s.lower().startswith(pl)]
             if subs:
                 return subs
         # Player-name arguments.
@@ -697,38 +724,53 @@ class ConsoleTab(QWidget):
                 return names
         return []
 
-    def _handle_tab(self, backward: bool = False) -> None:
-        """Cycle Tab completions for the token under the cursor (Minecraft-style)."""
-        if self._instance is None:
-            return
+    def _completion_context(self):
         text = self._cmd_input.text()
-        if self._comp_active and text == self._comp_last and self._comp_cands:
-            # Keep cycling the existing candidate set.
+        cursor = self._cmd_input.cursorPosition()
+        start = text.rfind(" ", 0, cursor) + 1
+        end = text.find(" ", cursor)
+        if end < 0:
+            end = len(text)
+        parts = text[:cursor].split(" ")
+        prefix = parts[-1]
+        if start == 0:
+            prefix = prefix.lstrip("/")
+        return text, start, end, self._completion_candidates(parts, len(parts) - 1, prefix)
+
+    def _show_suggestions(self, *_):
+        if not self._cmd_input.text().strip():
+            self._suggestions.hide()
+            return
+        _, _, _, candidates = self._completion_context()
+        self._suggestions.clear()
+        self._suggestions.addItems(candidates)
+        self._suggestions.setCurrentRow(0)
+        self._suggestions.setFixedHeight(min(156, 8 + 30 * len(candidates)))
+        self._suggestions.setVisible(bool(candidates))
+
+    def _accept_suggestion(self):
+        item = self._suggestions.currentItem()
+        if item is None:
+            return
+        text, start, end, _ = self._completion_context()
+        slash = "/" if start == 0 and text.startswith("/") else ""
+        replacement = slash + item.text()
+        self._cmd_input.blockSignals(True)
+        self._cmd_input.setText(text[:start] + replacement + text[end:])
+        self._cmd_input.setCursorPosition(start + len(replacement))
+        self._cmd_input.blockSignals(False)
+        self._cmd_input.setFocus()
+
+    def _handle_tab(self, backward: bool = False) -> None:
+        """Complete only the token at the caret; preserve all following arguments."""
+        if self._suggestions.isHidden():
+            self._show_suggestions()
+            if backward and self._suggestions.count():
+                self._suggestions.setCurrentRow(self._suggestions.count() - 1)
+        elif self._comp_active and self._suggestions.count():
             step = -1 if backward else 1
-            self._comp_pos = (self._comp_pos + step) % len(self._comp_cands)
-        else:
-            parts = text.split(" ")
-            self._comp_idx = len(parts) - 1
-            prefix = parts[self._comp_idx]
-            cands = self._completion_candidates(parts, self._comp_idx, prefix)
-            if not cands:
-                self._comp_active = False
-                return
-            self._comp_parts = parts
-            self._comp_cands = cands
-            self._comp_pos = (len(cands) - 1) if backward else 0
-            if len(cands) > 1:
-                # Show the option list once, the way Minecraft lists them.
-                shown = "   ".join(cands[:24])
-                more = "  …" if len(cands) > 24 else ""
-                self._append_system(f"  ⇥ {shown}{more}")
-        cand = self._comp_cands[self._comp_pos]
-        parts = list(self._comp_parts)
-        parts[self._comp_idx] = cand
-        new_text = " ".join(parts)
-        self._cmd_input.setText(new_text)
-        self._cmd_input.setCursorPosition(len(new_text))
-        self._comp_last = new_text
+            self._suggestions.setCurrentRow((self._suggestions.currentRow() + step) % self._suggestions.count())
+        self._accept_suggestion()
         self._comp_active = True
 
     # Auto-scroll

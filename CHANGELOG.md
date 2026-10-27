@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.8.0 — Server-manager refinement
+
+- Live Minecraft-style command suggestions above the console, including gamerules, values, player names, caret-aware Tab completion and keyboard selection.
+- Compatible mod release lists for upgrades and downgrades; exact online identity by SHA-1; official CurseForge provider with session-only API-key entry and author-restriction handling.
+- Verified staged mod/dependency changes, retained originals and recovery receipts, ordinary I/O rollback, conflict checks and stopped-server guards. Failed downloads never retire the original.
+- Explicit JAR environment badges for Fabric, Quilt and declared Forge metadata; unknown is never treated as proof of compatibility.
+- Discoverable rename/F2 without moving files, chosen import names, app-wide server drops, a resizable player panel and a compact two-row header.
+- Machine-normalized CPU percentages and resident-memory wording, visible first in Info. Actionable log diagnostics with source-file access.
+- Client-pack export with matching Prism client-only extras, environment-aware exclusions, exact loader checks and compatibility/license warnings.
+- Added 51 behavioral regression cases plus real-Qt interaction coverage; full suite: 383 passed, 31 subtests passed. Live Modrinth download, SHA-1 lookup and downgrade tested in an isolated folder.
+- CurseForge live authentication and in-game/modpack-specific compatibility remain unverified; command vocabulary is local rather than a live Brigadier tree.
+
+## v0.7.1 -- Modpack updates: engine, CLI, GUI, and rollback
+
+Also folds in the GUI's legacy Forge startup answers, which had shipped
+only to the installed copy on disk and were missing from this lineage:
+Setup -> Legacy Forge startup questions, passed to Java as
+-Dfml.queryResult=confirm|cancel, including via JAVA_TOOL_OPTIONS.
+
+- **Added modpack updating.** `crucible/importers/pack_update.py` identifies the installed pack, reads a release index (GT New Horizons' `versions.json` by default), plans the update, downloads and verifies the server pack, then installs it by staging the new tree beside the live one and swapping only once the staged copy verifies. The world, `server.properties`, and any mods you added yourself are carried across; the previous install is kept alongside as `.pre-update-<stamp>` and is never deleted automatically.
+- **Any source, not just the pack's own index.** `--from` accepts an `https://` link to a server-pack zip, a link to a `versions.json` index, an already-downloaded `.zip`/`.mrpack`, or a bare version like `2.8.4`. Anything ambiguous ("is this actually a modpack?") is described and confirmed before a single file moves.
+- **Archives are probed before extraction.** `probe_archive()` reads only the zip central directory and reports what a file really is, rejecting client packs, index-only `.mrpack` files, and things that are not zips at all -- instead of discovering that halfway through unpacking over a working server.
+- **Rollback and cleanup.** `crucible rollback` restores a kept pre-update install (optionally carrying the current world forward), and `crucible prune-previous` reclaims the space once you are confident in the new version.
+- **Never updates a live server.** An update is blocked while tmux reports the instance running, and equally blocked when tmux cannot give a definite answer, rather than swapping mods under a running JVM.
+- **New commands:** `check-updates`, `update`, `rollback`, `prune-previous`, `probe-pack`.
+- **The GUI now drives all of it.** The Setup tab gains an update section (check for updates, roll back, prune old installs) and the Mods tab an "Update pack" button; both open `PackUpdateDialog` / `RollbackDialog` (`crucible/ui/pack_update_dialog.py`). Every slow step -- index fetch, probe, download, install, rollback, prune -- runs on a worker thread retired through `connect_thread_cleanup`, so the window never blocks and no QThread is destroyed while still running. All decisions live in `crucible/ui/pack_update_model.py`, which imports no PyQt and is therefore testable on a headless box.
+- **Post-update readiness check.** After a successful update both the CLI and the dialog report anything that would stop the server from starting -- EULA, Java, a missing server program -- with the fix for each, and stay quiet when there is nothing to say. It runs on the worker thread rather than the GUI thread, because the check touches the disk and can shell out to java.
+- Fixed six bugs found while building this: registry version drift, Modrinth cross-platform installs, GT New Horizons metadata detection, import summaries, and the extraction location.
+- Repaired two pre-existing mojibake corruptions (`crucible/ui/instance_panel.py`, `crucible/data/instance_model.py`). The third, in `tests/test_log_tail.py`, is deliberate test data and was left alone.
+- Full suite: **313 tests plus 25 subtests, all passing headless** (138 before this work; +126 for the update engine and CLI, +49 for the GUI wiring and the readiness check).
+
 ## v0.7.0 — Final pre-publish hardening
 
 - Eliminated remaining short-lived QThread destructor races across server actions, mods, players, imports, downloads, setup, and world operations using confirmed deferred cleanup.

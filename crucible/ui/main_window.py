@@ -22,11 +22,11 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, Qt, QObject, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QMainWindow, QSplitter, QStatusBar, QLabel,
-    QMessageBox,
+    QMessageBox, QInputDialog,
 )
 
 from ..data.instance_manager import InstanceManager, validate_delete_target
@@ -89,6 +89,8 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)  # drag in Prism instances / packs / server dirs
 
         self._build_ui()
+        from PyQt6.QtWidgets import QApplication
+        QApplication.instance().installEventFilter(self)
         self._populate_sidebar()
         self._start_health_timer()
 
@@ -116,6 +118,7 @@ class MainWindow(QMainWindow):
         self._sidebar.add_requested.connect(self._on_add_requested)
         self._sidebar.remove_requested.connect(self._on_remove_requested)
         self._sidebar.fix_loading_requested.connect(self._on_fix_loading_requested)
+        self._sidebar.rename_requested.connect(self._on_rename_requested)
         self._sidebar.export_requested.connect(self._on_export_requested)
         self._sidebar.order_changed.connect(self._on_order_changed)
         self._sidebar.paths_dropped.connect(self._on_paths_dropped)
@@ -281,6 +284,32 @@ class MainWindow(QMainWindow):
         if not self._panel.load(instance, status_hint=status_hint) and previous_id:
             QTimer.singleShot(0, lambda: self._sidebar.select_by_id(previous_id))
 
+    def _on_rename_requested(self, instance) -> None:
+        from dataclasses import replace
+        name, ok = QInputDialog.getText(self, "Rename server", "Server name:", text=instance.name)
+        if not ok:
+            return
+        name = name.strip()
+        if not name or any(ord(c) < 32 for c in name):
+            QMessageBox.warning(self, "Rename server", "Use a non-empty name without control characters.")
+            return
+        updated = replace(instance, name=name)
+        try:
+            self._manager.update_instance(updated)
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not rename server", str(exc))
+            return
+        # Refresh the existing row/header without reloading tabs or discarding edits.
+        instance.name = updated.name
+        item = self._sidebar._items.get(updated.id)
+        if item is not None:
+            item.instance.name = updated.name
+            item._refresh()
+        if self._panel.current_instance_id() == updated.id:
+            self._panel._instance.name = updated.name
+            self._panel._name_label.setText(updated.name)
+        self.statusBar().showMessage(f'Renamed to “{name}” · files and session unchanged', 5000)
+
     def _on_add_requested(self) -> None:
         dlg = AddInstanceDialog(self._manager, self)
         if dlg.exec() and dlg.result_instance:
@@ -304,26 +333,50 @@ class MainWindow(QMainWindow):
             if p:
                 self._import_dropped_path(Path(p))
 
+    def _show_loading_details(self, instance, summary):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QPushButton
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtCore import QUrl
+        from ..diagnostics.loadcheck import latest_crash_text
+        text, source = latest_crash_text(instance.path)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Loading diagnosis · " + instance.name)
+        dlg.resize(820, 560)
+        layout = QVBoxLayout(dlg)
+        heading = QLabel(summary)
+        heading.setWordWrap(True)
+        layout.addWidget(heading)
+        details = QPlainTextEdit()
+        details.setReadOnly(True)
+        details.setPlainText("Source: " + (source or "No log found") + "\n\n" + (text[-24000:] if text else "Start the server once to capture a log, then check again."))
+        layout.addWidget(details, 1)
+        row = QHBoxLayout()
+        for label, path in (("Open log", source), ("Open server folder", instance.path)):
+            button = QPushButton(label)
+            button.setEnabled(bool(path))
+            button.clicked.connect(lambda _, p=path: QDesktopServices.openUrl(QUrl.fromLocalFile(str(p))))
+            row.addWidget(button)
+        close = QPushButton("Close")
+        close.clicked.connect(dlg.accept)
+        row.addWidget(close)
+        layout.addLayout(row)
+        dlg.exec()
+
     def _on_fix_loading_requested(self, instance: ServerInstance) -> None:
         """Diagnose a start/loading crash and offer to quarantine client-only mods."""
+        status = self._tmux.get_status(instance)
+        if status != "stopped":
+            QMessageBox.warning(self, "Stop the server first", "Loading repairs require a confirmed stopped server. Current status: " + status)
+            return
         from ..diagnostics import loadcheck as lc
         res = lc.autofix_loading(instance.path, apply=False)
         diag = res.diagnosis
 
         if not diag.found_crash:
-            QMessageBox.information(
-                self, "Fix loading errors",
-                "No crash report was found for this server.\n\n"
-                "If it just failed to start, try starting it once more so a "
-                "crash report is written, then run this again.")
+            self._show_loading_details(instance, "No server log was found. Start once to collect one, then re-check Setup and this diagnosis.")
             return
-
         if diag.is_clean:
-            QMessageBox.information(
-                self, "Fix loading errors",
-                "A crash log was found, but no automatically-fixable loading "
-                "problem was recognised.\n\nOpen the latest crash report in the "
-                "server's crash-reports/ folder for the full details.")
+            self._show_loading_details(instance, "No safe automatic repair was identified. Review the latest log below; no files have been changed.")
             return
 
         summary = diag.human_summary()
@@ -333,10 +386,7 @@ class MainWindow(QMainWindow):
             if res.unresolved:
                 extra = ("\n\nCould not locate jars for: "
                          + ", ".join(res.unresolved))
-            QMessageBox.warning(
-                self, "Fix loading errors",
-                summary + extra + "\n\nResolve these issues manually, then try "
-                "starting the server again.")
+            self._show_loading_details(instance, summary + extra + "\nNo safe automatic repair is available; no files were changed.")
             return
 
         msg = QMessageBox(self)
@@ -354,7 +404,14 @@ class MainWindow(QMainWindow):
         if msg.exec() != QMessageBox.StandardButton.Yes:
             return
 
-        applied = lc.autofix_loading(instance.path, apply=True)
+        if self._tmux.get_status(instance) != "stopped":
+            QMessageBox.warning(self, "Status changed", "The server is no longer confirmed stopped. No repair was applied.")
+            return
+        try:
+            applied = lc.autofix_loading(instance.path, apply=True)
+        except OSError as exc:
+            self._show_loading_details(instance, "Repair could not complete: " + str(exc))
+            return
         done = applied.quarantined
         tail = ""
         if applied.unresolved:
@@ -486,6 +543,22 @@ class MainWindow(QMainWindow):
 
     # Drag and drop import
 
+    def eventFilter(self, watched, event):
+        if event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop):
+            from PyQt6.QtWidgets import QWidget
+            if isinstance(watched, QWidget) and (watched is self or self.isAncestorOf(watched)):
+                mime = event.mimeData()
+                paths = [u.toLocalFile() for u in mime.urls()] if mime.hasUrls() else []
+                # Let internal reorders and mod JAR drops keep their own handlers.
+                if not mime.hasFormat("application/x-crucible-instance") and paths and all(Path(p).is_dir() or Path(p).suffix.lower() in (".zip", ".mrpack") for p in paths if p):
+                    if not all(paths):
+                        return False
+                    event.acceptProposedAction()
+                    if event.type() == QEvent.Type.Drop:
+                        QTimer.singleShot(0, lambda items=list(paths): self._on_paths_dropped(items))
+                    return True
+        return super().eventFilter(watched, event)
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -535,7 +608,10 @@ class MainWindow(QMainWindow):
             )
             return
         try:
-            inst = self._manager.add_instance(str(path), path.name)
+            name, ok = QInputDialog.getText(self, "Import server", "Server name:", text=path.name)
+            if not ok or not name.strip():
+                return
+            inst = self._manager.add_instance(str(path), name.strip())
         except ValueError as exc:
             QMessageBox.warning(self, "Import failed", str(exc))
             return

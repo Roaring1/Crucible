@@ -159,12 +159,17 @@ class InstancePanel(QWidget):
 
         # Header
         header = QWidget()
-        header.setStyleSheet(
-            f"background-color: {theme.MANTLE}; "
-            f"border-bottom: 1px solid {theme.SURFACE1};"
-        )
-        header.setFixedHeight(72)
-        h_layout = QHBoxLayout(header)
+        header.setObjectName("InstanceHeader")
+        header.setStyleSheet(f"QWidget#InstanceHeader {{ background-color: {theme.MANTLE}; border-bottom: 1px solid {theme.SURFACE1}; }} QWidget#InstanceHeader QLabel {{ background: transparent; border: none; }}")
+        header.setMinimumHeight(104)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(12, 8, 12, 8)
+        header_layout.setSpacing(8)
+        h_layout = QHBoxLayout()
+        header_layout.addLayout(h_layout)
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        header_layout.addLayout(actions)
         h_layout.setContentsMargins(16, 8, 16, 8)
         h_layout.setSpacing(12)
 
@@ -180,6 +185,7 @@ class InstancePanel(QWidget):
         name_col.setSpacing(2)
         self._name_label = QLabel("—")
         self._name_label.setObjectName("HeaderName")
+        self._name_label.setWordWrap(True)
         self._ver_label  = QLabel("")
         self._ver_label.setObjectName("HeaderVersion")
         name_col.addWidget(self._name_label)
@@ -206,7 +212,8 @@ class InstancePanel(QWidget):
             f"QPushButton:pressed {{ background: {theme.SURFACE2}; }}"
         )
         self._btn_ip.clicked.connect(self._copy_external_ip)
-        h_layout.addWidget(self._btn_ip)
+        actions.addWidget(self._btn_ip)
+        actions.addStretch()
 
         # Buttons -- Start/Stop are primary actions; Restart/Console are secondary.
         # Heights differ intentionally: primary pair is 32px, secondary 28px.
@@ -222,11 +229,11 @@ class InstancePanel(QWidget):
 
         for btn in (self._btn_start, self._btn_stop):
             btn.setFixedHeight(32)
-            h_layout.addWidget(btn)
+            actions.addWidget(btn)
 
         for btn in (self._btn_restart, self._btn_attach):
             btn.setFixedHeight(28)
-            h_layout.addWidget(btn)
+            actions.addWidget(btn)
 
         self._btn_start.clicked.connect(self._do_start)
         self._btn_stop.clicked.connect(self._do_stop)
@@ -379,7 +386,7 @@ class InstancePanel(QWidget):
 
         self._instance = instance
         self._name_label.setText(instance.name)
-        self._ver_label.setText(instance.version)
+        self._ver_label.setText(instance.version or " · ".join(filter(None, [instance.minecraft_version, instance.loader, instance.loader_version])))
         self._set_buttons_enabled(True)
 
         # Sidebar health checks already know the current state. Reuse that
@@ -932,6 +939,9 @@ class InstancePanel(QWidget):
         return None
 
     def _do_start(self) -> None:
+        if self._mods.has_active_operation() or self._setup.has_active_operation():
+            QMessageBox.information(self, "Operation in progress", "Wait for mod or setup operations to finish before starting this server.")
+            return
         if not self._instance:
             return
         inst = self._instance

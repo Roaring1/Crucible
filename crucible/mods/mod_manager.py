@@ -49,6 +49,7 @@ class ModEntry:
     version: str     = ""
     description: str = ""
     url: str         = ""
+    side: str = "unknown"  # explicit metadata only: client/server/both/unknown
     bundled: bool    = False  # True = nested inside a subdir, not manageable
 
     @property
@@ -164,14 +165,14 @@ class ModManager:
         """Copy a .jar file into the mods/ directory."""
         self._mods_dir.mkdir(exist_ok=True)
         dst = self._mods_dir / src.name
-        # Avoid silent overwrite
+        # A renamed duplicate still loads twice in Minecraft; never create *_1.jar.
+        if not src.is_file() or src.suffix.lower() != ".jar" or not zipfile.is_zipfile(src):
+            raise OSError("Select a valid Minecraft mod JAR.")
         if dst.exists():
-            stem = src.stem
-            suffix = src.suffix
-            i = 1
-            while dst.exists():
-                dst = self._mods_dir / f"{stem}_{i}{suffix}"
-                i += 1
+            from .modrinth import _sha1
+            if not dst.is_symlink() and _sha1(src) == _sha1(dst):
+                return ModEntry(dst.name, dst, True, dst.stat().st_size)
+            raise OSError("A different JAR with this name already exists. Use Change version to replace it safely; Crucible will not create a duplicate mod.")
         import shutil
         shutil.copy2(src, dst)
         return ModEntry(
@@ -193,6 +194,41 @@ class ModManager:
             with zipfile.ZipFile(mod.path, "r") as zf:
                 names = zf.namelist()
 
+                # Modern loader metadata is authoritative about environment.
+                if "fabric.mod.json" in names:
+                    meta = json.loads(_read_member_text(zf, "fabric.mod.json"))
+                    mod.mod_id = str(meta.get("id", ""))
+                    mod.name = str(meta.get("name", mod.mod_id))
+                    mod.version = str(meta.get("version", ""))
+                    mod.description = str(meta.get("description", ""))
+                    mod.side = {"client":"client", "server":"server", "*":"both"}.get(meta.get("environment", "*"), "unknown")
+                    mod.url = str((meta.get("contact") or {}).get("homepage", ""))
+                    return
+                if "quilt.mod.json" in names:
+                    meta = json.loads(_read_member_text(zf, "quilt.mod.json"))
+                    loader = meta.get("quilt_loader", {})
+                    detail = loader.get("metadata", {})
+                    mod.mod_id = str(loader.get("id", ""))
+                    mod.name = str(detail.get("name", mod.mod_id))
+                    mod.version = str(loader.get("version", ""))
+                    mod.description = str(detail.get("description", ""))
+                    mod.side = {"client":"client", "server":"server", "*":"both"}.get(meta.get("minecraft", {}).get("environment", "*"), "unknown")
+                    return
+                for member in ("META-INF/neoforge.mods.toml", "META-INF/mods.toml"):
+                    if member in names:
+                        import tomllib
+                        meta = tomllib.loads(_read_member_text(zf, member))
+                        entries = meta.get("mods", [])
+                        if entries:
+                            detail = entries[0]
+                            mod.mod_id = str(detail.get("modId", ""))
+                            mod.name = str(detail.get("displayName", mod.mod_id))
+                            mod.version = str(detail.get("version", ""))
+                            mod.description = str(detail.get("description", ""))
+                            mod.url = str(detail.get("displayURL", ""))
+                        # Dependency side and displayTest do NOT declare a mod's execution side.
+                        mod.side = "client" if meta.get("clientSideOnly") is True else "unknown"
+                        return
                 # mcmod.info (Forge 1.7.10)
                 if "mcmod.info" in names:
                     raw = _read_member_text(zf, "mcmod.info")
@@ -203,7 +239,7 @@ class ModManager:
                 if "META-INF/MANIFEST.MF" in names:
                     mf = _read_member_text(zf, "META-INF/MANIFEST.MF")
                     self._parse_manifest(mod, mf)
-        except (zipfile.BadZipFile, KeyError, OSError, ValueError):
+        except (zipfile.BadZipFile, KeyError, OSError, ValueError, TypeError, AttributeError):
             pass  # corrupt/unusual jar — leave fields empty
 
     def _parse_mcmod(self, mod: ModEntry, raw: str) -> None:
@@ -219,6 +255,10 @@ class ModManager:
                 mod.version     = entry.get("version", "")
                 mod.description = entry.get("description", "")
                 mod.url         = entry.get("url", "")
+                if entry.get("clientSideOnly") is True:
+                    mod.side = "client"
+                elif entry.get("serverSideOnly") is True:
+                    mod.side = "server"
         except (json.JSONDecodeError, TypeError, KeyError):
             pass
 

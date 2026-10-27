@@ -167,12 +167,12 @@ class Diagnosis:
 
     def human_summary(self) -> str:
         if not self.found_crash:
-            return "No crash log found \u2014 nothing to diagnose."
+            return "No crash log found — nothing to diagnose."
         if self.is_clean:
             return "A crash log was found, but no known loading problem was recognised."
         lines = []
         for iss in self.issues:
-            lines.append("\u2022 " + iss.detail)
+            lines.append("• " + iss.detail)
         return "\n".join(lines)
 
 
@@ -219,6 +219,7 @@ def latest_crash_text(server_path: str | Path) -> tuple[str | None, str | None]:
         p = root / name
         if p.is_file():
             candidates.append(p)
+    candidates.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
     for p in candidates:
         try:
             return read_diagnostic_text(p), str(p)
@@ -292,9 +293,19 @@ def parse_crash_log(text: str) -> Diagnosis:
     if _DUP_RE.search(text):
         diag.issues.append(LoadIssue(
             "duplicate",
-            "Duplicate mods detected \u2014 the same mod is present twice in mods/. "
+            "Duplicate mods detected — the same mod is present twice in mods/. "
             "Remove the older copy."))
 
+    common = (
+        ("UnsupportedClassVersionError", "java_version", "The server needs a different Java version. Review its class-version error and select the required Java runtime in Setup."),
+        ("Address already in use", "port_in_use", "The server port is already in use. Stop the other server or choose a different server-port in Config."),
+        ("OutOfMemoryError", "out_of_memory", "Java ran out of memory. Review the heap setting and available machine RAM; inspect the log before increasing it."),
+        ("No space left on device", "disk_full", "The disk is full. Free space before restarting or making another backup."),
+        ("Invalid or corrupt jarfile", "corrupt_jar", "The launch JAR is missing or corrupt. Reinstall that exact server/loader release; do not delete worlds."),
+    )
+    for marker, kind, detail in common:
+        if marker.lower() in text.lower():
+            diag.issues.append(LoadIssue(kind, detail))
     return diag
 
 

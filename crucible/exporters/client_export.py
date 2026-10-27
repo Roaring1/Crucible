@@ -10,8 +10,8 @@ jars are bundled, so nothing needs re-downloading):
   * prism      - MultiMC/Prism instance .zip; "Add Instance -> Import from zip"
   * curseforge - CurseForge-style manifest zip with overrides
 
-A small blocklist of known server-only jars is skipped so the client doesn't
-choke on them.
+Explicit loader environment metadata excludes server-only jars. Unknown sides
+are preserved and reported, not inferred from filenames.
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ class ExportResult:
     mod_count: int = 0
     skipped: list = field(default_factory=list)
     error: str = ""
+    warnings: list = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -79,7 +80,7 @@ def _config_dirs(server_path: Path) -> list:
 
 
 def export(instance, out_path, fmt: str = "mrpack", *,
-           include_config: bool = True) -> ExportResult:
+           include_config: bool = True, client_source: str = "") -> ExportResult:
     """Build a client instance file from a server instance."""
     server = Path(getattr(instance, "path"))
     name = getattr(instance, "name", "Server")
@@ -95,13 +96,50 @@ def export(instance, out_path, fmt: str = "mrpack", *,
             "Unknown Minecraft version for this server - set it first "
             "(Info tab) so the client can match."))
 
-    ship, skipped = [], []
+    from ..mods.mod_manager import ModManager, ModEntry
+    inspector = ModManager(instance)
+    ship, skipped, unknown = [], [], []
     for j in _enabled_mods(server):
-        (skipped if _is_server_only(j.name) else ship).append(j)
+        if j.is_symlink():
+            return ExportResult(error="Symlinked mods are not exported: " + j.name)
+        entry = ModEntry(j.name, j, True, j.stat().st_size)
+        inspector.inspect_jar(entry)
+        if entry.side == "server":
+            skipped.append(j)
+        else:
+            ship.append(j)
+            if entry.side == "unknown": unknown.append(j.name)
+    if client_source:
+        source = Path(client_source).expanduser()
+        pack_file = source / "mmc-pack.json"
+        try:
+            pack = json.loads(pack_file.read_text())
+            components = {c["uid"]: c.get("version", "") for c in pack["components"]}
+        except (OSError, ValueError, KeyError, TypeError):
+            return ExportResult(error="Choose a fully installed Prism/MultiMC instance containing mmc-pack.json.")
+        if components.get("net.minecraft") != mc:
+            return ExportResult(error="The client source uses a different Minecraft version. No archive was written.")
+        uid = _PRISM_UID.get(loader)
+        if uid and (uid not in components or (loader_version and components[uid] != loader_version)):
+            return ExportResult(error="The client source uses a different loader/version. No archive was written.")
+        client_mods = source / ".minecraft" / "mods"
+        if not client_mods.is_dir(): client_mods = source / "minecraft" / "mods"
+        if not client_mods.is_dir(): return ExportResult(error="The source instance has no installed mods folder.")
+        names = {j.name for j in ship}
+        for j in sorted(client_mods.glob("*.jar")):
+            if j.is_symlink() or j.name in names: continue
+            entry = ModEntry(j.name, j, True, j.stat().st_size)
+            inspector.inspect_jar(entry)
+            # Restore only explicitly client-only mods. Never mix an older shared mod in.
+            if entry.side == "client": ship.append(j); names.add(j.name)
     cfg = _config_dirs(server) if include_config else []
 
     if fmt not in {"mrpack", "prism", "curseforge"}:
         return ExportResult(error=f"Unknown format: {fmt}")
+    if loader != "vanilla" and loader and not loader_version:
+        return ExportResult(error="Set the exact loader version in Setup before exporting a client; guessing a loader can make the pack unlaunchable.")
+    if any(out_path.resolve() == p.resolve() for p in ship):
+        return ExportResult(error="The export destination cannot overwrite a mod JAR.")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     partial = out_path.with_suffix(out_path.suffix + ".partial")
     try:
@@ -122,7 +160,8 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         return ExportResult(error=f"Could not write {fmt} file: {e}")
 
     return ExportResult(path=str(out_path), fmt=fmt, mod_count=len(ship),
-                        skipped=[p.name for p in skipped])
+                        skipped=[p.name for p in skipped],
+                        warnings=([f"{len(unknown)} mod(s) have unknown client compatibility; test this pack in Prism before sharing."] if unknown else []) + ["Server packs may not include required client-side mods. Only explicitly client-only files from the optional matching Prism source were added.", "Bundled mod JARs are for personal use; check authors’ licenses before redistribution."])
 
 
 def _add_dir(zf: zipfile.ZipFile, src: Path, arc_prefix: str) -> None:
@@ -168,7 +207,7 @@ def _build_prism(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
     mmc_pack = {"components": components, "formatVersion": 1}
     instance_cfg = (
         "[General]\nConfigVersion=1.2\n"
-        f"name={name}\nInstanceType=OneSix\niconKey=default\n"
+        f"name={name.replace(chr(10), ' ').replace(chr(13), ' ')}\nInstanceType=OneSix\niconKey=default\n"
     )
     folder = _safe_name(name)
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
