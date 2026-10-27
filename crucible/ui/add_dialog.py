@@ -190,7 +190,7 @@ class AddInstanceDialog(QDialog):
         self._name_edit.setPlaceholderText("My server")
         self._name_edit.setMinimumWidth(320)
         self._name_edit.setMinimumHeight(32)
-        form.addRow("Display name:", self._name_edit)
+        form.addRow("Server name:", self._name_edit)
 
         self._ver_edit = QLineEdit()
         self._ver_edit.setPlaceholderText("Version (optional)")

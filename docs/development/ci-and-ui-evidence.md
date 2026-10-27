@@ -52,20 +52,21 @@ into chat as base64.
 
 For screenshots captured during a live session, use the desktop's normal
 screenshot tool and save them into the inbox above. For UI changes reproducible
-from source, capture all four key screens without opening desktop windows:
+from source, capture the five key screens without opening desktop windows:
 
-    python scripts/capture_ui_previews.py
+    QT_QPA_PLATFORM=offscreen python scripts/capture_ui_previews.py
 
-This writes `main-empty.png`, `create-server.png`, `import-files.png`, and
-`install-modpack.png` to `~/.cache/crucible/ui-previews` by default. It uses an
-empty temporary registry, disables live version/modpack searches, and labels
-those preview-only fields so the screenshots cannot be mistaken for a live
-server installation. Then create a smaller contact sheet and a manifest:
+This writes `main-empty.png`, `add-server-menu.png`, `create-server.png`,
+`import-files.png`, and `install-modpack.png` to
+`~/.cache/crucible/ui-previews` by default. The create form uses its actual
+initial size; the utility uses a temporary registry, disables live
+version/modpack searches, and labels those preview-only fields so the screenshots
+cannot be mistaken for a live server installation. Then create a contact sheet
+and manifest:
 
-    python scripts/prepare_ui_evidence.py ~/.cache/crucible/ui-previews
+    python scripts/prepare_ui_evidence.py ~/.cache/crucible/ui-previews --output ~/.cache/crucible/ui-previews-contact
 
-The output is under `~/.cache/crucible/ui-evidence`. Both tools can be pointed
-at a different directory with `--output`.
+Both tools can be pointed at a different directory with `--output`.
 
 ## What the UX changes are trying to enforce
 

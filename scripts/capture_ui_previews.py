@@ -30,9 +30,9 @@ if str(REPO_ROOT) not in sys.path:
 def capture_previews(output: Path) -> list[Path]:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-    from PyQt6.QtCore import QCoreApplication, QEvent
+    from PyQt6.QtCore import QCoreApplication, QEvent, QPoint
     from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication, QMenu
     from crucible.data.instance_manager import InstanceManager
     from crucible.ui import theme
     from crucible.ui.add_dialog import AddInstanceDialog
@@ -51,8 +51,13 @@ def capture_previews(output: Path) -> list[Path]:
     manager = InstanceManager(root / "registry")
     manager.load()
 
-    def save(widget, filename: str, width: int, height: int) -> None:
-        widget.resize(width, height)
+    def save(widget, filename: str, width: int | None = None, height: int | None = None) -> None:
+        if width is None or height is None:
+            # Preserve Qt's real initial size for dialogs without an explicit
+            # runtime size, rather than stretching controls across empty space.
+            widget.adjustSize()
+        else:
+            widget.resize(width, height)
         widget.show()
         QTest.qWait(40)
         app.processEvents()
@@ -69,6 +74,25 @@ def capture_previews(output: Path) -> list[Path]:
         with patch.object(MainWindow, "_run_crash_recovery", lambda self: None):
             main = MainWindow(manager)
             save(main, "main-empty.png", 1200, 760)
+
+            # Capture the first action menu as a menu, not as another dialog.
+            # This is the entry point most new users see, so its three choices
+            # should be clear without needing to open any of the workflows.
+            def capture_add_menu(menu, *_args) -> None:
+                anchor = main._sidebar._add_btn
+                menu.popup(anchor.mapToGlobal(QPoint(0, anchor.height())))
+                QTest.qWait(40)
+                app.processEvents()
+                target = output / "add-server-menu.png"
+                pixmap = menu.grab()
+                if pixmap.isNull() or not pixmap.save(str(target), "PNG"):
+                    raise RuntimeError(f"Could not capture Add server menu: {target}")
+                generated.append(target)
+                menu.hide()
+
+            with patch.object(QMenu, "exec", capture_add_menu):
+                main._on_add_requested()
+
             main.close()
             QTest.qWait(80)
             main.deleteLater()
@@ -88,7 +112,7 @@ def capture_previews(output: Path) -> list[Path]:
         with patch.object(NewServerDialog, "_reload_versions", preview_versions):
             create = NewServerDialog(manager)
             create._path_edit.setText("/home/demo/CrucibleServers/My-Server")
-            save(create, "create-server.png", 760, 650)
+            save(create, "create-server.png")
             create.close()
             QTest.qWait(20)
             create.deleteLater()

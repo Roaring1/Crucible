@@ -120,14 +120,14 @@ class NewServerDialog(QDialog):
         layout.setSpacing(12)
         layout.setContentsMargins(20, 16, 20, 16)
 
-        title = QLabel("Create a new server")
+        title = QLabel("Create a server")
         title.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {theme.TEXT};")
         layout.addWidget(title)
 
         sub = QLabel(
-            "Pick a type and a Minecraft version, choose where to put it, and "
-            "click Create. Crucible downloads the official dedicated server for "
-            "you. Vanilla is the simplest — just pick a version and go."
+            "Choose the server software and Minecraft version. Crucible creates "
+            "the server folder and downloads the server program. Vanilla is the "
+            "simplest option if you are not sure which to choose."
         )
         sub.setWordWrap(True)
         sub.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
@@ -143,7 +143,7 @@ class NewServerDialog(QDialog):
         for label, _ in _LOADERS:
             self._loader_combo.addItem(label)
         self._loader_combo.currentIndexChanged.connect(self._on_loader_changed)
-        form.addRow("Server type:", self._loader_combo)
+        form.addRow("Server software:", self._loader_combo)
 
         # The common path only needs a Minecraft version. Less-used version
         # controls are grouped below rather than crowding the initial form.
@@ -197,7 +197,7 @@ class NewServerDialog(QDialog):
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText("My Server")
         self._name_edit.textChanged.connect(self._on_name_changed)
-        form.addRow("Display name:", self._name_edit)
+        form.addRow("Server name:", self._name_edit)
 
         # Destination folder, placed under the name and kept in sync with it
         # until the user edits it themselves.
@@ -212,7 +212,7 @@ class NewServerDialog(QDialog):
         dst_row.addWidget(browse)
         self._path_hint = QLabel("Auto-named from the display name — edit if you want a different folder.")
         self._path_hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
-        form.addRow("Folder:", dst_row)
+        form.addRow("Server folder:", dst_row)
         form.addRow("", self._path_hint)
         # Use a real default rather than placeholder-only text. This lets a new
         # user start from the latest release without first guessing what to type.
