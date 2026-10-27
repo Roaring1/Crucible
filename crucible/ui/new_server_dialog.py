@@ -359,7 +359,7 @@ class NewServerDialog(QDialog):
         }
         candidate = parent / safe
         suffix = 2
-        while candidate.exists() or candidate.resolve() in used:
+        while candidate.exists() or candidate.is_symlink() or candidate.resolve() in used:
             candidate = parent / f"{safe}-{suffix}"
             suffix += 1
         return candidate
@@ -417,6 +417,13 @@ class NewServerDialog(QDialog):
                     self, "Server already exists in Crucible",
                     f"The folder is already registered as {already_registered.name!r}. "
                     "Choose a different folder, or select that server in the list.",
+                )
+                return
+            if target.is_symlink():
+                QMessageBox.warning(
+                    self, "Symbolic-link destination",
+                    f"Crucible won't create a server through a symbolic link:\n\n{target}\n\n"
+                    "Choose a normal folder path instead.",
                 )
                 return
             if target.exists() and (

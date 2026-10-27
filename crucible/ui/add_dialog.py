@@ -274,7 +274,7 @@ class AddInstanceDialog(QDialog):
         name = self._safe_folder_name(suggested_name) or "server"
         target = Path(parent) / name
         suffix = 2
-        while target.exists():
+        while target.exists() or target.is_symlink():
             target = Path(parent) / f"{name}-{suffix}"
             suffix += 1
         return str(target)

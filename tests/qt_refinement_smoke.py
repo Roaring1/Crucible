@@ -20,6 +20,8 @@ from crucible.ui.tabs.system_tab import SystemTab
 from crucible.ui.add_mod_dialog import AddModDialog
 from crucible.ui.add_dialog import AddInstanceDialog
 from crucible.ui.new_server_dialog import NewServerDialog
+from crucible.ui.modpack_dialog import ModpackDialog, _PackInstallWorker
+import threading
 from crucible.mods.mod_manager import ModEntry
 from crucible.ui import theme
 
@@ -118,7 +120,88 @@ with patch('crucible.ui.new_server_dialog.QMessageBox.warning') as warning:
  fresh._on_create()
 assert warning.called and not fresh._busy
 assert sentinel.read_text()=='keep', 'fresh server creation must preserve existing files'
+# A leaf symlink to an empty directory is not a safe new-server destination.
+real_empty=root/'real-empty-server-target';real_empty.mkdir()
+leaf_link=root/'linked-server-target';leaf_link.symlink_to(real_empty,target_is_directory=True)
+fresh._path_edit.setText(str(leaf_link))
+with patch('crucible.ui.new_server_dialog.QMessageBox.warning') as warning:
+ fresh._on_create()
+assert warning.called and warning.call_args.args[1]=='Symbolic-link destination'
+assert list(real_empty.iterdir())==[], 'fresh server creation must not write through a symlink'
 fresh.close();QTest.qWait(20)
+
+# Modrinth server installation uses a folder picker, never a Save File picker;
+# its unique target accounts for both files on disk and registry paths.
+modpack_parent=root/'modpack-destinations';modpack_parent.mkdir()
+(modpack_parent/'Test-Pack').mkdir()
+registered_target=modpack_parent/'Test-Pack-2'
+registered_only=SimpleNamespace(path=str(registered_target))
+with patch.object(ModpackDialog,'_do_search',lambda self,initial=False:None):
+ pack_ui=ModpackDialog(m)
+assert pack_ui._unique_install_target(
+ modpack_parent,'Test Pack',m.instances+[registered_only]
+) == modpack_parent/'Test-Pack-3'
+m.add_instance(str(registered_target),'Registered target')
+hit=SimpleNamespace(
+ title='Test Pack',project_id='test-pack-id',downloads=10,author='author',
+ icon_url='',page_url=lambda:'https://example.invalid'
+)
+pack_ui._all_hits=[hit];pack_ui._results.addItem('Test Pack');pack_ui._results.setCurrentRow(0)
+pack_ui._eula.setChecked(False)
+with patch('crucible.ui.modpack_dialog.QFileDialog.getExistingDirectory') as folder_picker:
+ pack_ui._install()
+assert not folder_picker.called
+assert 'accept the minecraft eula' in pack_ui._status.text().lower()
+with patch('crucible.ui.modpack_dialog.QFileDialog.getExistingDirectory',return_value=str(modpack_parent)) as folder_picker:
+ chosen_target=pack_ui._choose_install_target(hit)
+assert chosen_target == str(modpack_parent/'Test-Pack-3')
+assert folder_picker.called
+
+# An install target that appears after the picker is rechecked in the worker;
+# the worker must not call into the installer or touch the existing files.
+race_target=root/'raced-modpack';race_target.mkdir()
+race_marker=race_target/'keep.txt';race_marker.write_text('keep this file')
+worker_logs=[];worker_results=[]
+worker=_PackInstallWorker('test-pack-id',str(race_target),True,threading.Event())
+worker.log.connect(worker_logs.append);worker.finished.connect(worker_results.append)
+with patch('crucible.ui.modpack_dialog.modpack_auto.install_modpack_from_modrinth') as install_call:
+ worker.run()
+assert not install_call.called and worker_results==[None]
+assert any('Refusing to install into an existing folder' in line for line in worker_logs)
+assert race_marker.read_text()=='keep this file'
+
+fresh_worker_target=root/'fresh-worker-target'
+fresh_worker= _PackInstallWorker('test-pack-id',str(fresh_worker_target),True,threading.Event())
+fresh_worker_results=[];fresh_worker.finished.connect(fresh_worker_results.append)
+fake_install_result=SimpleNamespace(ok=True)
+with patch('crucible.ui.modpack_dialog.modpack_auto.install_modpack_from_modrinth',return_value=fake_install_result) as install_call:
+ fresh_worker.run()
+assert install_call.call_args.kwargs['target_must_not_exist'] is True
+assert fresh_worker_results==[fake_install_result]
+
+# Completion is communicated in the existing status/log UI, not a second popup.
+success_target=root/'installed-modpack';success_target.mkdir()
+pack_ui._pending=(hit,str(success_target))
+ok_result=SimpleNamespace(
+ path=str(success_target),ok=True,cancelled=False,failed_reason='',
+ minecraft_version='1.21.1',loader='fabric',loader_version='0.16.10',
+ summary=lambda:'Installed test pack'
+)
+pack_ui._on_installed(ok_result)
+assert pack_ui.result_instance is not None and pack_ui._accept_requested
+assert 'added it to your server list' in pack_ui._status.text()
+
+# If a path is already registered, return that row rather than appending a duplicate.
+pack_ui._pending=(hit,inst.path)
+duplicate_result=SimpleNamespace(
+ path=inst.path,ok=True,cancelled=False,failed_reason='',
+ minecraft_version='1.21.1',loader='fabric',loader_version='0.16.10',
+ summary=lambda:'Existing server'
+)
+pack_ui._accept_requested=False
+pack_ui._on_installed(duplicate_result)
+assert pack_ui.result_instance.id==inst.id and pack_ui._accept_requested
+pack_ui.close();pack_ui.deleteLater();QTest.qWait(20)
 
 with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  window=MainWindow(m);window.resize(900,600);window.show();QTest.qWait(80)
@@ -148,6 +231,17 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
    with patch.object(AddInstanceDialog,'exec',return_value=0), patch.object(QMenu,'exec',new=fake_menu_exec):
     window._on_add_requested()
   assert captured == [labels], captured
+
+ # Reinstall/duplicate results should select an existing sidebar row, not add
+ # a duplicate row or claim the server was newly added.
+ previous_count=window._sidebar._list.count()
+ existing_dialog=MagicMock();existing_dialog.result_instance=inst;existing_dialog.exec.return_value=1
+ def choose_existing_pack(menu,*args):return menu.actions()[1]
+ with patch('crucible.ui.modpack_dialog.ModpackDialog',return_value=existing_dialog), patch.object(QMenu,'exec',new=choose_existing_pack), patch.object(window._tmux,'get_status',return_value='stopped'):
+  window._on_add_requested()
+ assert window._sidebar._list.count()==previous_count
+ assert window._sidebar.selected_instance().id==inst.id
+ assert 'selected existing server' in window.statusBar().currentMessage().lower()
 
  # Previewing an imported pack must not write a registry entry until Add server.
  target=root/'not-yet-registered-pack'

@@ -498,6 +498,9 @@ def create_fresh_server(
     target = Path(target).expanduser()
     res = FreshServerResult(path=str(target))
     try:
+        if target.is_symlink():
+            res.failed_reason = f"refusing to create a server through a symbolic link: {target}"
+            return res
         if target.exists() and any(target.iterdir()) and not overwrite:
             res.failed_reason = f"folder {target} already exists and is not empty"
             return res

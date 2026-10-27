@@ -344,13 +344,21 @@ def install_modpack_from_modrinth(
     log_cb: LogCb = None,
     cancel=None,
     progress_cb: ProgressCb = None,
+    target_must_not_exist: bool = False,
 ) -> ModpackInstallResult:
-    """Resolve a Modrinth modpack project, download its ``.mrpack`` and install it.
+    """Resolve a Modrinth modpack project, download its .mrpack and install it.
 
-    Never raises.
+    Never raises. Set target_must_not_exist for GUI workflows that have chosen
+    a fresh destination; the target is atomically claimed with mkdir(exist_ok=False)
+    so a collision cannot overwrite another folder.
     """
     target = Path(target).expanduser()
     res = ModpackInstallResult(path=str(target))
+
+    if target_must_not_exist and (target.exists() or target.is_symlink()):
+        res.failed_reason = f"target folder already exists: {target}"
+        res.messages.append(res.failed_reason)
+        return res
 
     # Resolve the newest matching .mrpack version.
     _log(log_cb, f"Resolving modpack {project_id} on Modrinth…")
@@ -370,9 +378,18 @@ def install_modpack_from_modrinth(
         res.failed_reason = "cancelled"
         return res
 
-    # Download the .mrpack to a temp location under the target.
+    # Download the .mrpack to a temp location under the target. In strict
+    # GUI mode this is also the atomic claim: if another process created the
+    # folder while Modrinth was resolving, refuse rather than copying over it.
     try:
-        target.mkdir(parents=True, exist_ok=True)
+        if target_must_not_exist:
+            target.mkdir(parents=True, exist_ok=False)
+        else:
+            target.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        res.failed_reason = f"target folder appeared during install; refusing to overwrite: {target}"
+        res.messages.append(res.failed_reason)
+        return res
     except Exception as exc:  # noqa: BLE001
         res.failed_reason = f"cannot create target folder: {exc}"
         res.messages.append(res.failed_reason)

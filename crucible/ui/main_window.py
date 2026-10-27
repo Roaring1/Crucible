@@ -345,8 +345,18 @@ class MainWindow(QMainWindow):
         if dlg.exec() and dlg.result_instance is not None:
             inst = dlg.result_instance
             status = self._tmux.get_status(inst)
-            self._sidebar.add_instance(inst, status)
+            already_listed = inst.id in self._sidebar._items
+            if already_listed:
+                self._sidebar.update_status(inst.id, status)
+            else:
+                self._sidebar.add_instance(inst, status)
             self._sidebar.select_by_id(inst.id)
+            message = (
+                f'Selected existing server "{inst.name}"'
+                if already_listed
+                else f'Added "{inst.name}" to the server list'
+            )
+            self.statusBar().showMessage(message, 5000)
             self._update_status_bar()
             if isinstance(dlg, AddInstanceDialog):
                 # The import window is already closed before this optional prompt appears.

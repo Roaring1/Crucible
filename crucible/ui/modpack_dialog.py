@@ -20,7 +20,7 @@ from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal, QSize, QUrl
 from PyQt6.QtGui import QPixmap, QIcon, QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QListWidget, QListWidgetItem, QFileDialog, QMessageBox, QCheckBox,
+    QListWidget, QListWidgetItem, QFileDialog, QCheckBox,
     QPlainTextEdit, QProgressBar,
 )
 
@@ -68,12 +68,22 @@ class _PackInstallWorker(QObject):
     def run(self) -> None:
         result = None
         try:
+            target = Path(self._target).expanduser()
+            # The UI chooses a new, collision-free folder. Recheck immediately
+            # before disk/network work in case another process created it meanwhile.
+            if target.exists() or target.is_symlink():
+                self.log.emit(
+                    f"Refusing to install into an existing folder: {target}. "
+                    "Nothing was overwritten; choose another parent folder and retry."
+                )
+                return
             result = modpack_auto.install_modpack_from_modrinth(
                 self._pid,
-                self._target,
+                target,
                 accept_eula=self._eula,
                 log_cb=lambda m: self.log.emit(m),
                 cancel=self._cancel,
+                target_must_not_exist=True,
             )
         except Exception as exc:  # last-resort guard; installer normally never raises
             try:
@@ -128,9 +138,10 @@ class ModpackDialog(QDialog):
         title.setStyleSheet(f"font-size:16px; font-weight:700; color:{theme.TEXT};")
         root.addWidget(title)
         sub = QLabel(
-            "Pick a modpack and Crucible sets up the whole server for you \u2014 the "
-            "right loader, every server-side mod, and the pack's configs. "
-            "Powered by Modrinth, no account needed.")
+            "Choose a pack, accept the Minecraft EULA, then choose a parent folder. "
+            "Crucible creates a new server folder and installs the matching loader, "
+            "server-side mods, and configs. Powered by Modrinth; no account needed."
+        )
         sub.setWordWrap(True)
         sub.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:12px;")
         root.addWidget(sub)
@@ -280,7 +291,7 @@ class ModpackDialog(QDialog):
         if n == 0:
             self._status.setText("No modpacks found \u2014 try a different name.")
             return
-        msg = f"{n} modpack(s) \u00b7 click one, accept the EULA, then Install server"
+        msg = f"{n} modpack(s) \u00b7 select one, accept the EULA, then Install server"
         if self._has_more:
             msg += " \u00b7 scroll for more"
         self._status.setText(msg)
@@ -330,6 +341,38 @@ class ModpackDialog(QDialog):
             QDesktopServices.openUrl(QUrl(hit.page_url()))
 
     # --- install ---
+    def _choose_install_target(self, hit) -> str:
+        """Choose a parent directory; always create a fresh, unused child folder."""
+        base = Path.home() / "CrucibleServers"
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            base = Path.home()
+        parent = QFileDialog.getExistingDirectory(
+            self,
+            "Choose where to create the server folder",
+            str(base),
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not parent:
+            return ""
+        return str(self._unique_install_target(Path(parent), hit.title, self._manager.instances))
+
+    @staticmethod
+    def _unique_install_target(parent: Path, title: str, instances) -> Path:
+        """Return a new directory name that won't collide with files or registrations."""
+        base = _safe_dir(title)
+        used = {
+            Path(instance.path).expanduser().resolve()
+            for instance in instances
+        }
+        candidate = parent / base
+        suffix = 2
+        while candidate.exists() or candidate.is_symlink() or candidate.resolve() in used:
+            candidate = parent / f"{base}-{suffix}"
+            suffix += 1
+        return candidate
+
     def _install(self):
         if self._busy:
             return
@@ -337,16 +380,14 @@ class ModpackDialog(QDialog):
         if hit is None:
             return
         if not self._eula.isChecked():
-            QMessageBox.information(
-                self, "EULA required",
-                "Mojang requires you to accept the Minecraft EULA before a "
-                "server can run. Tick the EULA checkbox to continue.")
+            self._status.setText(
+                "Accept the Minecraft EULA using the checkbox at the bottom before installing."
+            )
+            self._eula.setFocus()
             return
 
-        suggested = str(Path.home() / "minecraft-servers" / _safe_dir(hit.title))
-        target, ok = QFileDialog.getSaveFileName(
-            self, "Choose a folder for this server", suggested)
-        if not ok or not target:
+        target = self._choose_install_target(hit)
+        if not target:
             return
 
         self._busy = True
@@ -358,11 +399,10 @@ class ModpackDialog(QDialog):
         self._progress.show()
         self._log.show()
         self._log.clear()
-        self._status.setText(f"Installing {hit.title}\u2026")
+        self._status.setText(f"Installing {hit.title}…")
 
         self._pending = (hit, target)
-        w = _PackInstallWorker(hit.project_id, target,
-                               self._eula.isChecked(), self._cancel_event)
+        w = _PackInstallWorker(hit.project_id, target, self._eula.isChecked(), self._cancel_event)
         self._ithread = QThread()
         self._iworker = w
         w.moveToThread(self._ithread)
@@ -387,22 +427,30 @@ class ModpackDialog(QDialog):
         hit, target = getattr(self, "_pending", (None, ""))
 
         if result is None:
-            self._status.setText("\u26a0 Install failed \u2014 see the log above.")
-            QMessageBox.critical(
-                self, "Install failed",
-                "The modpack could not be installed. See the log for details.")
+            self._status.setText("Install failed — see the log above.")
+            self._log.appendPlainText("The installer returned no result.")
             return
         if result.cancelled:
-            self._status.setText("Install cancelled.")
+            self._status.setText("Install cancelled; partial files may remain in the selected folder.")
+            self._log.appendPlainText(f"Partial install folder: {target}")
             return
         if not result.ok:
-            self._status.setText("\u26a0 " + (result.failed_reason or "Install failed."))
-            QMessageBox.critical(
-                self, "Install failed",
-                result.failed_reason or "The modpack could not be installed.")
+            reason = result.failed_reason or "The modpack could not be installed."
+            self._status.setText("Install failed — see the log above.")
+            self._log.appendPlainText(reason)
+            self._log.appendPlainText(result.summary())
             return
 
-        name = hit.title if hit is not None else Path(target).name
+        # Keep the display name readable, but give repeated pack names distinct
+        # tmux sessions. Each install already has its own unique folder.
+        base_name = hit.title if hit is not None else Path(target).name
+        name = base_name
+        used_sessions = {instance.tmux_session for instance in self._manager.instances}
+        suffix = 2
+        while ServerInstance._derive_session_name(name) in used_sessions:
+            name = f"{base_name} ({suffix})"
+            suffix += 1
+
         try:
             inst = self._manager.add_instance(
                 result.path,
@@ -413,25 +461,34 @@ class ModpackDialog(QDialog):
                 loader=result.loader,
                 loader_version=result.loader_version,
             )
-        except ValueError:
-            # Path already registered as a server. The pack was reinstalled in
-            # place; just point the user at their existing instance list.
-            QMessageBox.information(
-                self, "Modpack installed",
-                f"{name} was reinstalled into a folder that is already in your "
-                f"server list.\n\n{result.summary()}")
-            self._accept_requested = True
+        except ValueError as exc:
+            resolved = Path(result.path).expanduser().resolve()
+            existing = next(
+                (
+                    instance for instance in self._manager.instances
+                    if Path(instance.path).expanduser().resolve() == resolved
+                ),
+                None,
+            )
+            if existing is not None:
+                self.result_instance = existing
+                self._status.setText(
+                    f"{existing.name} is already in the server list. Returning to that server."
+                )
+                self._log.appendPlainText(result.summary())
+                self._accept_requested = True
+                return
+            self._status.setText("Modpack installed, but the server could not be registered.")
+            self._log.appendPlainText(str(exc))
             return
         except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(
-                self, "Could not register",
-                f"The pack installed but the server could not be added:\n{exc}")
+            self._status.setText("Modpack installed, but the server could not be registered.")
+            self._log.appendPlainText(f"Registration error: {exc}")
             return
 
         self.result_instance = inst
-        QMessageBox.information(
-            self, "Modpack installed",
-            f"{name} is ready to run.\n\n{result.summary()}")
+        self._status.setText(f"Installed {name} and added it to your server list.")
+        self._log.appendPlainText(result.summary())
         self._accept_requested = True
 
     def _thread_finished(self, pair) -> None:
