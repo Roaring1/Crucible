@@ -15,7 +15,9 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pin the image during GitHub's ubuntu-latest migration to Ubuntu 26.04.
+    # Update intentionally after the suite has been validated on the new image.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
