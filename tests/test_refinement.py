@@ -17,7 +17,7 @@ from crucible.mods import curseforge as cf
 from crucible.mods.mod_manager import ModManager, ModEntry
 from crucible.exporters import client_export
 from crucible.process.resource_monitor import machine_cpu_percent
-from crucible.diagnostics.loadcheck import parse_crash_log, latest_crash_text
+from crucible.diagnostics.loadcheck import autofix_loading, parse_crash_log, latest_crash_text
 
 
 def mf(name='new.jar', data=b'new', project='project'):
@@ -210,6 +210,54 @@ def test_client_source_adds_only_declared_client_extras(tmp_path):
 @pytest.mark.parametrize('text,kind',[('UnsupportedClassVersionError','java_version'),('Address already in use','port_in_use'),('java.lang.OutOfMemoryError','out_of_memory'),('No space left on device','disk_full'),('Invalid or corrupt jarfile','corrupt_jar')])
 def test_actionable_diagnosis(text,kind):
     assert kind in [i.kind for i in parse_crash_log(text).issues]
+
+
+def test_progresspeek_glfw_bootstrap_crash_is_detected_and_quarantined(tmp_path):
+    server_dir = tmp_path / "server"
+    mods = server_dir / "mods"
+    mods.mkdir(parents=True)
+    jar_path = mods / "progresspeek-1.0.1+1.21.1-neoforge.jar"
+    with zipfile.ZipFile(jar_path, "w") as z:
+        # This mirrors the mod's misleading side=BOTH loader metadata.
+        z.writestr("META-INF/neoforge.mods.toml", '[[mods]]\nmodId = "progresspeek"\n')
+
+    log = '''Exception in thread "main" java.lang.NoClassDefFoundError: org/lwjgl/glfw/GLFWErrorCallbackI
+        at LAYER SERVICE/me.decce.progresspeek.neoforge@1.0.1+1.21.1-neoforge/me.decce.progresspeek.service.Bootstrapper.bootstrap(Bootstrapper.java:42)
+        at LAYER SERVICE/me.decce.progresspeek.neoforge@1.0.1+1.21.1-neoforge/me.decce.progresspeek.service.neoforge.GraphicsBootstrapperImpl.bootstrap(GraphicsBootstrapperImpl.java:16)
+'''
+    result = autofix_loading(server_dir, apply=True, log_text=log)
+    assert result.diagnosis.client_on_server_modids == ["progresspeek"]
+    assert result.quarantined == [jar_path.name]
+    assert (mods / (jar_path.name + ".disabled")).is_file()
+    assert not jar_path.exists()
+
+
+def test_latest_startup_failure_output_is_used_for_diagnosis(tmp_path):
+    server_dir = tmp_path / "server"
+    mods = server_dir / "mods"
+    mods.mkdir(parents=True)
+    jar_path = mods / "progresspeek-1.0.1+1.21.1-neoforge.jar"
+    with zipfile.ZipFile(jar_path, "w") as z:
+        z.writestr("META-INF/neoforge.mods.toml", '[[mods]]\nmodId = "progresspeek"\n')
+    logs = server_dir / "logs"
+    logs.mkdir()
+    latest = logs / "latest.log"
+    latest.write_text("ModLauncher starting\n")
+    startup = server_dir / ".crucible" / "startup-failure.log"
+    startup.parent.mkdir()
+    startup.write_text('''Exception in thread "main" java.lang.NoClassDefFoundError: org/lwjgl/glfw/GLFWErrorCallbackI
+        at LAYER SERVICE/me.decce.progresspeek.neoforge@1.0.1+1.21.1-neoforge/me.decce.progresspeek.service.Bootstrapper.bootstrap(Bootstrapper.java:42)
+        at LAYER SERVICE/me.decce.progresspeek.neoforge@1.0.1+1.21.1-neoforge/me.decce.progresspeek.service.neoforge.GraphicsBootstrapperImpl.bootstrap(GraphicsBootstrapperImpl.java:16)
+''')
+    os.utime(latest, (1, 1))
+    text, source = latest_crash_text(server_dir)
+    assert source == str(startup)
+    assert "GLFWErrorCallbackI" in text
+
+    result = autofix_loading(server_dir, apply=True)
+    assert result.diagnosis.client_on_server_modids == ["progresspeek"]
+    assert result.quarantined == [jar_path.name]
+    assert (mods / (jar_path.name + ".disabled")).is_file()
 
 
 def test_latest_log_not_permanently_shadowed_by_old_crash(tmp_path):

@@ -215,7 +215,11 @@ def latest_crash_text(server_path: str | Path) -> tuple[str | None, str | None]:
     if cr.is_dir():
         candidates.extend(sorted(cr.glob("crash-*.txt"),
                                  key=lambda p: p.stat().st_mtime, reverse=True))
-    for name in ("logs/latest.log", "logs/debug.log"):
+    for name in (
+        ".crucible/startup-failure.log",
+        "logs/latest.log",
+        "logs/debug.log",
+    ):
         p = root / name
         if p.is_file():
             candidates.append(p)
@@ -275,6 +279,35 @@ def parse_crash_log(text: str) -> Diagnosis:
                       f"the mod, so Crucible will scan installed mods for client-only "
                       f"jars and disable them automatically.")
         diag.issues.append(LoadIssue("client_on_server", detail, uniq))
+
+    # 1b. Progress Peek's NeoForge bootstrap runs before normal mod loading.
+    # Its JAR declares dependency side=BOTH even though the project is client-only,
+    # so the usual "invalid dist DEDICATED_SERVER" signature is never emitted.
+    # Recognize its actual early-bootstrap failure and route it through the normal,
+    # reversible client-only quarantine path.
+    has_missing_glfw = re.search(
+        r"(?:NoClassDefFoundError|ClassNotFoundException)\s*:\s*"
+        r"org[./]lwjgl[./]glfw[./]GLFWErrorCallbackI\b",
+        text, re.IGNORECASE,
+    )
+    is_progresspeek_service = re.search(
+        r"(?:LAYER SERVICE/[\w.$-]*progresspeek[\w.$-]*@|"
+        r"Invoking bootstrap method\s+progresspeek\b)",
+        text, re.IGNORECASE,
+    )
+    if has_missing_glfw and is_progresspeek_service:
+        if not any(
+            issue.kind == "client_on_server" and "progresspeek" in issue.modids
+            for issue in diag.issues
+        ):
+            diag.issues.append(LoadIssue(
+                "client_on_server",
+                "Progress Peek is client-side only, but its bootstrap is running "
+                "on the dedicated server and requires the missing LWJGL GLFW "
+                "class. Disable Progress Peek in mods/; keep it in your client "
+                "instance instead.",
+                ["progresspeek"],
+            ))
 
     # 2. Missing/unsupported mandatory dependencies.
     if _MISSING_DEP_HDR.search(text) or _MISSING_DEP_RE.search(text):

@@ -278,6 +278,8 @@ class TmuxManager:
             )
 
         session = self.session_name(instance)
+        # A previous failed start must not shadow the next attempt's diagnostics.
+        self._clear_startup_failure(instance)
 
         # Force the IPv4 stack so the server can bind its port on machines where
         # IPv6 is disabled/unavailable (fixes Netty bind error -97,
@@ -350,6 +352,60 @@ class TmuxManager:
     def _start_marker_path(self, session: str) -> Path:
         return self._tmp_dir() / ("crucible-start-" + session + ".exit")
 
+    @staticmethod
+    def _startup_failure_path(instance: ServerInstance) -> Path:
+        return Path(instance.path) / ".crucible" / "startup-failure.log"
+
+    def _clear_startup_failure(self, instance: ServerInstance) -> None:
+        """Remove only the prior bounded startup diagnostic; never follow symlinks."""
+        state = Path(instance.path) / ".crucible"
+        target = self._startup_failure_path(instance)
+        if state.is_symlink() or target.is_symlink():
+            return
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _persist_startup_failure(self, instance: ServerInstance, output: str) -> None:
+        """Keep a bounded, owner-only copy of failed-start output for Fix loading."""
+        if not output:
+            return
+        state = Path(instance.path) / ".crucible"
+        target = self._startup_failure_path(instance)
+        if state.is_symlink() or target.is_symlink():
+            return
+        temp_path: Path | None = None
+        fd: int | None = None
+        try:
+            state.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if state.is_symlink() or target.is_symlink():
+                return
+            fd, temp_name = tempfile.mkstemp(prefix=".startup-failure-", dir=state)
+            temp_path = Path(temp_name)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                fd = None  # fdopen owns the descriptor from here onward
+                stream.write(output[-8000:].rstrip() + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_path, target)
+            temp_path = None
+        except OSError:
+            # Starting the server must not fail because optional diagnostics could
+            # not be written (read-only folder, full disk, or similar).
+            pass
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
     def _read_marker(self, marker: Path) -> int:
         try:
             raw = marker.read_text(errors="replace").strip()
@@ -372,7 +428,7 @@ class TmuxManager:
 
     def _read_capture(self, session: str, max_lines: int = 40, max_chars: int = 4000) -> str:
         result = self._run(
-            ["tmux", "capture-pane", "-p", "-t", "=" + session + ":", "-S", f"-{max_lines}"],
+            ["tmux", "capture-pane", "-J", "-p", "-t", "=" + session + ":", "-S", f"-{max_lines}"],
             timeout=2,
         )
         if result.returncode != 0:
@@ -400,7 +456,8 @@ class TmuxManager:
             time.sleep(interval_s)
             if marker.exists():
                 code = self._read_marker(marker)
-                tail = self._read_capture(session)
+                tail = self._read_capture(session, max_lines=200, max_chars=8000)
+                self._persist_startup_failure(instance, tail)
                 hint = ""
                 if code == 2:
                     hint = (
@@ -415,7 +472,8 @@ class TmuxManager:
                 return False, msg
             running = self.probe_running(instance)
             if running is False:
-                tail = self._read_capture(session)
+                tail = self._read_capture(session, max_lines=200, max_chars=8000)
+                self._persist_startup_failure(instance, tail)
                 msg = "The tmux session ended before the server finished starting."
                 if tail:
                     msg += "\n\nLast output:\n" + tail

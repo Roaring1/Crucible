@@ -275,8 +275,20 @@ class TmuxCommandTests(unittest.TestCase):
             out = self.tm.capture_pane_tail(self.inst, max_lines=200)
         self.assertIn("Done (12.3s)!", out)
         cmd = run.call_args.args[0]
-        self.assertEqual(cmd[:4], ["tmux", "capture-pane", "-p", "-t"])
-        self.assertEqual(cmd[4], "=gtnh:")
+        self.assertEqual(cmd[:5], ["tmux", "capture-pane", "-J", "-p", "-t"])
+        self.assertEqual(cmd[5], "=gtnh:")
+
+    def test_startup_failure_capture_is_private_bounded_and_clearable(self):
+        root = Path(tempfile.mkdtemp())
+        inst = ServerInstance(str(root), "Test")
+        tm = TmuxManager()
+        tm._persist_startup_failure(inst, "x" * 10000)
+        saved = root / ".crucible" / "startup-failure.log"
+        self.assertTrue(saved.is_file())
+        self.assertEqual(len(saved.read_text()), 8001)  # bounded text plus newline
+        self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
+        tm._clear_startup_failure(inst)
+        self.assertFalse(saved.exists())
 
     def test_console_input_is_literal_then_enter(self):
         import subprocess
