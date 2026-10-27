@@ -329,7 +329,7 @@ class AddModDialog(QDialog):
 
     def _set_curseforge_key(self):
         from ..mods import curseforge
-        key, ok = QInputDialog.getText(self, "CurseForge API key", "API key (session only):", QLineEdit.EchoMode.Password)
+        key, ok = QInputDialog.getText(self, "CurseForge API key", "Your own approved API key (session only):", QLineEdit.EchoMode.Password)
         if ok:
             curseforge.set_api_key(key)
             if self._provider.currentText() == "CurseForge":

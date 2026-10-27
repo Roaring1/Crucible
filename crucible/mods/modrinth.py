@@ -316,10 +316,14 @@ def _download(url: str, dest: Path, timeout: float = 60.0) -> int:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https" or not parsed.hostname:
         raise ModrinthError("Refusing a non-HTTPS download URL.")
-    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    from ..download_http import make_request, open_url, http_error_message, is_curseforge_url
+    try:
+        req = make_request(url, headers={"User-Agent": _UA})
+    except ValueError as exc:
+        raise ModrinthError(str(exc)) from exc
     tmp = None
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with open_url(req, timeout=timeout) as r:
             declared = r.headers.get("Content-Length")
             if declared and int(declared) > _MAX_MOD_BYTES:
                 raise ModrinthError("Mod file exceeds safe size limit.")
@@ -337,6 +341,8 @@ def _download(url: str, dest: Path, timeout: float = 60.0) -> int:
                     out.write(chunk)
         tmp.replace(dest)
         return received
+    except urllib.error.HTTPError as exc:
+        raise ModrinthError(http_error_message(exc.code, curseforge=is_curseforge_url(url))) from exc
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
         raise ModrinthError(f"Download failed: {e}") from e
     finally:

@@ -8,9 +8,8 @@ Why this is "best-effort":
   * Modrinth indexes contain direct CDN URLs + hashes, so downloads usually work
     when the machine has internet access.
   * CurseForge indexes contain only numeric projectID/fileID pairs.  Resolving
-    those to a real download URL needs either the official CurseForge API
-    (an API key in the CURSEFORGE_API_KEY env var) or a public redirect that
-    CurseForge may rate-limit or block.  Many third-party authors also disable
+    those to a real download URL requires the official CurseForge API
+    and an approved API key. No website redirect or guessed CDN path is used.  Many third-party authors also disable
     API distribution entirely, so some files simply cannot be fetched
     automatically.  Every failure is caught and reported instead of crashing.
 
@@ -42,6 +41,8 @@ from pathlib import Path
 from typing import Callable
 
 from crucible import __version__
+from crucible.download_http import (build_opener, make_request, http_error_message,
+                                    is_curseforge_url, DownloadRequestError)
 
 # Public, polite identification.  Some CDNs reject the default urllib UA.
 _USER_AGENT = f"Crucible/{__version__} (+https://github.com/Roaring1/Crucible; Minecraft server manager)"
@@ -68,6 +69,7 @@ class DownloadItem:
     # CurseForge-only resolution hints
     project_id: int = 0
     file_id: int = 0
+    error: str = ""                 # resolution failure; do not attempt a fallback
 
 
 @dataclass
@@ -110,9 +112,7 @@ def _is_cancelled(cancel) -> bool:
 def _opener() -> urllib.request.OpenerDirector:
     # Always verify TLS. A missing/broken CA store must fail closed rather than
     # silently accepting a forged Modrinth/CurseForge response.
-    ctx = ssl.create_default_context()
-    handler = urllib.request.HTTPSHandler(context=ctx)
-    opener = urllib.request.build_opener(handler)
+    opener = build_opener()
     opener.addheaders = [("User-Agent", _USER_AGENT), ("Accept", "*/*")]
     return opener
 
@@ -144,6 +144,8 @@ def _verify(path: Path, item: DownloadItem) -> bool:
 def _download_one(item: DownloadItem, dest: Path, opener, timeout: int,
                   log: LogCb | None, cancel) -> None:
     """Download a single item to dest.  Raises on unrecoverable failure."""
+    if item.error:
+        raise RuntimeError(item.error)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     urls = []
@@ -166,7 +168,7 @@ def _download_one(item: DownloadItem, dest: Path, opener, timeout: int,
             tmp_path = Path(tmp_name)
             try:
                 os.close(tmp_fd)
-                req = urllib.request.Request(url)
+                req = make_request(url)
                 with opener.open(req, timeout=timeout) as resp, tmp_path.open("wb") as out:
                     limit = min(item.size, _MAX_FILE_BYTES) if item.size > 0 else _MAX_FILE_BYTES
                     declared = resp.headers.get("Content-Length")
@@ -196,7 +198,14 @@ def _download_one(item: DownloadItem, dest: Path, opener, timeout: int,
             except _Cancelled:
                 tmp_path.unlink(missing_ok=True)
                 raise
-            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
+            except DownloadRequestError as exc:
+                tmp_path.unlink(missing_ok=True)
+                raise RuntimeError(str(exc)) from exc
+            except urllib.error.HTTPError as exc:
+                tmp_path.unlink(missing_ok=True)
+                # No futile retries or alternate URLs after an explicit denial.
+                raise RuntimeError(http_error_message(exc.code, curseforge=is_curseforge_url(url))) from exc
+            except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
                 tmp_path.unlink(missing_ok=True)
                 last_err = f"{type(exc).__name__}: {exc}"
                 if log:
@@ -249,18 +258,11 @@ def _modrinth_items(index: dict) -> list[DownloadItem]:
 
 
 def _curseforge_items(manifest: dict, api_key: str) -> tuple[list[DownloadItem], list[str]]:
-    """Resolve CurseForge file IDs to download URLs.
-
-    Returns (items, notes).  Resolution strategy, in order:
-      1. Official API (needs CURSEFORGE_API_KEY) -> exact downloadUrl + fileName.
-      2. Public v1 redirect endpoint (no key, may be blocked/rate-limited).
-    """
+    """Resolve only official API URLs; failures stay explicit per-file failures."""
     notes: list[str] = []
     items: list[DownloadItem] = []
-    opener = _opener()
-
-    raw_files = manifest.get("files", []) or []
-    for entry in raw_files:
+    opener = _opener() if api_key else None
+    for entry in manifest.get("files", []) or []:
         if not isinstance(entry, dict):
             continue
         try:
@@ -268,59 +270,53 @@ def _curseforge_items(manifest: dict, api_key: str) -> tuple[list[DownloadItem],
             file_id = int(entry.get("fileID", 0))
         except (TypeError, ValueError):
             continue
-        if not project_id or not file_id:
+        if project_id <= 0 or file_id <= 0:
             continue
-
-        name = f"curseforge-{project_id}-{file_id}.jar"
-        urls: list[str] = []
-
-        if api_key:
+        item = DownloadItem(name=f"curseforge-{project_id}-{file_id}.jar",
+                            rel_path=f"mods/curseforge-{project_id}-{file_id}.jar",
+                            source="curseforge", project_id=project_id, file_id=file_id)
+        if not api_key:
+            item.error = "CurseForge requires your own approved API key. Download permitted files on the website or import an installed Prism instance."
+        else:
             try:
                 req = urllib.request.Request(
-                    "https://api.curseforge.com/v1/mods/%d/files/%d" % (project_id, file_id),
+                    f"https://api.curseforge.com/v1/mods/{project_id}/files/{file_id}",
                     headers={"x-api-key": api_key, "Accept": "application/json",
-                             "User-Agent": _USER_AGENT},
-                )
+                             "User-Agent": _USER_AGENT})
                 with opener.open(req, timeout=_DEFAULT_TIMEOUT) as resp:
-                    data = json.loads(resp.read(16 * 1024 * 1024 + 1).decode("utf-8", errors="replace"))
-                file_data = data.get("data", {}) if isinstance(data, dict) else {}
-                file_name = str(file_data.get("fileName", "")) or name
-                download_url = file_data.get("downloadUrl")
-                name = file_name
-                if download_url:
-                    urls.append(str(download_url))
+                    raw = resp.read(16 * 1024 * 1024 + 1)
+                if len(raw) > 16 * 1024 * 1024:
+                    raise ValueError("response size limit")
+                data = json.loads(raw)
+                file_data = data['data']
+                if not isinstance(file_data, dict):
+                    raise ValueError("invalid file metadata")
+                name = file_data['fileName']
+                if (not isinstance(name, str) or Path(name).name != name
+                        or '\\' in name or not name.lower().endswith('.jar')):
+                    raise ValueError("unsafe mod filename")
+                item.name = name
+                item.rel_path = f"mods/{name}"
+                item.size = int(file_data.get('fileLength', 0))
+                item.sha1 = next((h['value'] for h in file_data.get('hashes', [])
+                                  if h.get('algo') == 1), '')
+                url = file_data.get('downloadUrl')
+                if not url or not file_data.get('isAvailable', True):
+                    item.error = "Direct download unavailable or author-restricted. Open the project on CurseForge and use a permitted manual download; no URL is guessed."
+                elif not isinstance(url, str) or not is_curseforge_url(url):
+                    item.error = "CurseForge returned an unrecognized download host; no download was attempted."
+                elif (len(item.sha1) != 40 or any(c not in '0123456789abcdefABCDEF' for c in item.sha1)):
+                    item.error = "CurseForge did not supply a verifiable SHA-1; download was not attempted."
                 else:
-                    # downloadUrl can be null when the author blocks API distribution;
-                    # reconstruct the well-known edge CDN path from the numeric id.
-                    fid = str(file_id)
-                    urls.append(
-                        "https://edge.forgecdn.net/files/%s/%s/%s" % (fid[:4], fid[4:], file_name)
-                    )
-            except Exception as exc:
-                notes.append(f"CurseForge API lookup failed for {project_id}/{file_id}: {exc}")
-
-        # Public redirect fallback (works without an API key surprisingly often,
-        # but CurseForge may return 403/Cloudflare challenges).
-        urls.append(
-            "https://www.curseforge.com/api/v1/mods/%d/files/%d/download" % (project_id, file_id)
-        )
-
-        items.append(DownloadItem(
-            name=name,
-            rel_path=f"mods/{name}",
-            urls=urls,
-            source="curseforge",
-            project_id=project_id,
-            file_id=file_id,
-        ))
-
-    if not api_key and items:
-        notes.append(
-            "No CURSEFORGE_API_KEY set — using the public download redirect, which "
-            "CurseForge often rate-limits or blocks. For reliable CurseForge downloads, "
-            "set a free API key in the CURSEFORGE_API_KEY environment variable, or import "
-            "a fully installed Prism instance instead."
-        )
+                    item.urls = [url]
+            except urllib.error.HTTPError as exc:
+                item.error = http_error_message(exc.code, curseforge=True)
+            except Exception:
+                # Never echo arbitrary response bodies/exception strings into logs.
+                item.error = "Could not resolve this CurseForge file. Check your connection and the project's website; no fallback URL was attempted."
+        if item.error:
+            notes.append(f"CurseForge {project_id}/{file_id}: {item.error}")
+        items.append(item)
     return items, notes
 
 

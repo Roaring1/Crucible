@@ -53,16 +53,17 @@ def has_api_key():
 def _get(route):
     key = get_api_key()
     if not key:
-        raise mr.ModrinthError('CurseForge needs an API key. Use the API key button (session only), place it in ~/.config/crucible/curseforge-api-key (chmod 600), set CURSEFORGE_API_KEY before launching, or download a JAR from curseforge.com and use Add .jar. Restricted downloads are never bypassed.')
-    request = urllib.request.Request(_API + route, headers={'x-api-key': key, 'Accept': 'application/json', 'User-Agent': mr._UA})
+        raise mr.ModrinthError('CurseForge needs your own approved API key. Use the API key button (session only), place it in ~/.config/crucible/curseforge-api-key (chmod 600), set CURSEFORGE_API_KEY before launching, or download a JAR from curseforge.com and use Add .jar. Restricted downloads are never bypassed.')
+    from ..download_http import make_request, open_url, http_error_message
+    request = make_request(_API + route, headers={'Accept': 'application/json', 'User-Agent': mr._UA})
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with open_url(request, timeout=15) as response:
             raw = response.read(mr._MAX_JSON_BYTES + 1)
         if len(raw) > mr._MAX_JSON_BYTES:
             raise mr.ModrinthError('CurseForge response exceeded the size limit.')
         return json.loads(raw)['data']
     except urllib.error.HTTPError as exc:
-        raise mr.ModrinthError(f'CurseForge returned HTTP {exc.code}; check the API key and service availability.') from exc
+        raise mr.ModrinthError(http_error_message(exc.code, curseforge=True)) from exc
     except (OSError, ValueError, KeyError) as exc:
         raise mr.ModrinthError('Could not read the CurseForge response. Check your connection and try again.') from exc
 

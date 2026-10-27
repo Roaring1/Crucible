@@ -14,10 +14,12 @@
 - Client exports use explicit side metadata, exclude declared server-only mods and can supplement declared client-only extras from a matching installed Prism instance. Exact Minecraft/loader checks, compatibility warnings and redistribution reminders replace a promise of automatic playability.
 - Importing the same local JAR twice no longer creates a suffixed duplicate that Minecraft would load twice.
 
+- Both mod downloads and pack imports authenticate official CurseForge CDN hosts. Credentials never appear in URLs or cross-host redirects. Pack imports no longer guess CDN paths or fall back to website redirect endpoints; missing keys and author-restricted files become explicit per-file failures.
+
 ## Validation
 
-- Full offline regression suite: **383 passed, 31 subtests passed**.
-- Added 51 behavior cases; the real Qt subprocess also covers keyboard completion, cursor preservation, player resizing, sorted mod results, chained network-worker retirement, provider choice, rename persistence/header refresh, external drops and import-field height.
+- Full offline regression suite: **417 passed, 31 subtests passed**.
+- Added 85 behavior cases; the real Qt subprocess also covers keyboard completion, cursor preservation, player resizing, sorted mod results, chained network-worker retirement, provider choice, rename persistence/header refresh, external drops and import-field height.
 - Live public Modrinth test: Fabric API compatible releases, verified download, exact-file lookup, downgrade from 0.116.17+1.21.1 to 0.102.0+1.21.1 and retained-original receipt. All in a temporary directory.
 - Repeated the real-Qt interaction/teardown sequence 15 times after fixing an intermittent Python 3.14/SIP finalization crash; all passed.
 - Rendered and inspected the changed desktop workflows with an isolated synthetic server and registry, including 1200×760 and 900×600 layouts.
@@ -25,7 +27,7 @@
 
 ## Limits and recovery
 
-- CurseForge authentication/downloads have mocked coverage but were not live-tested with an API key.
+- CurseForge approval, desktop credential distribution and API-derived record-retention permissions remain open. Authenticated API/CDN requests, exact-host credential isolation, redirect denial, missing/rejected keys, rate limits and restricted pack files have mocked coverage, but no approved key was available for live validation. No key is bundled.
 - Suggestions use a local vocabulary, not the live server's Brigadier tree. Modded arguments and Minecraft-version-specific commands are not exhaustively discoverable.
 - Arbitrary third-party mod combinations, in-game performance and exported client gameplay were not validated. Client-only metadata can be absent, especially in old Forge mods; unknown remains unknown.
 - JAR changes do not migrate worlds. Make a world backup before changing content mods.

@@ -1,0 +1,50 @@
+# CurseForge integration: conditional provider support
+
+Reviewed 2026-10-27. This is implementation guidance, not legal advice or a claim of CurseForge approval.
+
+## Current scope
+
+Crucible has its own Python provider adapter; it does not incorporate Prism Launcher source or its application key. Local JAR inspection needs no API. Optional online support covers mod searches filtered by Minecraft/loader, project summaries and website links, compatible release selection, required-dependency resolution, and staged verified installs/downgrades. Online modpack browsing and a full HTML-description viewer are outside this release.
+
+No shared API key is bundled. Authentication and failure behavior are regression-tested with synthetic credentials. Live CurseForge access/installations have NOT been validated with an approved Crucible key. Modrinth and local imports remain usable without one.
+
+## Approval remains open
+
+The official application process requires review. A working key does not by itself resolve the third-party terms governing an implementation. Before general distribution/use of this provider, obtain written clarification for:
+
+- This open-source desktop Minecraft server-manager use case and the competition restriction.
+- Application-key distribution versus user-owned keys; do not ship a developer key in source or assume a binary can keep it secret.
+- Retention of installed project/file IDs, version labels, checksums and recovery records. Crucible's existing installer writes these to local added-mods.json/history; API-derived fields may fall under the published no-save/no-cache restriction.
+- Any response/icon caching, attribution, download and quota requirements. Do not add a persistent API catalog cache without permission.
+- A backend if one becomes necessary. A backend can technically protect a key but is NOT an automatic terms workaround: proxy/identity restrictions also need clarification. No hosted proxy or mirror is deployed by Crucible.
+
+The project owner must supply accurate application details and accept any applicable agreement. Do not reuse another launcher's key, scrape around API denials, or treat project-author distribution controls as download errors to bypass.
+
+## Credential handling
+
+For a key whose use is authorized, supported local inputs are:
+
+1. Session-only password input in the CurseForge provider UI.
+2. CURSEFORGE_API_KEY in the app's environment.
+3. A single-line UTF-8 file at ~/.config/crucible/curseforge-api-key, owned by the current user with mode 600. CURSEFORGE_API_KEY_FILE can select a different private file. Symlinks and non-regular/public files are refused.
+
+Do not put a key in Git, exports, URLs, screenshots or logs. Local private-file permissions reduce exposure; they are not an authorization grant. The file is optional and can remain empty while approval is pending.
+
+## Network and installation behavior
+
+- Both API requests and official CDN downloads use x-api-key over verified HTTPS.
+- Credentials attach only to an explicit API/CDN host allowlist, never arbitrary mod download hosts. Authenticated redirects outside that list and HTTPS downgrades fail closed.
+- No API-key query parameters, invented CDN paths or website-download redirect fallbacks.
+- Missing credentials, HTTP 401/403/429 and server failures produce actionable messages. Explicit denials are not retried through alternate URLs.
+- Missing/restricted download URLs remain unavailable. Users may use a permitted website download and Add .jar, or import a fully installed Prism instance without accessing Prism credentials.
+- Browser installs/version changes stage and verify files before publication, retain originals and roll back ordinary I/O errors. Pack-index downloads use temporary files, official checksums and structured per-file failures.
+- None of this guarantees that arbitrary mods are mutually compatible or that an exported client has been tested in-game.
+
+## Official references
+
+- API: https://docs.curseforge.com/rest-api/
+- Key application guidance: https://support.curseforge.com/support/solutions/articles/9000208346-about-the-curseforge-api-and-how-to-apply-for-a-key
+- Third-party terms: https://support.curseforge.com/support/solutions/articles/9000207405-curseforge-3rd-party-api-terms-and-conditions
+- CDN authentication: https://blog.curseforge.com/introducing-api-key-authentication-for-curseforge-file-downloads/
+- Prism source/key warning: https://github.com/PrismLauncher/PrismLauncher/blob/develop/CMakeLists.txt
+- Prism licensing: https://github.com/PrismLauncher/PrismLauncher#license

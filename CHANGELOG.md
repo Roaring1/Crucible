@@ -9,7 +9,8 @@
 - Discoverable rename/F2 without moving files, chosen import names, app-wide server drops, a resizable player panel and a compact two-row header.
 - Machine-normalized CPU percentages and resident-memory wording, visible first in Info. Actionable log diagnostics with source-file access.
 - Client-pack export with matching Prism client-only extras, environment-aware exclusions, exact loader checks and compatibility/license warnings.
-- Added 51 behavioral regression cases plus real-Qt interaction coverage; full suite: 383 passed, 31 subtests passed. Live Modrinth download, SHA-1 lookup and downgrade tested in an isolated folder.
+- Added 85 behavioral regression cases plus real-Qt interaction coverage; full suite: 417 passed, 31 subtests passed. Live Modrinth download, SHA-1 lookup and downgrade tested in an isolated folder.
+- Hardened official API/CDN authentication and redirects; removed legacy pack-import CDN guesses and public-redirect fallback. Added 34 credential-boundary and failure-path cases. No shared key is bundled; provider approval and distribution/retention permissions remain open.
 - CurseForge live authentication and in-game/modpack-specific compatibility remain unverified; command vocabulary is local rather than a live Brigadier tree.
 
 ## v0.7.1 -- Modpack updates: engine, CLI, GUI, and rollback
