@@ -188,6 +188,7 @@ class InstancePanel(QWidget):
         self._name_label.setWordWrap(True)
         self._ver_label  = QLabel("")
         self._ver_label.setObjectName("HeaderVersion")
+        self._ver_label.setWordWrap(True)
         name_col.addWidget(self._name_label)
         name_col.addWidget(self._ver_label)
         h_layout.addLayout(name_col, stretch=1)
@@ -240,6 +241,7 @@ class InstancePanel(QWidget):
         self._btn_restart.clicked.connect(self._do_restart)
         self._btn_attach.clicked.connect(self._do_attach)
 
+        self._header = header
         layout.addWidget(header)
 
         # Tabs
@@ -285,6 +287,28 @@ class InstancePanel(QWidget):
         )
 
         layout.addWidget(self._tabs, stretch=1)
+
+        # A real empty state replaces the disabled server tabs on first launch.
+        self._empty_state = QWidget()
+        empty_layout = QVBoxLayout(self._empty_state)
+        empty_layout.setContentsMargins(48, 32, 48, 32)
+        empty_layout.addStretch()
+        self._empty_title = QLabel()
+        self._empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_title.setStyleSheet(
+            f"color: {theme.TEXT}; font-size: 20px; font-weight: 700;"
+        )
+        empty_layout.addWidget(self._empty_title)
+        self._empty_message = QLabel()
+        self._empty_message.setWordWrap(True)
+        self._empty_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_message.setStyleSheet(
+            f"color: {theme.SUBTEXT}; font-size: 13px; padding-top: 6px;"
+        )
+        empty_layout.addWidget(self._empty_message)
+        empty_layout.addStretch()
+        layout.addWidget(self._empty_state, stretch=1)
+        self._empty_state.hide()
 
         self._set_buttons_enabled(False)
 
@@ -355,10 +379,27 @@ class InstancePanel(QWidget):
             self._btn_ip.setText("⧉  Copy IP")
 
     def _show_empty(self) -> None:
-        self._name_label.setText("No server selected")
-        self._ver_label.setText("")
+        self._instance = None
+        self._header.hide()
+        self._tabs.hide()
+        self._empty_state.show()
+        if self._manager.instances:
+            self._name_label.setText("Select a server")
+            self._ver_label.setText("Choose one from the list on the left.")
+            self._empty_title.setText("Select a server")
+            self._empty_message.setText(
+                "Choose a server from the list on the left to manage its console, mods, world, backups, and settings."
+            )
+        else:
+            self._name_label.setText("Welcome to Crucible")
+            self._ver_label.setText("Add a server to get started.")
+            self._empty_title.setText("No servers yet")
+            self._empty_message.setText(
+                "Use + Add server on the left to create a server, install a modpack, or import existing files."
+            )
         self._status_label.setText("")
         self._dot.setStyleSheet(f"color: {theme.SURFACE2}; font-size: 18px;")
+        self._dot.hide()
         self._set_buttons_enabled(False)
 
     # Public API
@@ -385,6 +426,10 @@ class InstancePanel(QWidget):
         self._btn_ip.setText("⧉  Copy IP")
 
         self._instance = instance
+        self._header.show()
+        self._dot.show()
+        self._empty_state.hide()
+        self._tabs.show()
         self._name_label.setText(instance.name)
         self._ver_label.setText(instance.version or " · ".join(filter(None, [instance.minecraft_version, instance.loader, instance.loader_version])))
         self._set_buttons_enabled(True)
@@ -885,8 +930,13 @@ class InstancePanel(QWidget):
         self._run_tmux(_check, _done)
 
     def _set_buttons_enabled(self, enabled: bool) -> None:
-        for btn in (self._btn_start, self._btn_stop,
-                    self._btn_restart, self._btn_attach):
+        # Hidden, rather than merely disabled, controls are less confusing when
+        # no server exists or none is selected.
+        for btn in (
+            self._btn_ip, self._btn_start, self._btn_stop,
+            self._btn_restart, self._btn_attach,
+        ):
+            btn.setVisible(enabled)
             btn.setEnabled(enabled)
 
     # Button actions

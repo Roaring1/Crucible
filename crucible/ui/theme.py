@@ -400,22 +400,21 @@ QLabel#SectionLabel {{
     letter-spacing: 1px;
 }}
 
-/* sidebar add button */
+/* sidebar add button — the primary action when setting up a server */
 QPushButton#SidebarAddButton {{
-    background-color: transparent;
-    color: {SUBTEXT};
-    border: 1px dashed {SURFACE1};
-    border-radius: 3px;
+    background-color: {ACCENT};
+    color: {CRUST};
+    border: none;
+    border-radius: 4px;
     margin: 4px 8px;
-    padding: 6px;
+    padding: 8px;
     font-size: 12px;
+    font-weight: 700;
     text-align: center;
 }}
 QPushButton#SidebarAddButton:hover {{
-    background-color: {SURFACE0};
-    color: {TEXT};
-    border-color: {ACCENT};
-    border-style: solid;
+    background-color: {ACCENT_HO};
+    color: {CRUST};
 }}
 
 /* dialogs */

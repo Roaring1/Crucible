@@ -15,7 +15,7 @@ from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea, QWidget,
     QLabel, QLineEdit, QPushButton, QFileDialog,
-    QDialogButtonBox, QMessageBox, QCheckBox, QFrame, QInputDialog,
+    QDialogButtonBox, QMessageBox, QCheckBox, QFrame, QToolButton,
 )
 
 from ..data.instance_manager import InstanceManager
@@ -39,7 +39,7 @@ class _PrismImportWorker(QObject):
             info = import_prism_source(
                 self._source,
                 self._target,
-                overwrite=True,
+                overwrite=False,
                 download_mods=self._download_mods,
             )
             self.finished.emit(info, "")
@@ -63,129 +63,114 @@ class AddInstanceDialog(QDialog):
         self._import_worker: _PrismImportWorker | None = None
         self._import_pending: tuple[str, str, bool] | None = None
         self._import_result: tuple[object, str] | None = None
-        self.setWindowTitle("Add Server Instance")
+        self._pending_import_registration: tuple[str, str, object] | None = None
+        self._pending_manual_registration = False
+        self._download_offer: tuple[str, str] | None = None
+        self.setWindowTitle("Import existing files")
         # Widened from 560 -- at 560px, the register-existing-server form's
         # "Server path:" row (label + line edit + Browse… button) and the
         # other field rows clipped their text/placeholders and were hard to
         # read.
         self.setMinimumWidth(680)
-        self.resize(760, 700)
-        self.setMinimumHeight(500)
+        self.resize(740, 420)
+        self.setMinimumHeight(360)
         self.setModal(True)
         self._build_ui()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         body = QWidget()
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
+
         layout = QVBoxLayout(body)
-        layout.setSpacing(12)
-        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(10)
+        layout.setContentsMargins(20, 16, 20, 12)
 
-        # ---- Easiest: create a brand-new server -------------------------
-        new_title = QLabel("Create a new server  —  easiest")
-        new_title.setStyleSheet(
+        title = QLabel("Import a server setup")
+        title.setStyleSheet(
             f"font-size: 16px; font-weight: 700; color: {theme.TEXT};"
         )
-        layout.addWidget(new_title)
+        layout.addWidget(title)
 
-        new_sub = QLabel("Start with Vanilla, Fabric, Forge, NeoForge or Quilt.")
-        new_sub.setWordWrap(True)
-        new_sub.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
-        layout.addWidget(new_sub)
-
-        new_btn = QPushButton("✨  Create a new server…")
-        new_btn.setObjectName("PrimaryButton")
-        new_btn.setFixedHeight(34)
-        new_btn.clicked.connect(self._create_new_server)
-        layout.addWidget(new_btn)
-
-        sep0 = QFrame()
-        sep0.setFrameShape(QFrame.Shape.HLine)
-        sep0.setStyleSheet(f"color: {theme.SURFACE1};")
-        layout.addWidget(sep0)
-
-        # ---- Recommended: import from Prism / modpack -------------------
-        rec_title = QLabel("Import a modpack  —  recommended")
-        rec_title.setStyleSheet(
-            f"font-size: 16px; font-weight: 700; color: {theme.TEXT};"
+        sub = QLabel(
+            "Copy an installed Prism instance or a modpack file into a new server "
+            "folder. To add a server folder that is already in its final location, "
+            "expand the registration option below. Importing does not start the server."
         )
-        layout.addWidget(rec_title)
+        sub.setWordWrap(True)
+        sub.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
+        layout.addWidget(sub)
 
-        rec_sub = QLabel("Import an installed Prism/MultiMC instance or a ZIP/mrpack. Review server compatibility before starting.")
-        rec_sub.setWordWrap(True)
-        rec_sub.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
-        layout.addWidget(rec_sub)
-
-        import_row = QHBoxLayout()
-        import_folder_btn = QPushButton("📦  Import Prism Instance…")
+        source_row = QHBoxLayout()
+        source_row.setSpacing(8)
+        self._import_folder_btn = QPushButton("Import Prism instance…")
+        import_folder_btn = self._import_folder_btn
         import_folder_btn.setAccessibleName("Import Prism instance")
-        import_folder_btn.setFixedHeight(34)
+        import_folder_btn.setMinimumHeight(34)
+        import_folder_btn.setToolTip(
+            "Copy an already-installed Prism or MultiMC instance into a server folder."
+        )
         import_folder_btn.clicked.connect(self._import_prism_folder)
-        import_row.addWidget(import_folder_btn)
-        import_archive_btn = QPushButton("🗃  Import Modpack Archive…")
-        import_archive_btn.setAccessibleName("Import modpack archive")
-        import_archive_btn.setFixedHeight(34)
-        import_archive_btn.clicked.connect(self._import_prism_archive)
-        import_row.addWidget(import_archive_btn)
-        layout.addLayout(import_row)
+        source_row.addWidget(import_folder_btn)
 
-        self._dl_check = QCheckBox(
-            "After importing, try to download the pack's mods (needs internet)"
+        self._import_archive_btn = QPushButton("Import ZIP / .mrpack…")
+        import_archive_btn = self._import_archive_btn
+        import_archive_btn.setAccessibleName("Import modpack archive")
+        import_archive_btn.setMinimumHeight(34)
+        import_archive_btn.setToolTip(
+            "Copy a Modrinth, CurseForge, or other supported modpack archive into a server folder."
         )
-        self._dl_check.setChecked(False)
-        self._dl_check.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
-        self._dl_check.setToolTip(
-            "Some packs only ship a list of mods, not the files. If checked, "
-            "Crucible will try to download them after import. CurseForge packs "
-            "may need a free API key (CURSEFORGE_API_KEY)."
-        )
-        layout.addWidget(self._dl_check)
+        import_archive_btn.clicked.connect(self._import_prism_archive)
+        source_row.addWidget(import_archive_btn)
+        layout.addLayout(source_row)
 
         import_hint = QLabel(
-            "Tip: importing a *fully installed* Prism instance is the most reliable "
-            "option — it already contains the mod jars and the server loader."
+            "Choose a destination parent folder. Crucible names the new folder from "
+            "the source and picks a free name if that folder already exists."
         )
         import_hint.setWordWrap(True)
-        import_hint.setStyleSheet(f"color: {theme.SURFACE2}; font-size: 11px;")
+        import_hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         layout.addWidget(import_hint)
 
-        # ---- Divider ----------------------------------------------------
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet(f"color: {theme.SURFACE1};")
-        layout.addWidget(sep)
-
-        # ---- Advanced: register an existing folder ----------------------
-        adv_title = QLabel("Or register an existing server folder")
-        adv_title.setStyleSheet(
-            f"font-size: 13px; font-weight: 600; color: {theme.TEXT};"
+        self._advanced_toggle = QToolButton()
+        self._advanced_toggle.setText("Register a server folder already on disk")
+        self._advanced_toggle.setCheckable(True)
+        self._advanced_toggle.setChecked(False)
+        self._advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self._advanced_toggle.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         )
-        layout.addWidget(adv_title)
-
-        adv_sub = QLabel(
-            "Already have a server set up? Point Crucible at it. "
-            "Files on disk are never modified by this operation."
+        self._advanced_toggle.setStyleSheet(
+            f"color: {theme.TEXT}; font-weight: 600; padding: 5px 0;"
         )
-        adv_sub.setWordWrap(True)
-        adv_sub.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
-        layout.addWidget(adv_sub)
+        self._advanced_toggle.toggled.connect(self._toggle_advanced_registration)
+        layout.addWidget(self._advanced_toggle)
+
+        self._advanced_body = QWidget()
+        self._advanced_body.setVisible(False)
+        advanced_layout = QVBoxLayout(self._advanced_body)
+        advanced_layout.setContentsMargins(0, 2, 0, 0)
+        advanced_layout.setSpacing(8)
+
+        advanced_hint = QLabel(
+            "Use this only when the server files are already where you want them. "
+            "Crucible records the folder; it does not copy, move, or delete its files."
+        )
+        advanced_hint.setWordWrap(True)
+        advanced_hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
+        advanced_layout.addWidget(advanced_hint)
 
         form = QFormLayout()
-        form.setSpacing(10)
+        form.setSpacing(8)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        layout.addLayout(form)
+        advanced_layout.addLayout(form)
 
-        # Path field
-        # Minimum widths below keep every field (and its placeholder text)
-        # readable rather than clipped, regardless of how the dialog is
-        # resized -- this was reported unreadable at the previous 560px
-        # dialog width.
         path_row = QHBoxLayout()
         self._path_edit = QLineEdit()
         self._path_edit.setPlaceholderText("/path/to/my-server")
@@ -199,38 +184,35 @@ class AddInstanceDialog(QDialog):
         browse_btn.setMinimumHeight(32)
         browse_btn.clicked.connect(self._browse)
         path_row.addWidget(browse_btn)
+        form.addRow("Server folder:", path_row)
 
-        form.addRow("Server path:", path_row)
-
-        # Name field
         self._name_edit = QLineEdit()
-        self._name_edit.setPlaceholderText("My Server")
+        self._name_edit.setPlaceholderText("My server")
         self._name_edit.setMinimumWidth(320)
         self._name_edit.setMinimumHeight(32)
         form.addRow("Display name:", self._name_edit)
 
         self._ver_edit = QLineEdit()
-        self._ver_edit.setPlaceholderText("e.g. 2.8.4  (optional)")
+        self._ver_edit.setPlaceholderText("Version (optional)")
         self._ver_edit.setMinimumWidth(320)
         self._ver_edit.setMinimumHeight(32)
         form.addRow("Version:", self._ver_edit)
 
-        # Session field
         self._session_edit = QLineEdit()
-        self._session_edit.setPlaceholderText("auto-derived from name  (e.g. my-server)")
+        self._session_edit.setPlaceholderText("Leave blank to use the server name")
         self._session_edit.setMinimumWidth(320)
         self._session_edit.setMinimumHeight(32)
-        form.addRow("Console session (advanced):", self._session_edit)
+        form.addRow("tmux session (optional):", self._session_edit)
 
-        hint = QLabel(
-            "Leave session blank to auto-derive from the name.  "
-            "If this server already runs in a named tmux session (for example, 'gtnh'), enter that technical session name here."
+        session_hint = QLabel(
+            "Most users should leave the session blank. Enter a name only if this "
+            "server already runs in a specifically named tmux session."
         )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
-        layout.addWidget(hint)
+        session_hint.setWordWrap(True)
+        session_hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
+        advanced_layout.addWidget(session_hint)
+        layout.addWidget(self._advanced_body)
 
-        # Validation warning area
         self._warn_label = QLabel("")
         self._warn_label.setWordWrap(True)
         self._warn_label.setStyleSheet(
@@ -240,14 +222,23 @@ class AddInstanceDialog(QDialog):
         self._warn_label.hide()
         layout.addWidget(self._warn_label)
 
-        # Buttons
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
         )
+        self._add_button = btns.button(QDialogButtonBox.StandardButton.Ok)
+        self._add_button.setText("Add server")
+        self._add_button.setObjectName("PrimaryButton")
         btns.accepted.connect(self._on_accept)
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
+
+    def _toggle_advanced_registration(self, expanded: bool) -> None:
+        self._advanced_body.setVisible(expanded)
+        self._advanced_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        self.adjustSize()
 
     # Helpers
 
@@ -264,11 +255,7 @@ class AddInstanceDialog(QDialog):
             self._name_edit.setText(Path(text).name)
 
     def _choose_prism_target(self, suggested_name: str) -> str:
-        """Let the user pick a parent folder and name a NEW destination folder.
-
-        getExistingDirectory can't create folders easily, so we ask for a parent
-        directory and then a folder name, and create it ourselves.
-        """
+        """Choose the parent folder and derive a safe, collision-free destination."""
         base = Path.home() / "CrucibleServers"
         try:
             base.mkdir(parents=True, exist_ok=True)
@@ -277,32 +264,19 @@ class AddInstanceDialog(QDialog):
 
         parent = QFileDialog.getExistingDirectory(
             self,
-            "Choose where to create the new server folder",
+            "Choose where to create the server folder",
             str(base),
             QFileDialog.Option.ShowDirsOnly,
         )
         if not parent:
             return ""
 
-        name, ok = QInputDialog.getText(
-            self, "Name the server folder",
-            "Folder name for the new server:",
-            text=self._safe_folder_name(suggested_name),
-        )
-        if not ok:
-            return ""
-        name = self._safe_folder_name(name) or self._safe_folder_name(suggested_name) or "server"
+        name = self._safe_folder_name(suggested_name) or "server"
         target = Path(parent) / name
-
-        if target.exists() and any(target.iterdir()):
-            resp = QMessageBox.question(
-                self, "Folder not empty",
-                f"{target} already exists and is not empty.\n\n"
-                "Import into it anyway? Existing files may be overwritten.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if resp != QMessageBox.StandardButton.Yes:
-                return ""
+        suffix = 2
+        while target.exists():
+            target = Path(parent) / f"{name}-{suffix}"
+            suffix += 1
         return str(target)
 
     @staticmethod
@@ -318,12 +292,20 @@ class AddInstanceDialog(QDialog):
     def _finish_prism_import(self, source: str) -> None:
         if self._import_thread is not None and self._import_thread.isRunning():
             return
+        if self._pending_import_registration is not None:
+            self._warn_label.setText(
+                "An import is already ready. Click Add server to finish it, or Cancel "
+                "before starting another import. Copied files are left on disk if you cancel."
+            )
+            self._warn_label.show()
+            return
         suggested = Path(source).stem or Path(source).name or "Prism Server"
         target = self._choose_prism_target(suggested)
         if not target:
             return
 
-        want_download = self._dl_check.isChecked()
+        # Download prompting happens after this import window closes.
+        want_download = False
         self._import_pending = (source, target, want_download)
         self.setEnabled(False)
         self._warn_label.setText(
@@ -350,37 +332,43 @@ class AddInstanceDialog(QDialog):
         pending = self._import_pending
         if error or info is None or pending is None:
             self._warn_label.hide()
-            QMessageBox.critical(self, "Could not import Prism server", error or "Import failed")
-            return
-        source, target, want_download = pending
-        try:
-            name = Path(target).name or info.name
-            inst = self._manager.add_instance(
-                target,
-                name,
-                info.version_label,
-                pack_source=info.source_type,
-                minecraft_version=info.minecraft_version,
-                loader=info.loader,
-                loader_version=info.loader_version,
-                prism_source=source,
+            QMessageBox.critical(
+                self, "Could not import server", error or "Import failed"
             )
-        except Exception as exc:
-            QMessageBox.critical(self, "Could not import Prism server", str(exc))
             return
 
+        source, target, want_download = pending
+        name = Path(target).name or info.name
+        candidate = ServerInstance(
+            path=target,
+            name=name,
+            version=info.version_label,
+            pack_source=info.source_type,
+            minecraft_version=info.minecraft_version,
+            loader=info.loader,
+            loader_version=info.loader_version,
+            prism_source=source,
+        )
+        self._pending_import_registration = (source, target, info)
+        self._import_folder_btn.setEnabled(False)
+        self._import_archive_btn.setEnabled(False)
+        self._advanced_toggle.setEnabled(False)
         self._path_edit.setText(target)
-        self._name_edit.setText(inst.name)
-        self._ver_edit.setText(inst.version)
-        self.result_instance = inst
+        self._name_edit.setText(candidate.name)
+        self._ver_edit.setText(candidate.version)
+        self.result_instance = candidate
         if not want_download:
-            self._maybe_offer_download(target, inst.name)
+            self._download_offer = (target, candidate.name)
 
-        warnings = info.warnings + inst.validate()
+        warnings = info.warnings + candidate.validate()
+        destination_note = (
+            f"Files copied to:\n{target}\n\n"
+            "Click Add server to track this folder. Cancel leaves the copied files on disk.\n\n"
+        )
         if warnings:
-            text = "Import complete, with warnings:\n• " + "\n• ".join(warnings)
+            text = destination_note + "Import ready, with warnings:\n• " + "\n• ".join(warnings)
         else:
-            text = "✓ Import complete. Click OK to add this server to the sidebar."
+            text = destination_note + "Import complete."
         self._warn_label.setText(text)
         self._warn_label.show()
 
@@ -401,8 +389,9 @@ class AddInstanceDialog(QDialog):
                 return
         except Exception:
             return
+        host = self.parentWidget() or self
         resp = QMessageBox.question(
-            self, "Download mods?",
+            host, "Download mods?",
             "This pack shipped a mod download list instead of the actual files.\n\n"
             "Try to download the server mods now? (needs internet)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -411,22 +400,11 @@ class AddInstanceDialog(QDialog):
             return
         try:
             from .download_dialog import DownloadModsDialog
-            dlg = DownloadModsDialog(target, server_name, parent=self)
+            dlg = DownloadModsDialog(target, server_name, parent=host)
             dlg.start()
             dlg.exec()
         except Exception as exc:
             QMessageBox.warning(self, "Download mods", f"Could not start download:\n{exc}")
-
-    def _create_new_server(self) -> None:
-        try:
-            from .new_server_dialog import NewServerDialog
-            dlg = NewServerDialog(self._manager, parent=self)
-        except Exception as exc:
-            QMessageBox.warning(self, "Create server", f"Could not open the creator:\n{exc}")
-            return
-        if dlg.exec() and dlg.result_instance is not None:
-            self.result_instance = dlg.result_instance
-            self.accept()
 
     def _import_prism_folder(self) -> None:
         source = QFileDialog.getExistingDirectory(
@@ -446,43 +424,102 @@ class AddInstanceDialog(QDialog):
             self._finish_prism_import(source)
 
     def _on_accept(self) -> None:
-        # Second OK click after warnings were shown: instance already registered, just close.
+        # Imported pack files are already copied; only register them when the
+        # user chooses Add server. Cancel leaves those files untouched on disk.
+        if self._pending_import_registration is not None:
+            source, target, info = self._pending_import_registration
+            try:
+                inst = self._manager.add_instance(
+                    target,
+                    Path(target).name or info.name,
+                    info.version_label,
+                    pack_source=info.source_type,
+                    minecraft_version=info.minecraft_version,
+                    loader=info.loader,
+                    loader_version=info.loader_version,
+                    prism_source=source,
+                )
+            except Exception as exc:
+                QMessageBox.warning(self, "Could not add server", str(exc))
+                return
+            self.result_instance = inst
+            self._pending_import_registration = None
+            self.accept()
+            return
+
+        # A manual folder with validation warnings needs an explicit second
+        # click, but it is not written to the registry until that click.
+        if self._pending_manual_registration and self.result_instance is not None:
+            path = self._path_edit.text().strip()
+            name = self._name_edit.text().strip() or Path(path).name
+            version = self._ver_edit.text().strip()
+            session = self._session_edit.text().strip()
+            try:
+                inst = self._manager.add_instance(
+                    path, name, version, tmux_session=session
+                )
+            except ValueError as exc:
+                QMessageBox.warning(self, "Could not add server", str(exc))
+                return
+            self.result_instance = inst
+            self._pending_manual_registration = False
+            self._add_button.setText("Add server")
+            self.accept()
+            return
+
         if self.result_instance is not None:
             self.accept()
             return
 
-        path    = self._path_edit.text().strip()
-        name    = self._name_edit.text().strip() or Path(path).name
+        path = self._path_edit.text().strip()
+        name = self._name_edit.text().strip() or Path(path).name
         version = self._ver_edit.text().strip()
         session = self._session_edit.text().strip()
 
         if not path:
             QMessageBox.warning(
-                self, "Nothing to add",
-                "Import a modpack above, or enter the path to an existing server folder.",
+                self,
+                "No server folder selected",
+                "Import a Prism instance or pack file, or expand the registration "
+                "section and choose an existing server folder.",
             )
+            return
+
+        candidate = ServerInstance(
+            path=path, name=name, version=version, tmux_session=session
+        )
+        problems = candidate.validate()
+        if problems:
+            self.result_instance = candidate
+            self._pending_manual_registration = True
+            self._add_button.setText("Add anyway")
+            self._warn_label.setText(
+                "Crucible found these issues:\n• "
+                + "\n• ".join(problems)
+                + "\n\nAdd anyway registers the folder without changing its files."
+            )
+            self._warn_label.show()
             return
 
         try:
-            inst = self._manager.add_instance(path, name, version, tmux_session=session)
-        except ValueError as exc:
-            QMessageBox.warning(self, "Already Registered", str(exc))
-            return
-
-        # Show validation warnings but don't block
-        problems = inst.validate()
-        if problems:
-            self._warn_label.setText(
-                "⚠  Registered with warnings:\n• " + "\n• ".join(problems)
+            inst = self._manager.add_instance(
+                path, name, version, tmux_session=session
             )
-            self._warn_label.show()
-            self.result_instance = inst
-            # Don't call accept() yet -- allow user to read warnings.
-            # Clicking OK again will hit the early-return guard above and accept.
+        except ValueError as exc:
+            QMessageBox.warning(self, "Already registered", str(exc))
             return
 
         self.result_instance = inst
         self.accept()
+
+    def offer_missing_mod_download(self) -> None:
+        """Offer missing-mod downloads after the import dialog has fully closed."""
+        pending, self._download_offer = self._download_offer, None
+        if pending is None:
+            return
+        target, server_name = pending
+        self._maybe_offer_download(target, server_name)
+
     def _import_running(self) -> bool:
         return bool(self._import_thread and self._import_thread.isRunning())
 

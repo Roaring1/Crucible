@@ -22,11 +22,11 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, Qt, QObject, QThread, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, QPoint, Qt, QObject, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QMainWindow, QSplitter, QStatusBar, QLabel,
-    QMessageBox, QInputDialog,
+    QMessageBox, QInputDialog, QMenu,
 )
 
 from ..data.instance_manager import InstanceManager, validate_delete_target
@@ -269,12 +269,15 @@ class MainWindow(QMainWindow):
         self._sb_instances.setText(
             f"{n} instance{'s' if n != 1 else ''}"
         )
-        if self._tmux.tmux_available():
-            self._sb_tmux.setText("Console service ready")
+        if not self._tmux.tmux_available():
+            self._sb_tmux.setText("tmux not found — install tmux")
+            self._sb_tmux.setStyleSheet(f"color: {theme.RED};")
+        elif n == 0:
+            self._sb_tmux.setText("Ready to add a server")
             self._sb_tmux.setStyleSheet(f"color: {theme.GREEN};")
         else:
-            self._sb_tmux.setText("Console service unavailable")
-            self._sb_tmux.setStyleSheet(f"color: {theme.RED};")
+            self._sb_tmux.setText("Server console available")
+            self._sb_tmux.setStyleSheet(f"color: {theme.GREEN};")
 
     # Event handlers
 
@@ -311,13 +314,43 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f'Renamed to “{name}” · files and session unchanged', 5000)
 
     def _on_add_requested(self) -> None:
-        dlg = AddInstanceDialog(self._manager, self)
-        if dlg.exec() and dlg.result_instance:
-            inst   = dlg.result_instance
+        """Offer the three common server setup routes without a stacked chooser dialog."""
+        menu = QMenu(self)
+        create_action = menu.addAction("Create a server…")
+        create_action.setStatusTip(
+            "Install a clean Minecraft server with Vanilla, Fabric, Forge, NeoForge or Quilt."
+        )
+        pack_action = menu.addAction("Install a modpack…")
+        pack_action.setStatusTip(
+            "Browse Modrinth and install a modpack as a server."
+        )
+        import_action = menu.addAction("Import existing files…")
+        import_action.setStatusTip(
+            "Import a Prism instance or ZIP/.mrpack, or register a server folder already on disk."
+        )
+        anchor = self._sidebar._add_btn
+        chosen = menu.exec(anchor.mapToGlobal(QPoint(0, anchor.height())))
+        if chosen is None:
+            return
+
+        if chosen is create_action:
+            from .new_server_dialog import NewServerDialog
+            dlg = NewServerDialog(self._manager, self)
+        elif chosen is pack_action:
+            from .modpack_dialog import ModpackDialog
+            dlg = ModpackDialog(self._manager, self)
+        else:
+            dlg = AddInstanceDialog(self._manager, self)
+
+        if dlg.exec() and dlg.result_instance is not None:
+            inst = dlg.result_instance
             status = self._tmux.get_status(inst)
             self._sidebar.add_instance(inst, status)
             self._sidebar.select_by_id(inst.id)
             self._update_status_bar()
+            if isinstance(dlg, AddInstanceDialog):
+                # The import window is already closed before this optional prompt appears.
+                dlg.offer_missing_mod_download()
 
     def _on_order_changed(self, order: list) -> None:
         """Persist the new sidebar order after an internal drag-reorder."""
@@ -598,6 +631,7 @@ class MainWindow(QMainWindow):
                 self._sidebar.add_instance(inst, status)
                 self._sidebar.select_by_id(inst.id)
                 self._update_status_bar()
+                dlg.offer_missing_mod_download()
             return
 
         if not is_server:
@@ -608,10 +642,10 @@ class MainWindow(QMainWindow):
             )
             return
         try:
-            name, ok = QInputDialog.getText(self, "Import server", "Server name:", text=path.name)
-            if not ok or not name.strip():
-                return
-            inst = self._manager.add_instance(str(path), name.strip())
+            # The source folder already gives a useful default name. The user can
+            # rename it from the sidebar later, so don't interrupt a drag-and-drop
+            # import with a second pop-up.
+            inst = self._manager.add_instance(str(path), path.name or "Imported server")
         except ValueError as exc:
             QMessageBox.warning(self, "Import failed", str(exc))
             return

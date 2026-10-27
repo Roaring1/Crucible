@@ -37,4 +37,37 @@ jobs:
       - name: Install package and test runner
         run: python -m pip install --upgrade pip && python -m pip install -e . pytest
       - name: Run test suite
-        run: python -m pytest -q -p no:cacheprovider
+        id: pytest
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:cacheprovider 2>&1 | tee "pytest-${{ matrix.python-version }}.log"
+      - name: Publish test summary
+        if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.pytest.outcome }}
+        shell: bash
+        run: |
+          {
+            echo "## Python ${{ matrix.python-version }} test run"
+            echo
+            echo "Outcome: ${TEST_OUTCOME:-not started}"
+            echo
+            echo 'Last 80 log lines:'
+            echo
+            echo '~~~text'
+            if [[ -f "pytest-${{ matrix.python-version }}.log" ]]; then
+              tail -n 80 "pytest-${{ matrix.python-version }}.log"
+            else
+              echo "No pytest log was produced. Check the earlier setup steps."
+            fi
+            echo '~~~'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-report-py${{ matrix.python-version }}
+          path: pytest-${{ matrix.python-version }}.log
+          if-no-files-found: warn
+          retention-days: 14

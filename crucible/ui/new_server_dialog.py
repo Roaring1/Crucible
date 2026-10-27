@@ -19,7 +19,7 @@ from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QCheckBox, QFileDialog, QMessageBox,
-    QProgressBar, QPlainTextEdit, QInputDialog,
+    QProgressBar, QPlainTextEdit, QToolButton, QWidget,
 )
 
 from ..data.instance_manager import InstanceManager
@@ -79,7 +79,7 @@ class _CreateWorker(QObject):
                 loader=loader,
                 loader_version=lv,
                 accept_eula=eula,
-                overwrite=True,
+                overwrite=False,
                 log_cb=lambda m: self.log.emit(m),
                 cancel=self._cancel,
             )
@@ -109,19 +109,11 @@ class NewServerDialog(QDialog):
         self._close_requested = False
         self._accept_after_create = False
 
-        self.setWindowTitle("Create a New Server")
+        self.setWindowTitle("Create a server")
         self.setMinimumWidth(560)
         self.setModal(True)
         self._build_ui()
         self._reload_versions()
-
-    def _open_modpack_dialog(self) -> None:
-        from .modpack_dialog import ModpackDialog
-        dlg = ModpackDialog(self._manager, self)
-        if dlg.exec() and dlg.result_instance is not None:
-            # Hand the freshly-created instance back to the caller and close.
-            self.result_instance = dlg.result_instance
-            self.accept()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -141,19 +133,6 @@ class NewServerDialog(QDialog):
         sub.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
         layout.addWidget(sub)
 
-        # Shortcut to the one-click modpack installer.
-        pack_row = QHBoxLayout()
-        pack_lbl = QLabel("Want a ready-made modpack instead?")
-        pack_lbl.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
-        pack_row.addWidget(pack_lbl)
-        self._modpack_btn = QPushButton("\U0001F4E6  Install a modpack instead\u2026")
-        self._modpack_btn.setToolTip(
-            "Browse Modrinth modpacks and install one as a server in one click.")
-        self._modpack_btn.clicked.connect(self._open_modpack_dialog)
-        pack_row.addWidget(self._modpack_btn)
-        pack_row.addStretch()
-        layout.addLayout(pack_row)
-
         form = QFormLayout()
         form.setSpacing(10)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -166,32 +145,53 @@ class NewServerDialog(QDialog):
         self._loader_combo.currentIndexChanged.connect(self._on_loader_changed)
         form.addRow("Server type:", self._loader_combo)
 
-        # Version + refresh
-        ver_row = QHBoxLayout()
+        # The common path only needs a Minecraft version. Less-used version
+        # controls are grouped below rather than crowding the initial form.
         self._ver_combo = QComboBox()
         self._ver_combo.setEditable(True)
         self._ver_combo.setMinimumWidth(220)
-        ver_row.addWidget(self._ver_combo, stretch=1)
-        self._snap_check = QCheckBox("Snapshots")
-        self._snap_check.stateChanged.connect(lambda *_: self._reload_versions())
-        ver_row.addWidget(self._snap_check)
-        self._refresh_btn = QPushButton("↻")
-        self._refresh_btn.setFixedWidth(34)
-        self._refresh_btn.setToolTip("Refresh the version list")
-        self._refresh_btn.setAccessibleName("Refresh Minecraft version list")
-        self._refresh_btn.clicked.connect(self._reload_versions)
-        ver_row.addWidget(self._refresh_btn)
-        form.addRow("Minecraft version:", ver_row)
+        form.addRow("Minecraft version:", self._ver_combo)
 
         self._ver_status = QLabel("Loading versions…")
         self._ver_status.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         form.addRow("", self._ver_status)
 
-        # Loader version (only for forge/neoforge/quilt/fabric)
+        self._advanced_toggle = QToolButton()
+        self._advanced_toggle.setText("More version options")
+        self._advanced_toggle.setCheckable(True)
+        self._advanced_toggle.setChecked(False)
+        self._advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self._advanced_toggle.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self._advanced_toggle.setStyleSheet(
+            f"color: {theme.TEXT}; font-weight: 600; padding: 5px 0;"
+        )
+        self._advanced_toggle.toggled.connect(self._toggle_advanced_options)
+        layout.addWidget(self._advanced_toggle)
+
+        self._advanced_body = QWidget()
+        self._advanced_body.setVisible(False)
+        advanced_form = QFormLayout(self._advanced_body)
+        advanced_form.setSpacing(8)
+
         self._lver_edit = QLineEdit()
-        self._lver_edit.setPlaceholderText("latest (leave blank)")
-        self._lver_row_label = QLabel("Loader version:")
-        form.addRow(self._lver_row_label, self._lver_edit)
+        self._lver_edit.setPlaceholderText("Leave blank to use the latest version")
+        self._lver_row_label = QLabel("Loader version (optional):")
+        advanced_form.addRow(self._lver_row_label, self._lver_edit)
+
+        version_tools = QHBoxLayout()
+        self._snap_check = QCheckBox("Include snapshots")
+        self._snap_check.stateChanged.connect(lambda *_: self._reload_versions())
+        version_tools.addWidget(self._snap_check)
+        self._refresh_btn = QPushButton("Refresh list")
+        self._refresh_btn.setToolTip("Reload the available Minecraft versions")
+        self._refresh_btn.setAccessibleName("Refresh Minecraft version list")
+        self._refresh_btn.clicked.connect(self._reload_versions)
+        version_tools.addWidget(self._refresh_btn)
+        version_tools.addStretch()
+        advanced_form.addRow("Version list:", version_tools)
+        layout.addWidget(self._advanced_body)
 
         # Display name first -- the folder is derived from it automatically.
         self._name_edit = QLineEdit()
@@ -214,12 +214,21 @@ class NewServerDialog(QDialog):
         self._path_hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         form.addRow("Folder:", dst_row)
         form.addRow("", self._path_hint)
+        # Use a real default rather than placeholder-only text. This lets a new
+        # user start from the latest release without first guessing what to type.
+        self._name_edit.setText("My Server")
 
         self._eula_check = QCheckBox(
-            "I agree to the Minecraft EULA (minecraft.net/eula) — required to run"
+            "I accept the Minecraft EULA — required before the server can start"
         )
         self._eula_check.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
         layout.addWidget(self._eula_check)
+        eula_hint = QLabel(
+            "Leave unchecked to create the server files now and accept the EULA later in Setup."
+        )
+        eula_hint.setWordWrap(True)
+        eula_hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
+        layout.addWidget(eula_hint)
 
         # Log (hidden until creation starts)
         self._log = QPlainTextEdit()
@@ -243,7 +252,7 @@ class NewServerDialog(QDialog):
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.clicked.connect(self._on_cancel)
         row.addWidget(self._cancel_btn)
-        self._create_btn = QPushButton("✨  Create Server")
+        self._create_btn = QPushButton("Create server")
         self._create_btn.setObjectName("PrimaryButton")
         self._create_btn.setFixedHeight(34)
         self._create_btn.clicked.connect(self._on_create)
@@ -251,6 +260,13 @@ class NewServerDialog(QDialog):
         layout.addLayout(row)
 
         self._on_loader_changed()
+
+    def _toggle_advanced_options(self, expanded: bool) -> None:
+        self._advanced_body.setVisible(expanded)
+        self._advanced_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        self.adjustSize()
 
     # ---- version loading ----
     def _current_loader(self) -> str:
@@ -309,28 +325,25 @@ class NewServerDialog(QDialog):
 
     # ---- destination helpers ----
     def _browse(self) -> None:
+        """Choose a parent folder; derive a unique child folder from the server name."""
         base = Path.home() / "CrucibleServers"
         try:
             base.mkdir(parents=True, exist_ok=True)
         except OSError:
             base = Path.home()
         parent = QFileDialog.getExistingDirectory(
-            self, "Choose where to create the server folder", str(base),
+            self,
+            "Choose where to create the server folder",
+            str(base),
             QFileDialog.Option.ShowDirsOnly,
         )
         if not parent:
             return
         suggested = self._safe(self._name_edit.text()) or "my-server"
-        name, ok = QInputDialog.getText(
-            self, "Name the server folder", "Folder name:", text=suggested
-        )
-        if not ok:
-            return
-        name = self._safe(name) or suggested
-        self._path_edit.setText(str(Path(parent) / name))
-        # An explicit browse means "use this location" -- stop auto-deriving.
+        destination = self._unique_folder_path(Path(parent), suggested)
+        self._path_edit.setText(str(destination))
         self._path_user_edited = True
-        self._path_hint.setText("Custom folder set.")
+        self._path_hint.setText("New folder selected; existing files will not be overwritten.")
 
     @staticmethod
     def _safe(name: str) -> str:
@@ -338,18 +351,34 @@ class NewServerDialog(QDialog):
         cleaned = "".join(c for c in (name or "") if c.isalnum() or c in keep).strip()
         return cleaned.replace(" ", "-")
 
+    def _unique_folder_path(self, parent: Path, name: str) -> Path:
+        safe = self._safe(name) or "my-server"
+        used = {
+            Path(item.path).expanduser().resolve()
+            for item in self._manager.instances
+        }
+        candidate = parent / safe
+        suffix = 2
+        while candidate.exists() or candidate.resolve() in used:
+            candidate = parent / f"{safe}-{suffix}"
+            suffix += 1
+        return candidate
+
     def _on_path_edited(self, _text: str) -> None:
-        """User typed in the folder field -- stop auto-deriving it."""
+        """Manual path edits take precedence over automatic folder naming."""
         self._path_user_edited = True
-        self._path_hint.setText("Custom folder set.")
+        self._path_hint.setText(
+            "Custom folder. Crucible will not overwrite a non-empty folder."
+        )
 
     def _on_name_changed(self, text: str) -> None:
-        """Keep the folder path in sync with the display name until edited."""
+        """Keep the destination unique and in sync until the user edits the path."""
         if self._path_user_edited:
             return
         safe = self._safe(text)
         if safe:
-            self._path_edit.setText(str(Path.home() / "CrucibleServers" / safe))
+            parent = Path.home() / "CrucibleServers"
+            self._path_edit.setText(str(self._unique_folder_path(parent, safe)))
         else:
             self._path_edit.clear()
 
@@ -367,17 +396,46 @@ class NewServerDialog(QDialog):
             QMessageBox.warning(self, "Pick a version", "Choose a Minecraft version first.")
             return
         if not path:
-            QMessageBox.warning(self, "Choose a folder", "Pick where to create the server.")
-            return
-        if not self._eula_check.isChecked():
-            resp = QMessageBox.question(
-                self, "Minecraft EULA",
-                "The server can't run until the Minecraft EULA is accepted.\n\n"
-                "Create the folder now and accept later?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.warning(
+                self, "Choose a folder",
+                "Enter a server name or choose where to create the server folder.",
             )
-            if resp != QMessageBox.StandardButton.Yes:
+            return
+
+        target = Path(path).expanduser()
+        try:
+            resolved = target.resolve()
+            already_registered = next(
+                (
+                    item for item in self._manager.instances
+                    if Path(item.path).expanduser().resolve() == resolved
+                ),
+                None,
+            )
+            if already_registered is not None:
+                QMessageBox.warning(
+                    self, "Server already exists in Crucible",
+                    f"The folder is already registered as {already_registered.name!r}. "
+                    "Choose a different folder, or select that server in the list.",
+                )
                 return
+            if target.exists() and (
+                not target.is_dir() or any(target.iterdir())
+            ):
+                QMessageBox.warning(
+                    self, "Folder isn't empty",
+                    f"Crucible won't overwrite existing files in:\n\n{target}\n\n"
+                    "Choose a new folder or an empty folder instead.",
+                )
+                return
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Cannot use this folder",
+                f"Crucible couldn't check the destination safely:\n{exc}",
+            )
+            return
+
+        path = str(target)
         try:
             from ..importers import serverloader as sl
             if sl.requires_java(loader):

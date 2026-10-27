@@ -26,9 +26,9 @@ The release downloader requires exact source/checksum assets, verifies SHA-256, 
 ## First run
 
 1. Open Crucible or run `crucible gui`.
-2. Choose **+ Add Server**.
-3. Select a server folder, import a pack, or create a server.
-4. Review **Setup**, then press **Start**.
+2. Select **+ Add server**.
+3. Choose **Create a server**, **Install a modpack**, or **Import existing files**.
+4. Review **Setup**, then select **Start**.
 
 The GUI is primary. Recovery/script commands remain available:
 
@@ -56,9 +56,17 @@ Data locations:
 
 See `CHANGELOG.md` and GitHub Release notes for full history.
 
+## Developer diagnostics
+
+- Inspect the latest GitHub Actions test run, including redacted failure excerpts: `python scripts/ci_report.py`.
+- Inspect a notification's exact run: `python scripts/ci_report.py --run-id RUN_ID`.
+- Prepare a folder of local screenshots for review without copying base64 into chat: `python scripts/prepare_ui_evidence.py ~/Pictures/CrucibleAudit/inbox`.
+
+See [CI and UI evidence](docs/development/ci-and-ui-evidence.md) for details. Screenshot folders synchronized locally by Dropbox can be passed directly to the tool.
+
 ## Everyday controls (v0.8)
 
-- **Rename:** select a server and press F2, or use Rename selected below the server list. Display names do not move files or change tmux sessions.
+- **Rename:** select a server and press F2, or right-click its row and choose **Rename server…**. Display names do not move files or change tmux sessions.
 - **Import:** drop a server folder or ZIP/mrpack anywhere in the main window. Your chosen folder name becomes the imported server name.
 - **Console:** type to see suggestions above the input; use arrows to select, Tab/Shift+Tab to cycle, Escape to dismiss. Arrow keys use command history when suggestions are hidden. Suggestions are a local vocabulary, not a server-provided command tree.
 - **Mods:** select a mod and choose Change version to upgrade or downgrade. Identify online matches exact Modrinth file hashes; custom builds with no match remain unlinked. Set the installed Minecraft/loader versions with Server version.

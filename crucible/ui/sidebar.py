@@ -204,7 +204,7 @@ class Sidebar(QWidget):
         layout.setSpacing(0)
 
         # Title bar
-        title = QLabel("SERVERS")
+        title = QLabel("Servers")
         title.setObjectName("SidebarTitle")
         layout.addWidget(title)
 
@@ -225,16 +225,16 @@ class Sidebar(QWidget):
         layout.addWidget(self._list, stretch=1)
 
         # Add button
-        add_btn = QPushButton("＋  Add Server")
-        add_btn.setObjectName("SidebarAddButton")
-        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        add_btn.clicked.connect(self.add_requested)
-        layout.addWidget(add_btn)
+        self._add_btn = QPushButton("＋  Add server")
+        self._add_btn.setObjectName("SidebarAddButton")
+        self._add_btn.setMinimumHeight(36)
+        self._add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._add_btn.setToolTip("Create a server, install a modpack, or import existing files")
+        self._add_btn.clicked.connect(self.add_requested)
+        layout.addWidget(self._add_btn)
 
-        rename_btn = QPushButton("Rename selected…  F2")
-        rename_btn.setToolTip("Change the display name without moving files or changing the running session")
-        rename_btn.clicked.connect(lambda: self.rename_requested.emit(self.selected_instance()) if self.selected_instance() else None)
-        layout.addWidget(rename_btn)
+        # Renaming remains available from the server context menu and F2.
+        # Keep the main sidebar focused on the server list and its primary action.
 
         # Small version footer
         footer = QLabel(f"Crucible v{__version__}")
