@@ -9,13 +9,15 @@ archive — with manual folder registration available below for advanced users.
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import zipfile
 
 from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea, QWidget,
     QLabel, QLineEdit, QPushButton, QFileDialog,
     QDialogButtonBox, QMessageBox, QCheckBox, QFrame, QToolButton,
+    QProgressBar, QPlainTextEdit,
 )
 
 from ..data.instance_manager import InstanceManager
@@ -26,21 +28,48 @@ from .thread_lifecycle import connect_thread_cleanup
 
 
 class _PrismImportWorker(QObject):
+    log = pyqtSignal(str)
+    progress = pyqtSignal(int, int)
     finished = pyqtSignal(object, str)
 
-    def __init__(self, source: str, target: str, download_mods: bool):
+    def __init__(self, source: str, target: str):
         super().__init__()
         self._source = source
         self._target = target
-        self._download_mods = download_mods
 
     def run(self) -> None:
         try:
+            source_path = Path(self._source)
+            is_archive = source_path.is_file() and source_path.suffix.lower() in {".zip", ".mrpack"}
+            has_pack_index = False
+            if is_archive:
+                try:
+                    with zipfile.ZipFile(source_path) as archive:
+                        has_pack_index = any(
+                            not member.is_dir()
+                            and len(PurePosixPath(member.filename).parts) == 1
+                            and PurePosixPath(member.filename).name
+                            in {"modrinth.index.json", "manifest.json"}
+                            for member in archive.infolist()
+                        )
+                except (OSError, zipfile.BadZipFile):
+                    # The importer will give the user the more specific archive error.
+                    has_pack_index = False
+            self.log.emit(
+                "Copying pack files and checking the server-mod list…"
+                if has_pack_index
+                else "Copying the selected files…"
+            )
             info = import_prism_source(
                 self._source,
                 self._target,
                 overwrite=False,
-                download_mods=self._download_mods,
+                # Only attempt downloads when an archive actually contains an
+                # index. Installed Prism instances already have mod jars, and
+                # full server-pack ZIPs often have no index to download from.
+                download_mods=has_pack_index,
+                download_log_cb=self.log.emit,
+                download_progress_cb=lambda done, total: self.progress.emit(done, total),
             )
             self.finished.emit(info, "")
         except Exception as exc:
@@ -61,11 +90,11 @@ class AddInstanceDialog(QDialog):
         self.result_instance: ServerInstance | None = None
         self._import_thread: QThread | None = None
         self._import_worker: _PrismImportWorker | None = None
-        self._import_pending: tuple[str, str, bool] | None = None
+        self._import_pending: tuple[str, str] | None = None
         self._import_result: tuple[object, str] | None = None
         self._pending_import_registration: tuple[str, str, object] | None = None
         self._pending_manual_registration = False
-        self._download_offer: tuple[str, str] | None = None
+        self._destination_parent = Path.home() / "CrucibleServers"
         self.setWindowTitle("Import existing files")
         # Widened from 560 -- at 560px, the register-existing-server form's
         # "Server path:" row (label + line edit + Browse… button) and the
@@ -99,9 +128,10 @@ class AddInstanceDialog(QDialog):
         layout.addWidget(title)
 
         sub = QLabel(
-            "Copy an installed Prism instance or a modpack file into a new server "
-            "folder. To add a server folder that is already in its final location, "
-            "expand the registration option below. Importing does not start the server."
+            "Copy a Prism instance or modpack archive into a new server folder. "
+            "Crucible tries to download server mods listed by the pack and reports "
+            "anything it cannot fetch. For a server folder already in place, expand "
+            "the registration option below. Importing does not start the server."
         )
         sub.setWordWrap(True)
         sub.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
@@ -130,9 +160,25 @@ class AddInstanceDialog(QDialog):
         source_row.addWidget(import_archive_btn)
         layout.addLayout(source_row)
 
+        destination_row = QHBoxLayout()
+        destination_title = QLabel("Save imported files to:")
+        destination_title.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
+        destination_row.addWidget(destination_title)
+        self._destination_label = QLabel(str(self._destination_parent))
+        self._destination_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._destination_label.setToolTip(str(self._destination_parent))
+        self._destination_label.setStyleSheet(f"color: {theme.TEXT}; font-size: 11px;")
+        destination_row.addWidget(self._destination_label, stretch=1)
+        destination_change = QPushButton("Change…")
+        destination_change.setToolTip("Choose a different parent folder for imported servers")
+        destination_change.clicked.connect(self._browse_destination_parent)
+        destination_row.addWidget(destination_change)
+        layout.addLayout(destination_row)
+
         import_hint = QLabel(
-            "Choose a destination parent folder. Crucible names the new folder from "
-            "the source and picks a free name if that folder already exists."
+            "Crucible creates a new folder from the source name and never overwrites existing files."
         )
         import_hint.setWordWrap(True)
         import_hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
@@ -177,6 +223,7 @@ class AddInstanceDialog(QDialog):
         self._path_edit.setMinimumWidth(320)
         self._path_edit.setMinimumHeight(32)
         self._path_edit.textChanged.connect(self._auto_fill_name)
+        self._path_edit.textChanged.connect(self._sync_add_button)
         path_row.addWidget(self._path_edit, stretch=1)
 
         browse_btn = QPushButton("Browse…")
@@ -222,6 +269,23 @@ class AddInstanceDialog(QDialog):
         self._warn_label.hide()
         layout.addWidget(self._warn_label)
 
+        self._import_progress = QProgressBar()
+        self._import_progress.setRange(0, 0)
+        self._import_progress.setTextVisible(True)
+        self._import_progress.setFormat("Preparing import…")
+        self._import_progress.hide()
+        layout.addWidget(self._import_progress)
+
+        self._import_log = QPlainTextEdit()
+        self._import_log.setReadOnly(True)
+        self._import_log.setMaximumHeight(120)
+        self._import_log.setStyleSheet(
+            f"background: {theme.MANTLE}; color: {theme.SUBTEXT}; "
+            f"font-family: monospace; font-size: 11px; border-radius: 4px;"
+        )
+        self._import_log.hide()
+        layout.addWidget(self._import_log)
+
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
@@ -229,6 +293,8 @@ class AddInstanceDialog(QDialog):
         self._add_button = btns.button(QDialogButtonBox.StandardButton.Ok)
         self._add_button.setText("Add server")
         self._add_button.setObjectName("PrimaryButton")
+        self._add_button.setEnabled(False)
+        self._cancel_button = btns.button(QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self._on_accept)
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
@@ -238,7 +304,16 @@ class AddInstanceDialog(QDialog):
         self._advanced_toggle.setArrowType(
             Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
         )
+        self._sync_add_button()
         self.adjustSize()
+
+    def _sync_add_button(self, *_args) -> None:
+        """Only enable the commit action when an import or folder is ready."""
+        ready_to_add = (
+            self._pending_import_registration is not None
+            or bool(self._path_edit.text().strip())
+        )
+        self._add_button.setEnabled(ready_to_add)
 
     # Helpers
 
@@ -254,28 +329,47 @@ class AddInstanceDialog(QDialog):
         if not self._name_edit.text():
             self._name_edit.setText(Path(text).name)
 
-    def _choose_prism_target(self, suggested_name: str) -> str:
-        """Choose the parent folder and derive a safe, collision-free destination."""
-        base = Path.home() / "CrucibleServers"
-        try:
-            base.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            base = Path.home()
-
+    def _browse_destination_parent(self) -> None:
+        """Change the default import parent only when the user asks to."""
+        current = str(self._destination_parent.expanduser())
         parent = QFileDialog.getExistingDirectory(
             self,
-            "Choose where to create the server folder",
-            str(base),
+            "Choose where to save imported servers",
+            current,
             QFileDialog.Option.ShowDirsOnly,
         )
         if not parent:
+            return
+        self._destination_parent = Path(parent)
+        self._destination_label.setText(str(self._destination_parent))
+        self._destination_label.setToolTip(str(self._destination_parent))
+
+    def _choose_prism_target(self, suggested_name: str) -> str:
+        """Derive a new folder from the source using the chosen default parent."""
+        parent = self._destination_parent.expanduser()
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._warn_label.setText(
+                f"Cannot use destination folder {parent}: {exc}. "
+                "Choose another folder with Change…"
+            )
+            self._warn_label.show()
             return ""
 
         name = self._safe_folder_name(suggested_name) or "server"
-        target = Path(parent) / name
+        registered_paths = {
+            Path(instance.path).expanduser().resolve()
+            for instance in self._manager.instances
+        }
+        target = parent / name
         suffix = 2
-        while target.exists() or target.is_symlink():
-            target = Path(parent) / f"{name}-{suffix}"
+        while (
+            target.exists()
+            or target.is_symlink()
+            or target.resolve() in registered_paths
+        ):
+            target = parent / f"{name}-{suffix}"
             suffix += 1
         return str(target)
 
@@ -304,18 +398,23 @@ class AddInstanceDialog(QDialog):
         if not target:
             return
 
-        # Download prompting happens after this import window closes.
-        want_download = False
-        self._import_pending = (source, target, want_download)
-        self.setEnabled(False)
+        self._import_pending = (source, target)
+        self._set_import_controls_enabled(False)
+        self._import_progress.setFormat("Copying files and checking server mods…")
+        self._import_progress.show()
+        self._import_log.clear()
+        self._import_log.appendPlainText("Starting import…")
+        self._import_log.show()
         self._warn_label.setText(
-            "Importing… Large packs can take a while. This window will stay open "
-            "until file copying finishes safely."
+            "Copying files and checking the pack's server-mod list. "
+            "This can take a while for large packs."
         )
         self._warn_label.show()
 
         self._import_thread = QThread()
-        self._import_worker = _PrismImportWorker(source, target, want_download)
+        self._import_worker = _PrismImportWorker(source, target)
+        self._import_worker.log.connect(self._on_import_log)
+        self._import_worker.progress.connect(self._on_import_progress)
         self._import_worker.moveToThread(self._import_thread)
         self._import_thread.started.connect(self._import_worker.run)
         self._import_worker.finished.connect(self._on_prism_imported)
@@ -330,14 +429,26 @@ class AddInstanceDialog(QDialog):
 
     def _complete_prism_import(self, info, error: str) -> None:
         pending = self._import_pending
+        self._import_progress.hide()
         if error or info is None or pending is None:
-            self._warn_label.hide()
-            QMessageBox.critical(
-                self, "Could not import server", error or "Import failed"
+            message = error or "The import did not return a result."
+            target_note = (
+                f"\n\nSome copied files may remain in: {pending[1]}"
+                if pending is not None
+                else ""
             )
+            self._warn_label.setText(
+                "Import failed. No server was added to Crucible.\n\n"
+                + message
+                + target_note
+                + "\n\nCheck the log below, then choose the source again to retry."
+            )
+            self._warn_label.show()
+            self._import_log.appendPlainText("Import failed: " + message)
+            self._sync_add_button()
             return
 
-        source, target, want_download = pending
+        source, target = pending
         name = Path(target).name or info.name
         candidate = ServerInstance(
             path=target,
@@ -353,12 +464,12 @@ class AddInstanceDialog(QDialog):
         self._import_folder_btn.setEnabled(False)
         self._import_archive_btn.setEnabled(False)
         self._advanced_toggle.setEnabled(False)
+        self._advanced_body.setEnabled(False)
         self._path_edit.setText(target)
         self._name_edit.setText(candidate.name)
         self._ver_edit.setText(candidate.version)
         self.result_instance = candidate
-        if not want_download:
-            self._download_offer = (target, candidate.name)
+        self._sync_add_button()
 
         warnings = info.warnings + candidate.validate()
         destination_note = (
@@ -372,39 +483,35 @@ class AddInstanceDialog(QDialog):
         self._warn_label.setText(text)
         self._warn_label.show()
 
+    def _on_import_log(self, message: str) -> None:
+        self._import_log.appendPlainText(message)
+        scrollbar = self._import_log.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _on_import_progress(self, completed: int, total: int) -> None:
+        if total <= 0:
+            return
+        self._import_progress.setRange(0, total)
+        self._import_progress.setValue(completed)
+        self._import_progress.setFormat(f"Downloading server mods: %v / %m")
+
+    def _set_import_controls_enabled(self, enabled: bool) -> None:
+        self._import_folder_btn.setEnabled(enabled)
+        self._import_archive_btn.setEnabled(enabled)
+        self._advanced_toggle.setEnabled(enabled)
+        self._advanced_body.setEnabled(enabled)
+        self._cancel_button.setEnabled(enabled)
+        self._sync_add_button()
+
     def _import_thread_finished(self) -> None:
         result = self._import_result
         self._import_thread = None
         self._import_worker = None
         self._import_result = None
-        self.setEnabled(True)
+        self._set_import_controls_enabled(True)
         if result is not None:
             self._complete_prism_import(*result)
         self._import_pending = None
-
-    def _maybe_offer_download(self, target: str, server_name: str) -> None:
-        try:
-            from ..importers.downloader import has_downloadable_index
-            if not has_downloadable_index(target):
-                return
-        except Exception:
-            return
-        host = self.parentWidget() or self
-        resp = QMessageBox.question(
-            host, "Download mods?",
-            "This pack shipped a mod download list instead of the actual files.\n\n"
-            "Try to download the server mods now? (needs internet)",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if resp != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            from .download_dialog import DownloadModsDialog
-            dlg = DownloadModsDialog(target, server_name, parent=host)
-            dlg.start()
-            dlg.exec()
-        except Exception as exc:
-            QMessageBox.warning(self, "Download mods", f"Could not start download:\n{exc}")
 
     def _import_prism_folder(self) -> None:
         source = QFileDialog.getExistingDirectory(
@@ -511,14 +618,6 @@ class AddInstanceDialog(QDialog):
 
         self.result_instance = inst
         self.accept()
-
-    def offer_missing_mod_download(self) -> None:
-        """Offer missing-mod downloads after the import dialog has fully closed."""
-        pending, self._download_offer = self._download_offer, None
-        if pending is None:
-            return
-        target, server_name = pending
-        self._maybe_offer_download(target, server_name)
 
     def _import_running(self) -> bool:
         return bool(self._import_thread and self._import_thread.isRunning())

@@ -26,6 +26,7 @@ def test_capture_ui_previews_writes_expected_pngs(tmp_path):
     expected = (
         "main-empty.png",
         "add-server-menu.png",
+        "main-selected.png",
         "create-server.png",
         "import-files.png",
         "install-modpack.png",
@@ -36,4 +37,4 @@ def test_capture_ui_previews_writes_expected_pngs(tmp_path):
         data = path.read_bytes()
         assert data.startswith(b"\x89PNG\r\n\x1a\n"), filename
         assert len(data) > 1_000, filename
-    assert "Captured 5 UI previews" in result.stdout
+    assert "Captured 6 UI previews" in result.stdout

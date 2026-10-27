@@ -1,39 +1,12 @@
 import json
-import sys
 import tempfile
-import types
 import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-# backup_manager is intentionally Qt-aware; provide the minimal import surface
-# needed to test its pure filesystem logic in a headless audit environment.
-if "PyQt6" not in sys.modules:
-    pyqt = types.ModuleType("PyQt6")
-    qtcore = types.ModuleType("PyQt6.QtCore")
-
-    class QObject:
-        def __init__(self, *args, **kwargs):
-            pass
-
-    class Signal:
-        def emit(self, *args):
-            pass
-
-    class QTimer:
-        @staticmethod
-        def singleShot(_delay, _callback):
-            pass
-
-    qtcore.QObject = QObject
-    qtcore.QTimer = QTimer
-    qtcore.pyqtSignal = lambda *args: Signal()
-    qtcore.pyqtSlot = lambda *args, **kwargs: (lambda fn: fn)
-    pyqt.QtCore = qtcore
-    sys.modules["PyQt6"] = pyqt
-    sys.modules["PyQt6.QtCore"] = qtcore
+from PyQt6.QtTest import QSignalSpy
 
 from crucible.data import backup_manager as backup_mod
 from crucible.data.instance_manager import InstanceManager
@@ -169,17 +142,15 @@ class WatchdogTests(unittest.TestCase):
             self.watchdog._poll()
             self.watchdog._poll()
         self.assertFalse(self.watchdog._watching[self.instance.id])
-        failed = Mock()
-        self.watchdog.restart_failed.emit = failed
+        failed = QSignalSpy(self.watchdog.restart_failed)
         with patch.object(self.watchdog._tmux, "is_running", return_value=True):
             self.watchdog._do_restart(self.instance.id)
-        failed.assert_called_once()
-        self.assertIn("already running", failed.call_args.args[1])
+        self.assertEqual(len(failed), 1)
+        self.assertIn("already running", failed[0][1])
         self.assertFalse(self.watchdog._watching[self.instance.id])
 
     def test_automatic_rewatch_preserves_crash_count_and_limit(self):
-        failed = Mock()
-        self.watchdog.restart_failed.emit = failed
+        failed = QSignalSpy(self.watchdog.restart_failed)
         with (
             patch.object(watchdog_mod.QTimer, "singleShot"),
             patch.object(self.watchdog._tmux, "start", return_value=(True, "ok")),
@@ -195,8 +166,8 @@ class WatchdogTests(unittest.TestCase):
                     self.assertEqual(
                         self.watchdog._crash_count[self.instance.id], expected
                     )
-        failed.assert_called_once()
-        self.assertIn("Crash loop", failed.call_args.args[1])
+        self.assertEqual(len(failed), 1)
+        self.assertIn("Crash loop", failed[0][1])
 
     def test_stable_uptime_resets_only_current_generation(self):
         with patch.object(watchdog_mod.QTimer, "singleShot"):

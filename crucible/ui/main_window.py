@@ -358,10 +358,6 @@ class MainWindow(QMainWindow):
             )
             self.statusBar().showMessage(message, 5000)
             self._update_status_bar()
-            if isinstance(dlg, AddInstanceDialog):
-                # The import window is already closed before this optional prompt appears.
-                dlg.offer_missing_mod_download()
-
     def _on_order_changed(self, order: list) -> None:
         """Persist the new sidebar order after an internal drag-reorder."""
         try:
@@ -641,7 +637,6 @@ class MainWindow(QMainWindow):
                 self._sidebar.add_instance(inst, status)
                 self._sidebar.select_by_id(inst.id)
                 self._update_status_bar()
-                dlg.offer_missing_mod_download()
             return
 
         if not is_server:

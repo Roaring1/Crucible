@@ -3,9 +3,9 @@ crucible/ui/instance_panel.py
 
 Right-hand panel shown when an instance is selected.
 Header: name, version badge, Start/Stop/Restart/Console buttons, status dot.
-Body: QTabWidget with Setup, Console, Mods, World, Config, Backups, Players,
-Notes, Info (Info includes live System performance stats -- System is no
-longer a separate tab).
+Body: primary tabs Setup, Console, Mods, World, Backups. Less-frequent
+Config, Players, Notes, and Info pages live under a compact More menu. Info
+includes live System performance stats -- System is no longer a separate tab.
 
 Status state machine:
   stopped  -> starting  (tmux.start() succeeds)
@@ -27,7 +27,7 @@ from PyQt6.QtCore import QObject, Qt, QThread, QTimer, QMetaObject, pyqtSignal, 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QTabWidget, QMessageBox,
+    QLabel, QPushButton, QTabWidget, QMessageBox, QMenu, QToolButton,
 )
 
 from ..data.instance_manager import InstanceManager
@@ -258,12 +258,9 @@ class InstancePanel(QWidget):
         self._world   = WorldTab()
         self._players = PlayersTab()
 
-        # "Setup" is first so non-technical owners land on the easy checklist.
-        # World sits right after Mods (worlds are heavily affected by which
-        # mods are installed) and before Config/Backups/Players; Notes moves
-        # next-to-last and Info is last (Info now also shows live System
-        # performance stats, so it reads as the final "everything at a
-        # glance" summary tab).
+        # The primary pages are Setup, Console, Mods, World, and Backups.
+        # Config, Players, Notes, and Info remain available from More so the
+        # permanent navigation stays focused on common server tasks.
         self._tabs.addTab(self._setup,   "🧭  Setup")
         self._tabs.addTab(self._console, "Console")
         self._tabs.addTab(self._mods,    "Mods")
@@ -273,6 +270,46 @@ class InstancePanel(QWidget):
         self._tabs.addTab(self._players, "👥  Players")
         self._tabs.addTab(self._notes,   "Notes")
         self._tabs.addTab(self._info,    "Info")
+        # Keep the five most-used pages visible. Less-frequent configuration
+        # and reference pages remain one click away under More, rather than
+        # competing for space in the permanent navigation row.
+        self._more_tab_labels = {
+            4: "Config & settings",
+            6: "Players",
+            7: "Notes",
+            8: "Info & performance",
+        }
+        self._more_tab_actions = {}
+        self._more_menu = QMenu(self)
+        for index, label in self._more_tab_labels.items():
+            action = self._more_menu.addAction(label)
+            action.setCheckable(True)
+            action.triggered.connect(
+                lambda _checked=False, target=index: self._tabs.setCurrentIndex(target)
+            )
+            self._more_tab_actions[index] = action
+            self._tabs.tabBar().setTabVisible(index, False)
+
+        self._more_tabs_button = QToolButton()
+        self._more_tabs_button.setObjectName("MoreTabsButton")
+        self._more_tabs_button.setText("More ▾")
+        self._more_tabs_button.setMenu(self._more_menu)
+        self._more_tabs_button.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+        self._more_tabs_button.setToolTip(
+            "Config and settings, players, notes, and system information"
+        )
+        self._more_tabs_button.setStyleSheet(
+            f"QToolButton#MoreTabsButton {{ color: {theme.SUBTEXT}; "
+            "padding: 6px 10px; border: none; font-weight: 600; } "
+            f"QToolButton#MoreTabsButton:hover {{ color: {theme.TEXT}; "
+            f"background: {theme.SURFACE0}; }}"
+        )
+        self._tabs.setCornerWidget(
+            self._more_tabs_button, Qt.Corner.TopRightCorner
+        )
+
         # World swaps/resets/seed changes must never proceed with unsaved
         # server.properties edits in flight -- reuse ConfigTab's own
         # save/discard guard rather than duplicating that logic, and let
@@ -768,9 +805,19 @@ class InstancePanel(QWidget):
         # (System performance stats are now loaded as part of Info, above.)
         self._loaded_tabs.add(tab)
 
-    def _on_tab_changed(self, _index: int) -> None:
+    def _on_tab_changed(self, index: int) -> None:
+        self._update_more_tabs_button(index)
         self._load_current_tab()
         self._update_tps_polling()
+
+    def _update_more_tabs_button(self, index: int | None = None) -> None:
+        current = self._tabs.currentIndex() if index is None else index
+        selected_label = self._more_tab_labels.get(current)
+        self._more_tabs_button.setText(
+            f"More: {selected_label} ▾" if selected_label else "More ▾"
+        )
+        for target, action in self._more_tab_actions.items():
+            action.setChecked(target == current)
 
     def _auto_tps(self) -> None:
         """Periodically ask the server for TPS data, if its loader supports it.

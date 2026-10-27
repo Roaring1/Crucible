@@ -91,9 +91,30 @@ assert empty_panel._empty_state.isVisible() and empty_panel._tabs.isHidden() and
 assert not empty_panel._btn_start.isVisible() and not empty_panel._btn_ip.isVisible()
 empty_panel.close();empty_panel.deleteLater();QTest.qWait(10)
 inst=m.add_instance(str(root/'server'),'Before',minecraft_version='1.21.1',loader='fabric')
+# An old registry entry can outlive its deleted folder; import target naming
+# must avoid that reserved path as well as existing folders on disk.
+registered_manager=InstanceManager(root/'registered-import-registry');registered_manager.load()
+registered_parent=root/'registered-import-parent';registered_parent.mkdir()
+registered_manager.add_instance(str(registered_parent/'Pack'),'Pack')
+registered_dialog=AddInstanceDialog(registered_manager)
+registered_dialog._destination_parent=registered_parent
+with patch('crucible.ui.add_dialog.QFileDialog.getExistingDirectory') as destination_picker:
+ assert Path(registered_dialog._choose_prism_target('Pack')) == registered_parent/'Pack-2'
+ assert not destination_picker.called, 'the common import path should not force a second folder-picker window'
+custom_parent=root/'custom-import-parent';custom_parent.mkdir()
+with patch('crucible.ui.add_dialog.QFileDialog.getExistingDirectory',return_value=str(custom_parent)) as destination_picker:
+ registered_dialog._browse_destination_parent()
+assert destination_picker.called and registered_dialog._destination_parent==custom_parent
+assert registered_dialog._destination_label.text()==str(custom_parent)
+registered_dialog.reject();registered_dialog.deleteLater();QTest.qWait(10)
 add=AddInstanceDialog(m);add.resize(700,560);add.show();QTest.qWait(20)
 assert not add._advanced_body.isVisible(), 'advanced registration fields should be hidden by default'
+assert not add._add_button.isEnabled(), 'Add server must not be clickable before an import or folder is selected'
 add._advanced_toggle.click();app.processEvents();assert add._advanced_body.isVisible()
+add._path_edit.setText(str(root/'existing-server'));app.processEvents()
+assert add._add_button.isEnabled(), 'choosing a folder should enable Add server'
+add._path_edit.clear();app.processEvents()
+assert not add._add_button.isEnabled(), 'clearing the folder should disable Add server again'
 add._advanced_toggle.click();app.processEvents();assert not add._advanced_body.isVisible()
 for field in (add._path_edit,add._name_edit,add._ver_edit,add._session_edit):assert field.height()>=32
 add.reject()
@@ -205,6 +226,22 @@ pack_ui.close();pack_ui.deleteLater();QTest.qWait(20)
 
 with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  window=MainWindow(m);window.resize(900,600);window.show();QTest.qWait(80)
+ # Keep five primary pages visible and move infrequent references under More.
+ panel=window._panel;tabs=panel._tabs;bar=tabs.tabBar()
+ visible=[tabs.tabText(i) for i in range(tabs.count()) if bar.isTabVisible(i)]
+ assert len(visible)==5, visible
+ assert any('Setup' in label for label in visible)
+ assert any('Console' in label for label in visible)
+ assert any('Mods' in label for label in visible)
+ assert any('World' in label for label in visible)
+ assert any('Backups' in label for label in visible)
+ assert all(not bar.isTabVisible(i) for i in (4,6,7,8))
+ panel._more_tab_actions[4].trigger();app.processEvents()
+ assert tabs.currentWidget() is panel._config
+ assert panel._more_tabs_button.text().startswith('More: Config')
+ assert panel._more_tab_actions[4].isChecked()
+ tabs.setCurrentWidget(panel._setup);app.processEvents()
+ assert panel._more_tabs_button.text()=='More ▾'
  # The add-server action is a small menu, not a chooser dialog stacked in front
  # of the actual workflow. Keep all three labels explicit and verify each route.
  for choice, module_path in (
@@ -249,8 +286,18 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
   name='Example pack',version_label='1.2',source_type='modrinth',
   minecraft_version='1.21.1',loader='fabric',loader_version='0.16.10',warnings=[]
  )
+ failed_preview=AddInstanceDialog(m)
+ failed_target=root/'partial-import'
+ failed_preview._import_pending=(str(root/'broken.mrpack'),str(failed_target))
+ with patch('crucible.ui.add_dialog.QMessageBox.critical') as critical:
+  failed_preview._complete_prism_import(None,'source drive disconnected')
+ assert not critical.called, 'import failures should be shown inline, not in another popup'
+ assert 'Import failed' in failed_preview._warn_label.text()
+ assert str(failed_target) in failed_preview._warn_label.text()
+ failed_preview.reject();failed_preview.deleteLater();QTest.qWait(10)
+
  preview=AddInstanceDialog(m)
- preview._import_pending=(str(root/'example.mrpack'),str(target),False)
+ preview._import_pending=(str(root/'example.mrpack'),str(target))
  preview._complete_prism_import(fake_info,'')
  assert all(Path(item.path) != target for item in m.instances)
  assert not preview._import_folder_btn.isEnabled()

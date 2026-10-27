@@ -99,6 +99,34 @@ def capture_previews(output: Path) -> list[Path]:
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
             app.processEvents()
 
+        # Render the selected-server workspace too, so the permanent tab row
+        # and More menu are covered by screenshot review. This folder and
+        # registry are temporary and contain no real server data.
+        server_root = root / "demo-server"
+        server_root.mkdir()
+        (server_root / "server.properties").write_text(
+            "server-port=25565\nmax-players=20\n",
+            encoding="utf-8",
+        )
+        (server_root / "eula.txt").write_text("eula=false\n", encoding="utf-8")
+        (server_root / "start.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        manager.add_instance(
+            str(server_root),
+            "Example Server",
+            version="Minecraft 1.21.1",
+            minecraft_version="1.21.1",
+            loader="neoforge",
+            loader_version="21.1.233",
+        )
+        with patch.object(MainWindow, "_run_crash_recovery", lambda self: None):
+            selected = MainWindow(manager)
+            save(selected, "main-selected.png", 1200, 760)
+            selected.close()
+            QTest.qWait(80)
+            selected.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            app.processEvents()
+
         # A fixed preview value avoids network calls and keeps the screenshots
         # deterministic. The screen clearly marks that lookup is disabled.
         def preview_versions(dialog) -> None:

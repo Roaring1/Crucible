@@ -52,17 +52,18 @@ into chat as base64.
 
 For screenshots captured during a live session, use the desktop's normal
 screenshot tool and save them into the inbox above. For UI changes reproducible
-from source, capture the five key screens without opening desktop windows:
+from source, capture the six key screens without opening desktop windows:
 
     QT_QPA_PLATFORM=offscreen python scripts/capture_ui_previews.py
 
-This writes `main-empty.png`, `add-server-menu.png`, `create-server.png`,
-`import-files.png`, and `install-modpack.png` to
+This writes `main-empty.png`, `add-server-menu.png`, `main-selected.png`,
+`create-server.png`, `import-files.png`, and `install-modpack.png` to
 `~/.cache/crucible/ui-previews` by default. The create form uses its actual
-initial size; the utility uses a temporary registry, disables live
-version/modpack searches, and labels those preview-only fields so the screenshots
-cannot be mistaken for a live server installation. Then create a contact sheet
-and manifest:
+initial size. The selected-server screen uses a synthetic server in a temporary
+registry, while version/modpack searches are disabled and clearly marked as
+preview-only. The import form shows the default `~/CrucibleServers` destination
+and keeps a folder picker optional; indexed archive downloads run inside the
+existing import window. Then create a contact sheet and manifest:
 
     python scripts/prepare_ui_evidence.py ~/.cache/crucible/ui-previews --output ~/.cache/crucible/ui-previews-contact
 
