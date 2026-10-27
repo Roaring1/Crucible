@@ -1,5 +1,6 @@
 """Unit tests for bounded, redacted GitHub Actions diagnostics."""
-from scripts.ci_report import _job_failed_steps, failure_context, redact
+from scripts import ci_report
+from scripts.ci_report import _job_failed_steps, build_report, failure_context, redact
 
 
 def test_redact_masks_sensitive_environment_assignments():
@@ -43,3 +44,42 @@ def test_failed_step_summary_only_lists_failed_steps():
         ]
     }
     assert _job_failed_steps(job) == ["Run tests (step 3)"]
+
+
+def test_latest_report_refreshes_run_detail_when_list_status_is_stale(monkeypatch):
+    stale = {
+        "id": 88,
+        "status": "in_progress",
+        "name": "Python tests",
+        "run_number": 3,
+        "head_branch": "main",
+        "head_sha": "abc123",
+    }
+    refreshed = {
+        **stale,
+        "status": "completed",
+        "conclusion": "success",
+        "repository": {"full_name": "owner/repo"},
+        "run_started_at": "2026-10-27T23:00:00Z",
+        "display_title": "completed tests",
+        "html_url": "https://github.com/owner/repo/actions/runs/88",
+    }
+    detail_calls = []
+    monkeypatch.setattr(ci_report, "_workflow_runs", lambda *args: [stale])
+    monkeypatch.setattr(
+        ci_report,
+        "_get_run",
+        lambda repo, run_id, token: detail_calls.append((repo, run_id, token)) or refreshed,
+    )
+    monkeypatch.setattr(
+        ci_report,
+        "_jobs",
+        lambda *args: [{"name": "test (3.11)", "conclusion": "success", "steps": []}],
+    )
+
+    report, exit_code = build_report("owner/repo", None, None, 10)
+
+    assert detail_calls == [("owner/repo", 88, None)]
+    assert "Status: success" in report
+    assert "All jobs succeeded." in report
+    assert exit_code == 0

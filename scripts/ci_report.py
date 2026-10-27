@@ -217,7 +217,13 @@ def build_report(repo: str, token: str | None, run_id: int | None, limit: int) -
     if run_id is not None:
         run = _get_run(repo, run_id, token)
     else:
-        run = runs[0]
+        # The list endpoint can lag behind the selected run's final state for a
+        # short time. Refresh the newest run by ID before reporting status;
+        # otherwise a completed success can still appear "in_progress".
+        latest_id = runs[0].get("id")
+        if latest_id is None:
+            raise ReportError("The newest GitHub Actions run did not include a run ID.")
+        run = _get_run(repo, int(latest_id), token)
 
     actual_repo = run.get("repository", {}).get("full_name") or repo
     lines = [
