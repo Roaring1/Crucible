@@ -143,9 +143,13 @@ class ClientExportDialog(QDialog):
         QApplication.restoreOverrideCursor()
         if res.ok:
             self._status.setText("✓ " + res.summary())
-            QMessageBox.information(self, "Client instance",
-                                    "Done!\n\n" + res.summary() +
-                                    f"\n\nSaved to:\n{res.path}\n\n" + "\n".join(res.warnings))
+            details = "Done!\n\n" + res.summary() + f"\n\nSaved to:\n{res.path}\n"
+            if res.archive_sha256:
+                details += f"\nArchive SHA-256:\n{res.archive_sha256}\n"
+            if res.manifest_path:
+                details += f"\nManifest inside archive:\n{res.manifest_path}\n"
+            details += "\n" + "\n".join(res.warnings)
+            QMessageBox.information(self, "Client instance", details)
         else:
             self._status.setText("⚠ " + res.summary())
             QMessageBox.warning(self, "Client instance", res.summary())
