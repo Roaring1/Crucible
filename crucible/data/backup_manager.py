@@ -31,6 +31,7 @@ from typing import Callable
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from .instance_model import ServerInstance, is_dimension_dir_name
+from .world_paths import world_name_issue, world_names
 
 BASE_DIR = Path.home() / ".local" / "share" / "crucible-backups"
 
@@ -268,26 +269,10 @@ class BackupManager:
         return len(to_delete)
 
     def _find_world_dirs(self, server_path: Path) -> list[Path]:
-        """Find world directories: read level-name from server.properties."""
-        props = server_path / "server.properties"
-        level_name = "world"   # default
-        if props.exists():
-            for line in props.read_text(encoding="utf-8", errors="replace").splitlines():
-                if line.strip().startswith("level-name="):
-                    level_name = line.split("=", 1)[1].strip()
-                    break
-
-        dirs = []
-        root = server_path.resolve()
-        for candidate in [level_name, f"{level_name}_nether", f"{level_name}_the_end"]:
-            d = (server_path / candidate).resolve()
-            try:
-                d.relative_to(root)
-            except ValueError:
-                continue
-            if d.exists() and d.is_dir():
-                dirs.append(d)
-        return dirs
+        """Find present world directories only when the configured path is safe."""
+        if world_name_issue(server_path):
+            return []
+        return [server_path / name for name in world_names(server_path)]
 
     # World swap
 
