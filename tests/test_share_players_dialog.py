@@ -476,6 +476,11 @@ class SharePlayersDialogTests(unittest.TestCase):
     def test_upload_stays_disabled_until_all_three_review_approvals(self):
         dialog = self._dialog()
         with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "profile"
+            source.mkdir()
+            dialog._source.setText(str(source))
+            dialog._built_source = str(source.resolve())
+            dialog._built_include_resourcepacks = False
             archive = Path(tmp) / "pack.zip"
             result = self._result_archive(archive)
             dialog._on_pack_ready(result)
@@ -489,6 +494,62 @@ class SharePlayersDialogTests(unittest.TestCase):
             self.assertFalse(dialog._upload_btn.isEnabled())
             dialog._public_ack.setChecked(True)
             self.assertTrue(dialog._upload_btn.isEnabled())
+
+        dialog.close()
+
+    def test_changing_client_source_after_review_requires_rebuild_and_reapproval(self):
+        dialog = self._dialog()
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "profile"
+            other_source = Path(tmp) / "other-profile"
+            source.mkdir()
+            other_source.mkdir()
+            dialog._source.setText(str(source))
+            dialog._built_source = str(source.resolve())
+            dialog._built_include_resourcepacks = False
+            result = self._result_archive(Path(tmp) / "pack.zip")
+            dialog._on_pack_ready(result)
+            dialog._review_ack.setChecked(True)
+            dialog._license_ack.setChecked(True)
+            dialog._public_ack.setChecked(True)
+            self.assertTrue(dialog._upload_btn.isEnabled())
+
+            dialog._source.setText(str(other_source))
+
+            self.assertEqual(dialog._phase, "stale-review")
+            self.assertFalse(dialog._upload_btn.isEnabled())
+            self.assertFalse(dialog._review_ack.isChecked())
+            self.assertFalse(dialog._license_ack.isChecked())
+            self.assertFalse(dialog._public_ack.isChecked())
+            self.assertFalse(dialog._review_ack.isEnabled())
+            self.assertIn("Rebuild ZIP", dialog._status.text())
+
+        dialog.close()
+
+    def test_changing_resourcepack_option_after_review_requires_rebuild_and_reapproval(self):
+        dialog = self._dialog()
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "profile"
+            source.mkdir()
+            dialog._source.setText(str(source))
+            dialog._built_source = str(source.resolve())
+            dialog._built_include_resourcepacks = False
+            result = self._result_archive(Path(tmp) / "pack.zip")
+            dialog._on_pack_ready(result)
+            dialog._review_ack.setChecked(True)
+            dialog._license_ack.setChecked(True)
+            dialog._public_ack.setChecked(True)
+            self.assertTrue(dialog._upload_btn.isEnabled())
+
+            dialog._resourcepacks.setChecked(True)
+
+            self.assertEqual(dialog._phase, "stale-review")
+            self.assertFalse(dialog._upload_btn.isEnabled())
+            self.assertFalse(dialog._review_ack.isChecked())
+            self.assertFalse(dialog._license_ack.isChecked())
+            self.assertFalse(dialog._public_ack.isChecked())
+            self.assertFalse(dialog._resourcepacks.isEnabled() is False)
+            self.assertIn("Rebuild ZIP", dialog._status.text())
 
         dialog.close()
 
