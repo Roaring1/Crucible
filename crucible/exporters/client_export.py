@@ -16,7 +16,9 @@ are preserved and reported, not inferred from filenames.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,6 +67,14 @@ def _enabled_mods(server_path: Path) -> list:
     return sorted(p for p in mods.glob("*.jar") if p.is_file())
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _is_server_only(name: str) -> bool:
     low = name.lower()
     return any(h in low for h in _SERVER_ONLY_HINTS)
@@ -91,7 +101,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
     mc = (getattr(instance, "minecraft_version", "") or "").strip()
     loader = (getattr(instance, "loader", "") or "vanilla").strip().lower()
     loader_version = (getattr(instance, "loader_version", "") or "").strip()
-    out_path = Path(out_path)
+    out_path = Path(out_path).expanduser()
 
     if not server.is_dir():
         return ExportResult(error=f"Server folder not found: {server}")
@@ -99,6 +109,30 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         return ExportResult(error=(
             "Unknown Minecraft version for this server - set it first "
             "(Info tab) so the client can match."))
+    if loader not in {"vanilla", *_PRISM_UID}:
+        return ExportResult(error=f"Unsupported client-pack loader '{loader}'. Set a supported exact loader first.")
+    if loader != "vanilla" and not loader_version:
+        return ExportResult(error=(
+            "Set the exact loader version in Setup before exporting a client; "
+            "guessing a loader can make the pack unlaunchable."))
+
+    # An export written inside the managed server could replace server.properties,
+    # a config file, a world file, or another important input by accident.
+    server_root = server.resolve()
+    out_absolute = Path(os.path.abspath(str(out_path)))
+    out_resolved = out_absolute.resolve()
+    if (out_absolute == server_root or server_root in out_absolute.parents
+            or out_resolved == server_root or server_root in out_resolved.parents):
+        return ExportResult(error="Save the client export outside the server folder so it cannot overwrite server data.")
+    if out_path.is_symlink():
+        return ExportResult(error="The export destination cannot be a symbolic link.")
+    if (server / "mods").is_symlink():
+        return ExportResult(error="Refusing to export through a symbolic-link mods/ directory.")
+    if include_config:
+        for dirname in ("config", "kubejs"):
+            candidate = server / dirname
+            if candidate.is_symlink():
+                return ExportResult(error=f"Refusing to export symbolic-link directory {dirname}/.")
 
     from ..mods.mod_manager import ModManager, ModEntry
     inspector = ModManager(instance)
@@ -123,26 +157,69 @@ def export(instance, out_path, fmt: str = "mrpack", *,
             return ExportResult(error="Choose a fully installed Prism/MultiMC instance containing mmc-pack.json.")
         if components.get("net.minecraft") != mc:
             return ExportResult(error="The client source uses a different Minecraft version. No archive was written.")
+        source_loader_uids = {
+            component_uid: components[component_uid]
+            for component_uid in _PRISM_UID.values()
+            if component_uid in components
+        }
         uid = _PRISM_UID.get(loader)
-        if uid and (uid not in components or (loader_version and components[uid] != loader_version)):
+        if loader == "vanilla":
+            if source_loader_uids:
+                return ExportResult(error="The client source uses a mod loader, but this server is vanilla. No archive was written.")
+        elif (
+            uid not in components
+            or any(source_uid != uid for source_uid in source_loader_uids)
+            or components.get(uid) != loader_version
+        ):
             return ExportResult(error="The client source uses a different loader/version. No archive was written.")
+
+        for layout in (".minecraft", "minecraft"):
+            if (source / layout).is_symlink():
+                return ExportResult(error=f"The client source has a symbolic-link {layout}/ directory. No archive was written.")
         client_mods = source / ".minecraft" / "mods"
-        if not client_mods.is_dir(): client_mods = source / "minecraft" / "mods"
-        if not client_mods.is_dir(): return ExportResult(error="The source instance has no installed mods folder.")
+        if not client_mods.is_dir():
+            client_mods = source / "minecraft" / "mods"
+        if not client_mods.is_dir():
+            return ExportResult(error="The source instance has no installed mods folder.")
+        if client_mods.is_symlink():
+            return ExportResult(error="The client source mods directory is a symbolic link. No archive was written.")
+
         names = {j.name for j in ship}
+        hashes = {_sha256_file(j) for j in ship}
+        client_unknown = []
+        source_conflicts = []
         for j in sorted(client_mods.glob("*.jar")):
-            if j.is_symlink() or j.name in names: continue
+            if j.is_symlink():
+                return ExportResult(error=f"The client source contains a symbolic-link mod: {j.name}. No archive was written.")
+            digest = _sha256_file(j)
+            if digest in hashes:
+                continue
             entry = ModEntry(j.name, j, True, j.stat().st_size)
             inspector.inspect_jar(entry)
-            # Restore only explicitly client-only mods. Never mix an older shared mod in.
-            if entry.side == "client": ship.append(j); names.add(j.name)
+            # Shared server JARs are authoritative. Do not silently collide with a
+            # different client-only JAR that has the same archive path.
+            if j.name in names:
+                if entry.side == "client":
+                    return ExportResult(error=(
+                        f"Client-only mod '{j.name}' conflicts with a different server JAR of the same name. "
+                        "Resolve the conflict before exporting."))
+                source_conflicts.append(j.name)
+                continue
+            if entry.side == "client":
+                ship.append(j)
+                names.add(j.name)
+                hashes.add(digest)
+            elif entry.side == "unknown":
+                client_unknown.append(j.name)
+    else:
+        client_unknown = []
+        source_conflicts = []
+
     excluded_defaultconfigs = include_config and (server / "defaultconfigs").is_dir()
     cfg = _config_dirs(server) if include_config else []
 
     if fmt not in {"mrpack", "prism", "curseforge"}:
         return ExportResult(error=f"Unknown format: {fmt}")
-    if loader != "vanilla" and loader and not loader_version:
-        return ExportResult(error="Set the exact loader version in Setup before exporting a client; guessing a loader can make the pack unlaunchable.")
     if any(out_path.resolve() == p.resolve() for p in ship):
         return ExportResult(error="The export destination cannot overwrite a mod JAR.")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -167,6 +244,21 @@ def export(instance, out_path, fmt: str = "mrpack", *,
     warnings = ([f"{len(unknown)} mod(s) have unknown client compatibility; test this pack in Prism before sharing."] if unknown else [])
     if excluded_defaultconfigs:
         warnings.append("defaultconfigs/ was excluded from the client pack; review whether any required player config belongs in config/ or kubejs/.")
+    if client_unknown:
+        shown = ", ".join(client_unknown[:8])
+        if len(client_unknown) > 8:
+            shown += f", and {len(client_unknown) - 8} more"
+        warnings.append(
+            "Client-source mods with unknown client compatibility were not added: " + shown
+        )
+    if source_conflicts:
+        unique_conflicts = sorted(set(source_conflicts))
+        shown = ", ".join(unique_conflicts[:8])
+        if len(unique_conflicts) > 8:
+            shown += f", and {len(unique_conflicts) - 8} more"
+        warnings.append(
+            "Different client-source copies of shared mods were ignored; the server versions were kept: " + shown
+        )
     warnings.extend([
         "Server packs may not include required client-side mods. Only explicitly client-only files from the optional matching Prism source were added.",
         "Bundled mod JARs are for personal use; check authors’ licenses before redistribution.",
@@ -176,15 +268,21 @@ def export(instance, out_path, fmt: str = "mrpack", *,
 
 
 def _add_dir(zf: zipfile.ZipFile, src: Path, arc_prefix: str) -> None:
+    if src.is_symlink():
+        raise OSError(f"Refusing to package symbolic-link directory: {src}")
     root = src.resolve()
     for f in src.rglob("*"):
-        if not f.is_file() or f.is_symlink():
+        if f.is_symlink():
+            raise OSError(f"Refusing to package symbolic link: {f}")
+        if f.is_dir():
             continue
+        if not f.is_file():
+            raise OSError(f"Refusing to package special file: {f}")
         resolved = f.resolve()
         try:
             resolved.relative_to(root)
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise OSError(f"File escapes its configuration root: {f}") from exc
         zf.write(resolved, f"{arc_prefix}/{f.relative_to(src.parent).as_posix()}")
 
 
@@ -202,7 +300,7 @@ def _build_mrpack(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("modrinth.index.json", json.dumps(index, indent=2))
         for j in jars:
-            zf.write(j, f"overrides/mods/{j.name}")
+            zf.write(j, f"overrides/mods/{j.name}", compress_type=zipfile.ZIP_STORED)
         for d in cfg_dirs:
             _add_dir(zf, d, "overrides")
 
@@ -225,7 +323,7 @@ def _build_prism(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
         zf.writestr(f"{folder}/instance.cfg", instance_cfg)
         zf.writestr(f"{folder}/mmc-pack.json", json.dumps(mmc_pack, indent=2))
         for j in jars:
-            zf.write(j, f"{folder}/.minecraft/mods/{j.name}")
+            zf.write(j, f"{folder}/.minecraft/mods/{j.name}", compress_type=zipfile.ZIP_STORED)
         for d in cfg_dirs:
             _add_dir(zf, d, f"{folder}/.minecraft")
 
@@ -242,7 +340,7 @@ def _build_curseforge(out_path, name, mc, loader, loader_version, jars, cfg_dirs
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps(manifest, indent=2))
         for j in jars:
-            zf.write(j, f"overrides/mods/{j.name}")
+            zf.write(j, f"overrides/mods/{j.name}", compress_type=zipfile.ZIP_STORED)
         for d in cfg_dirs:
             _add_dir(zf, d, "overrides")
 
