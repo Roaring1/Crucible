@@ -139,30 +139,31 @@ def _decode_response(raw: bytes, status_code: int, expected_size: int,
     if not isinstance(file_name, str) or not file_name or len(file_name) > 255:
         raise GofileUploadError("Gofile did not return a valid file name.")
 
-    remote_size = data.get("size")
-    size_verified = False
-    if remote_size is not None:
+    # Only a missing key means the provider omitted optional metadata. An
+    # explicit null (or any other malformed present value) is a bad response,
+    # not permission to downgrade verification silently.
+    size_verified = "size" in data
+    remote_size = data["size"] if size_verified else None
+    if size_verified:
         if isinstance(remote_size, bool) or not isinstance(remote_size, int) or remote_size < 0:
             raise GofileUploadError("Gofile returned an invalid file-size value.")
-        size_verified = True
         if remote_size != expected_size:
             raise GofileUploadError(
                 "Gofile's reported file size differs from the local ZIP. The uploaded link was not accepted as verified."
             )
 
-    remote_md5_value = data.get("md5")
-    if remote_md5_value is None or remote_md5_value == "":
-        remote_md5 = ""
-        md5_verified = False
-    else:
+    md5_verified = "md5" in data
+    remote_md5_value = data["md5"] if md5_verified else ""
+    if md5_verified:
         if not isinstance(remote_md5_value, str) or not re.fullmatch(r"[0-9a-fA-F]{32}", remote_md5_value):
             raise GofileUploadError("Gofile returned an invalid MD5 value.")
         remote_md5 = remote_md5_value
-        md5_verified = True
         if remote_md5.lower() != local_md5.lower():
             raise GofileUploadError(
                 "Gofile's reported MD5 differs from the locally uploaded file. Keep the local ZIP and do not share this link yet."
             )
+    else:
+        remote_md5 = ""
 
     return GofileUploadResult(
         download_url=download_url,

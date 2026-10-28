@@ -346,9 +346,13 @@ class GofileUploadTests(unittest.TestCase):
     def test_malformed_present_integrity_metadata_is_rejected(self):
         content = b"file"
         invalid_values = (
+            {"size": None},  # present-but-null is malformed, not omitted
+            {"size": ""},
             {"size": "4"},
             {"size": True},
             {"size": -1},
+            {"md5": None},  # present-but-null is malformed, not omitted
+            {"md5": ""},
             {"md5": 123},
             {"md5": "not-an-md5"},
         )
