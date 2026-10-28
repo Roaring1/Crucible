@@ -16,7 +16,9 @@ are preserved and reported, not inferred from filenames.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +46,9 @@ class ExportResult:
     skipped: list = field(default_factory=list)
     error: str = ""
     warnings: list = field(default_factory=list)
+    manifest_path: str = ""
+    included_files: list = field(default_factory=list)
+    archive_sha256: str = ""
 
     @property
     def ok(self) -> bool:
@@ -155,24 +160,39 @@ def export(instance, out_path, fmt: str = "mrpack", *,
             _build_prism(partial, name, mc, loader, loader_version, ship, cfg)
         else:
             _build_curseforge(partial, name, mc, loader, loader_version, ship, cfg)
+        manifest = _seal_archive(
+            partial, fmt=fmt, name=name, minecraft_version=mc,
+            loader=loader, loader_version=loader_version,
+        )
+        # _seal_archive streams every archive member while hashing it. That
+        # pass also validates each member's CRC, so another full unzip pass is
+        # unnecessary even for very large modpacks.
         with zipfile.ZipFile(partial, "r") as check:
-            bad = check.testzip()
-            if bad:
-                raise OSError(f"ZIP verification failed at {bad}")
+            if manifest["path"] not in check.namelist():
+                raise OSError("ZIP verification failed: manifest missing")
+            json.loads(check.read(manifest["path"]))
+        archive_sha256 = _sha256_file(partial)
         partial.replace(out_path)
-    except (OSError, zipfile.BadZipFile) as e:
+    except (OSError, zipfile.BadZipFile, ValueError) as e:
         partial.unlink(missing_ok=True)
         return ExportResult(error=f"Could not write {fmt} file: {e}")
 
     warnings = ([f"{len(unknown)} mod(s) have unknown client compatibility; test this pack in Prism before sharing."] if unknown else [])
     if excluded_defaultconfigs:
         warnings.append("defaultconfigs/ was excluded from the client pack; review whether any required player config belongs in config/ or kubejs/.")
+    warnings.extend(manifest["privacy_warnings"])
     warnings.extend([
+        "A SHA-256 manifest is embedded in the archive. Review privacy warnings before sharing.",
         "Server packs may not include required client-side mods. Only explicitly client-only files from the optional matching Prism source were added.",
         "Bundled mod JARs are for personal use; check authors’ licenses before redistribution.",
     ])
-    return ExportResult(path=str(out_path), fmt=fmt, mod_count=len(ship),
-                        skipped=[p.name for p in skipped], warnings=warnings)
+    return ExportResult(
+        path=str(out_path), fmt=fmt, mod_count=len(ship),
+        skipped=[p.name for p in skipped], warnings=warnings,
+        manifest_path=manifest["path"],
+        included_files=[row["path"] for row in manifest["files"]],
+        archive_sha256=archive_sha256,
+    )
 
 
 def _add_dir(zf: zipfile.ZipFile, src: Path, arc_prefix: str) -> None:
@@ -245,6 +265,182 @@ def _build_curseforge(out_path, name, mc, loader, loader_version, jars, cfg_dirs
             zf.write(j, f"overrides/mods/{j.name}")
         for d in cfg_dirs:
             _add_dir(zf, d, "overrides")
+
+
+
+
+# Keep the per-file scan bounded. Mod JARs are binary and are not scanned for
+# text secrets here; only included config/KubeJS entries are inspected. The
+# manifest hashes every archive member, regardless of whether it is scannable.
+_MAX_PRIVACY_FILE_BYTES = 1024 * 1024
+_MAX_PRIVACY_TOTAL_BYTES = 16 * 1024 * 1024
+_MAX_PRIVACY_FINDINGS = 50
+_TEXT_CONFIG_SUFFIXES = {
+    "", ".cfg", ".conf", ".env", ".ini", ".json", ".json5", ".js", ".mjs",
+    ".properties", ".ps1", ".sh", ".toml", ".txt", ".xml", ".yaml", ".yml",
+    ".lua", ".properties",
+}
+_SECRET_PATTERNS = [
+    ("credential assignment", re.compile(
+        r'''(?im)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|passwd|webhook|authorization|auth[_-]?token)\b\s*[:=]\s*["']?([^\s"'#,;]{16,})'''
+    )),
+    ("GitHub token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
+    ("Discord webhook", re.compile(r"https?://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9._-]{20,}", re.IGNORECASE)),
+    ("private-key material", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")),
+    ("AWS access-key ID", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("bearer credential", re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*", re.IGNORECASE)),
+    ("private IPv4 address", re.compile(
+        r"\b(?:10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})\b"
+    )),
+]
+_PLACEHOLDER_PREFIXES = (
+    "your_", "your-", "replace_me", "replace-me", "change_me", "change-me",
+    "changeme", "example_", "example-", "placeholder", "dummy_", "test_",
+)
+
+
+def _validate_archive_member_name(name: str) -> None:
+    """Reject names that can escape or be interpreted differently by extractors."""
+    if not name or name.startswith("/") or "\\" in name or "\x00" in name:
+        raise OSError(f"Unsafe archive path: {name[:160]!r}")
+    parts = name.split("/")
+    if len(name) > 4096 or any(part in {"", ".", ".."} for part in parts):
+        raise OSError(f"Unsafe archive path: {name[:160]!r}")
+    if any(ord(char) < 32 for char in name):
+        raise OSError(f"Control character in archive path: {name[:160]!r}")
+
+
+def _is_config_entry(name: str) -> bool:
+    parts = name.split("/")
+    return any(part in {"config", "kubejs"} for part in parts)
+
+
+def _is_text_config_entry(name: str) -> bool:
+    return _is_config_entry(name) and Path(name).suffix.lower() in _TEXT_CONFIG_SUFFIXES
+
+
+def _privacy_findings(name: str, raw: bytes) -> list[str]:
+    if b"\x00" in raw[:4096]:
+        return []
+    text = raw.decode("utf-8", "ignore")
+    findings = []
+    for category, pattern in _SECRET_PATTERNS:
+        matches = list(pattern.finditer(text))
+        if category == "credential assignment":
+            meaningful = []
+            for match in matches:
+                value = match.group(1).strip().strip("\"'").lower()
+                if value in {"", "false", "null", "none", "changeme", "password", "example"}:
+                    continue
+                if value.startswith(_PLACEHOLDER_PREFIXES):
+                    continue
+                meaningful.append(match)
+            matches = meaningful
+        if matches:
+            findings.append(
+                f"Privacy review: possible {category} in {name}; inspect this file before sharing (value not shown)."
+            )
+        if len(findings) >= _MAX_PRIVACY_FINDINGS:
+            break
+    return findings
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _seal_archive(
+    archive_path: Path,
+    *,
+    fmt: str,
+    name: str,
+    minecraft_version: str,
+    loader: str,
+    loader_version: str,
+) -> dict:
+    """Validate member paths, hash all content, scan included config, and embed a manifest."""
+    manifest_name = (
+        f"{_safe_name(name)}/crucible-manifest.json"
+        if fmt == "prism" else "overrides/crucible-manifest.json"
+    )
+    rows = []
+    privacy_warnings = []
+    seen = set()
+    scan_bytes = 0
+    scan_incomplete = []
+    with zipfile.ZipFile(archive_path, "r") as zf:
+        for info in zf.infolist():
+            member_name = info.filename
+            _validate_archive_member_name(member_name)
+            if member_name in seen:
+                raise OSError(f"Duplicate archive path: {member_name[:160]!r}")
+            seen.add(member_name)
+            if info.is_dir():
+                continue
+            if member_name == manifest_name:
+                raise OSError(f"Source files collide with generated manifest path: {manifest_name!r}")
+
+            text_candidate = _is_text_config_entry(member_name)
+            should_scan = False
+            sample = bytearray()
+            if text_candidate:
+                if info.file_size > _MAX_PRIVACY_FILE_BYTES:
+                    scan_incomplete.append(member_name)
+                elif scan_bytes + info.file_size > _MAX_PRIVACY_TOTAL_BYTES:
+                    scan_incomplete.append(member_name)
+                else:
+                    should_scan = True
+
+            digest = hashlib.sha256()
+            with zf.open(info, "r") as member:
+                while True:
+                    chunk = member.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    if should_scan:
+                        sample.extend(chunk)
+
+            if should_scan:
+                scan_bytes += info.file_size
+                privacy_warnings.extend(_privacy_findings(member_name, bytes(sample)))
+                if len(privacy_warnings) >= _MAX_PRIVACY_FINDINGS:
+                    privacy_warnings = privacy_warnings[:_MAX_PRIVACY_FINDINGS]
+                    break
+
+            rows.append({
+                "path": member_name,
+                "size_bytes": info.file_size,
+                "sha256": digest.hexdigest(),
+            })
+
+    if scan_incomplete:
+        privacy_warnings.append(
+            f"Privacy scan incomplete for {len(scan_incomplete)} included config file(s) "
+            "because bounded size limits were reached; review these files manually before sharing."
+        )
+    manifest_data = {
+        "schemaVersion": 1,
+        "generatedBy": "Crucible",
+        "format": fmt,
+        "minecraftVersion": minecraft_version,
+        "loader": loader,
+        "loaderVersion": loader_version,
+        "files": rows,
+    }
+    payload = (json.dumps(manifest_data, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+    with zipfile.ZipFile(archive_path, "a", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(manifest_name, payload)
+    _validate_archive_member_name(manifest_name)
+    return {
+        "path": manifest_name,
+        "files": rows,
+        "privacy_warnings": privacy_warnings,
+    }
 
 
 def _safe_name(name: str) -> str:
