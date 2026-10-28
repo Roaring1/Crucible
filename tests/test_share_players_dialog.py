@@ -908,6 +908,48 @@ class SharePlayersDialogTests(unittest.TestCase):
         dialog.close()
 
 
+    def test_changing_inputs_after_upload_explains_existing_link_is_unchanged(self):
+        dialog = self._dialog()
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "profile"
+            other_source = Path(tmp) / "other-profile"
+            source.mkdir()
+            other_source.mkdir()
+            dialog._source.setText(str(source))
+            dialog._built_source = str(source.resolve())
+            dialog._built_include_resourcepacks = False
+            result = GofileUploadResult(
+                download_url="https://gofile.io/d/PreviouslyShared123",
+                file_id="previously-shared-id",
+                file_name="old-pack.zip",
+                file_size=10,
+                local_sha256="a" * 64,
+                remote_md5="",
+                size_verified=False,
+                md5_verified=False,
+            )
+            dialog._upload_result = result
+            dialog._phase = "done"
+            dialog._upload_success_status = "Upload complete: original reviewed pack."
+            dialog._status.setText(dialog._upload_success_status)
+            dialog._link.setText(result.download_url)
+            dialog._copy_link_btn.setEnabled(True)
+
+            dialog._source.setText(str(other_source))
+            self.assertEqual(dialog._phase, "done")
+            self.assertEqual(dialog._link.text(), result.download_url)
+            self.assertTrue(dialog._copy_link_btn.isEnabled())
+            self.assertIn("existing Gofile link still points", dialog._status.text())
+            self.assertIn("Rebuild ZIP", dialog._status.text())
+
+            dialog._resourcepacks.setChecked(True)
+            self.assertIn("existing Gofile link still points", dialog._status.text())
+            dialog._source.setText(str(source))
+            dialog._resourcepacks.setChecked(False)
+            self.assertEqual(dialog._status.text(), dialog._upload_success_status)
+
+        dialog.close()
+
     def test_stale_input_upload_result_clears_approvals_and_blocks_upload(self):
         dialog = self._dialog()
         dialog._phase = "uploading"
