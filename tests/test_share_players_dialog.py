@@ -60,7 +60,7 @@ class SharePlayersDialogTests(unittest.TestCase):
                 "projectUrl": "",
                 "evidenceUrl": "",
                 "verifiedOn": "",
-                "basis": "No curated record matches this synthetic JAR SHA-256.",
+                "basis": "No curated record matches this exact JAR SHA-256.",
                 "license": "",
                 "licenseUrl": "",
                 "conditions": [],
@@ -429,6 +429,41 @@ class SharePlayersDialogTests(unittest.TestCase):
             self.assertEqual(dialog._phase, "error")
             self.assertIsNone(dialog._result)
             self.assertIn("local ZIP changed after preparation", dialog._status.text())
+            self.assertFalse(dialog._upload_btn.isEnabled())
+
+        dialog.close()
+
+    def test_manifest_cannot_claim_permission_without_a_current_catalog_record(self):
+        dialog = self._dialog()
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "pack.zip"
+            result = self._result_archive(archive_path)
+
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                entries = [(item.filename, archive.read(item.filename)) for item in archive.infolist()]
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                for name, payload in entries:
+                    if name == result.manifest_path:
+                        manifest = json.loads(payload)
+                        row = manifest["distributionReview"][0]
+                        row.update({
+                            "decision": "permitted",
+                            "projectUrl": "https://example.org/project",
+                            "evidenceUrl": "https://example.org/claimed-permission",
+                            "verifiedOn": "2026-10-01",
+                            "basis": "Synthetic test claim; no real permission.",
+                            "license": "Example-License",
+                            "licenseUrl": "https://example.org/license",
+                        })
+                        payload = json.dumps(manifest).encode("utf-8")
+                    archive.writestr(name, payload)
+            result.archive_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+
+            dialog._on_pack_ready(result)
+
+            self.assertEqual(dialog._phase, "error")
+            self.assertIsNone(dialog._result)
+            self.assertIn("unknown artifact hash", dialog._status.text())
             self.assertFalse(dialog._upload_btn.isEnabled())
 
         dialog.close()

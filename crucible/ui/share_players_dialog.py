@@ -97,7 +97,14 @@ def _validate_review_manifest(manifest):
             or any(char not in "0123456789abcdef" for char in catalog["revision"])
         ):
             raise ValueError("manifest distribution-catalog metadata is malformed")
-        if catalog["revision"] != distribution_catalog.catalog_revision():
+        try:
+            current_distribution_catalog = distribution_catalog.load_catalog()
+        except (distribution_catalog.DistributionCatalogError, OSError) as exc:
+            raise ValueError("the current curated distribution catalog cannot be verified") from exc
+        if (
+            catalog["revision"] != current_distribution_catalog.revision
+            or catalog["version"] != current_distribution_catalog.catalog_version
+        ):
             raise ValueError("the curated distribution catalog changed after this ZIP was prepared; rebuild and review it again")
 
         review_rows = manifest.get("distributionReview")
@@ -131,6 +138,42 @@ def _validate_review_manifest(manifest):
             if not row_path.lower().endswith(".jar"):
                 raise ValueError("distribution-review record is not for a JAR artifact")
             client_export._validate_archive_member_name(row_path)
+
+            curated_record = current_distribution_catalog.lookup(digest)
+            if decision == "unverified":
+                if curated_record is not None:
+                    raise ValueError("manifest marks a catalog-listed artifact unverified")
+                expected_unverified = {
+                    "path": row_path,
+                    "filename": filename,
+                    "sha256": digest,
+                    "modId": "",
+                    "modVersion": "",
+                    "decision": "unverified",
+                    "projectUrl": "",
+                    "evidenceUrl": "",
+                    "verifiedOn": "",
+                    "basis": "No curated record matches this exact JAR SHA-256.",
+                    "license": "",
+                    "licenseUrl": "",
+                    "conditions": [],
+                    "alternativeDownloadUrl": "",
+                    "notes": "",
+                    "bundled": True,
+                }
+                if row != expected_unverified:
+                    raise ValueError("unverified distribution entry contains unsupported catalog claims")
+            else:
+                if curated_record is None:
+                    raise ValueError("manifest claims a curated distribution decision for an unknown artifact hash")
+                expected_curated = curated_record.review_entry(
+                    archive_path=row_path,
+                    filename=filename,
+                    bundled=curated_record.decision != "prohibited",
+                )
+                if row != expected_curated:
+                    raise ValueError("manifest distribution decision does not match the current catalog record")
+
             if decision != "unverified":
                 if not isinstance(row.get("verifiedOn"), str) or not row["verifiedOn"] or not isinstance(row.get("basis"), str) or not row["basis"]:
                     raise ValueError("curated distribution decision is missing its review date or basis")
