@@ -149,6 +149,12 @@ def export(instance, out_path, fmt: str = "mrpack", *,
             if entry.side == "unknown": unknown.append(j.name)
     if client_source:
         source = Path(client_source).expanduser()
+        # Never overwrite the chosen Prism instance itself, even if the selected
+        # destination is a file not otherwise included in the generated archive.
+        source_root = source.resolve()
+        if (out_absolute == source_root or source_root in out_absolute.parents
+                or out_resolved == source_root or source_root in out_resolved.parents):
+            return ExportResult(error="Save the client export outside the selected Prism source folder.")
         pack_file = source / "mmc-pack.json"
         try:
             pack = json.loads(pack_file.read_text())
