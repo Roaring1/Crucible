@@ -89,20 +89,29 @@ class ClientExportReviewTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertFalse(output.with_suffix(".zip.partial").exists())
 
-    def test_symlinked_config_file_is_rejected(self):
+    def test_symlinked_config_file_is_excluded_and_warned_about(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             server = root / "server"
             config = server / "config"
             config.mkdir(parents=True)
             outside = root / "outside.toml"
-            outside.write_text("api_key = 'do not ship'\n", encoding="utf-8")
+            secret = "sk_live_DO_NOT_PACKAGE_THIS_VALUE"
+            outside.write_text(f"api_key = '{secret}'\\n", encoding="utf-8")
             (config / "linked.toml").symlink_to(outside)
             output = root / "symlink.zip"
             result = client_export.export(self._instance(server), output, fmt="prism")
-            self.assertFalse(result.ok)
-            self.assertIn("Symlinks are not exported", result.error)
-            self.assertFalse(output.exists())
+            self.assertTrue(result.ok, result.error)
+            self.assertTrue(output.exists())
+            self.assertTrue(
+                any("Excluded symlink from client configuration: linked.toml" in w for w in result.warnings),
+                result.warnings,
+            )
+            with zipfile.ZipFile(output) as archive:
+                self.assertFalse(any(name.endswith("/linked.toml") for name in archive.namelist()))
+                manifest = json.loads(archive.read("CreatePlus/crucible-manifest.json"))
+                self.assertFalse(any("linked.toml" in row["path"] for row in manifest["files"]))
+            self.assertNotIn(secret, "\\n".join(result.warnings))
 
 
 if __name__ == "__main__":
