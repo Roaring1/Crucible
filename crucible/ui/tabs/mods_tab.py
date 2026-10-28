@@ -128,12 +128,20 @@ class ModsTab(QWidget):
         identify_btn.clicked.connect(self._identify_online)
         toolbar.addWidget(identify_btn)
 
-        # One-click "make a client instance" for friends (Prism/Modrinth/CF).
-        client_btn = QPushButton("📦 Make client…")
-        client_btn.setToolTip("Bundle this server's mods into a client pack "
-                              "for Prism Launcher, Modrinth App, or CurseForge.")
-        client_btn.clicked.connect(self._open_make_client)
+        # Default player-facing action: build, review, then upload a Prism ZIP.
+        client_btn = QPushButton("📤 Share with players…")
+        client_btn.setToolTip(
+            "Build a Prism ZIP, review every included file/privacy warning, then "
+            "upload to Gofile only after you approve the review."
+        )
+        client_btn.clicked.connect(self._open_share_players)
         toolbar.addWidget(client_btn)
+
+        # Other export formats remain available to advanced users.
+        advanced_btn = QPushButton("Advanced export…")
+        advanced_btn.setToolTip("Export Prism, Modrinth, or CurseForge archives without uploading.")
+        advanced_btn.clicked.connect(self._open_make_client)
+        toolbar.addWidget(advanced_btn)
 
         # Shown only when the imported pack shipped a download index.
         self._dl_btn = QPushButton("⬇  Download from pack")
@@ -217,6 +225,14 @@ class ModsTab(QWidget):
         dlg = AddModDialog(self._instance, self)
         dlg.exec()
         self.refresh()
+
+    def _open_share_players(self) -> None:
+        if getattr(self, "_instance", None) is None:
+            return
+        from ..share_players_dialog import SharePlayersDialog
+        SharePlayersDialog(
+            self._instance, self, manager=self._instance_manager
+        ).exec()
 
     def _open_make_client(self) -> None:
         if getattr(self, "_instance", None) is None:

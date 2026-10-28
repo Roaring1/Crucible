@@ -309,5 +309,323 @@ class ClientExportTests(unittest.TestCase):
             ), result.warnings)
 
 
+
+    def test_only_client_relevant_kubejs_folders_are_shared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            for relative, content in (
+                ("kubejs/client_scripts/ui.js", "// client script"),
+                ("kubejs/startup_scripts/registry.js", "// shared registry script"),
+                ("kubejs/assets/kubejs/lang/en_us.json", '{"test":"value"}'),
+                ("kubejs/server_scripts/recipes.js", "// server-only logic"),
+                ("kubejs/data/recipe.json", '{"type":"server-data"}'),
+                ("kubejs/exported/private-dump.json", '{"debug":"dump"}'),
+            ):
+                target = server / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+            instance = SimpleNamespace(
+                path=str(server), name="CreatePlus", minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.1",
+            )
+            output = root / "kubejs-safety.zip"
+            result = client_export.export(instance, output, fmt="prism")
+            self.assertTrue(result.ok, result.error)
+            warning_text = "\n".join(result.warnings)
+            self.assertIn("Excluded KubeJS/server_scripts/", warning_text)
+            self.assertIn("Excluded KubeJS/data/", warning_text)
+            self.assertIn("Excluded KubeJS/exported/", warning_text)
+            with zipfile.ZipFile(output) as archive:
+                names = set(archive.namelist())
+                prefix = "CreatePlus/.minecraft/"
+                self.assertIn(prefix + "kubejs/client_scripts/ui.js", names)
+                self.assertIn(prefix + "kubejs/startup_scripts/registry.js", names)
+                self.assertIn(prefix + "kubejs/assets/kubejs/lang/en_us.json", names)
+                self.assertFalse(any("/kubejs/server_scripts/" in name for name in names))
+                self.assertFalse(any("/kubejs/data/" in name for name in names))
+                self.assertFalse(any("/kubejs/exported/" in name for name in names))
+
+
+    def test_resourcepacks_are_excluded_by_default_and_included_only_by_opt_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source = root / "working-prism"
+            mc_root = source / ".minecraft"
+            (mc_root / "mods").mkdir(parents=True)
+            (mc_root / "resourcepacks").mkdir()
+            (mc_root / "shaderpacks").mkdir()
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.1"},
+                ],
+            }), encoding="utf-8")
+            (mc_root / "resourcepacks" / "ServerTextures.zip").write_bytes(b"synthetic resource pack")
+            (mc_root / "shaderpacks" / "PersonalShader.zip").write_bytes(b"unrelated shader pack")
+            instance = SimpleNamespace(
+                path=str(server), name="CreatePlus", minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.1",
+            )
+
+            default_output = root / "without-resourcepacks.zip"
+            default_result = client_export.export(
+                instance, default_output, fmt="prism", client_source=str(source)
+            )
+            self.assertTrue(default_result.ok, default_result.error)
+            self.assertTrue(any("resourcepacks/ content, but it was excluded by default" in warning
+                                for warning in default_result.warnings), default_result.warnings)
+            self.assertTrue(any("Shaderpacks from the selected Prism profile were excluded" in warning
+                                for warning in default_result.warnings), default_result.warnings)
+            with zipfile.ZipFile(default_output) as archive:
+                default_names = set(archive.namelist())
+            self.assertFalse(any("/resourcepacks/" in name for name in default_names))
+            self.assertFalse(any("/shaderpacks/" in name for name in default_names))
+
+            opted_output = root / "with-resourcepacks.zip"
+            opted_result = client_export.export(
+                instance, opted_output, fmt="prism", client_source=str(source),
+                include_resourcepacks=True,
+            )
+            self.assertTrue(opted_result.ok, opted_result.error)
+            self.assertTrue(any("resource packs from the selected Prism profile" in warning for warning in opted_result.warnings))
+            with zipfile.ZipFile(opted_output) as archive:
+                names = set(archive.namelist())
+                resourcepack_info = archive.getinfo("CreatePlus/.minecraft/resourcepacks/ServerTextures.zip")
+                self.assertEqual(resourcepack_info.compress_type, zipfile.ZIP_STORED)
+            self.assertIn("CreatePlus/.minecraft/resourcepacks/ServerTextures.zip", names)
+            self.assertFalse(any("/shaderpacks/" in name for name in names))
+
+    def test_resourcepack_inclusion_requires_a_client_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = Path(tmp) / "server"
+            server.mkdir()
+            instance = SimpleNamespace(
+                path=str(server), name="CreatePlus", minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.1",
+            )
+            result = client_export.export(
+                instance, Path(tmp) / "pack.zip", fmt="prism",
+                include_resourcepacks=True,
+            )
+            self.assertFalse(result.ok)
+            self.assertIn("Choose a matching Prism client source", result.error)
+
+    def test_resourcepack_symlink_root_is_rejected_when_opted_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source = root / "working-prism"
+            mc_root = source / ".minecraft"
+            (mc_root / "mods").mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.1"},
+                ],
+            }), encoding="utf-8")
+            external = root / "resourcepacks"
+            external.mkdir()
+            try:
+                (mc_root / "resourcepacks").symlink_to(external, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlinks unavailable: {exc}")
+            instance = SimpleNamespace(
+                path=str(server), name="CreatePlus", minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.1",
+            )
+            result = client_export.export(
+                instance, root / "linked-resourcepacks.zip", fmt="prism",
+                client_source=str(source), include_resourcepacks=True,
+            )
+            self.assertFalse(result.ok)
+            self.assertIn("symbolic-link resourcepacks/", result.error)
+
+
+    def test_client_profile_config_is_merged_and_server_config_wins_conflicts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            (server / "config").mkdir(parents=True)
+            (server / "config" / "shared.toml").write_text(
+                "side = 'server-authoritative'\n", encoding="utf-8"
+            )
+            (server / "config" / "server-only.toml").write_text(
+                "server_setting = true\n", encoding="utf-8"
+            )
+
+            source = root / "working-prism"
+            mc_root = source / ".minecraft"
+            (mc_root / "mods").mkdir(parents=True)
+            (mc_root / "config").mkdir()
+            (mc_root / "kubejs" / "client_scripts").mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.1"},
+                ],
+            }), encoding="utf-8")
+            (mc_root / "config" / "shared.toml").write_text(
+                "side = 'client-different'\n", encoding="utf-8"
+            )
+            (mc_root / "config" / "client-only.toml").write_text(
+                "api_key = 'client_profile_fake_secret_value_12345'\n",
+                encoding="utf-8",
+            )
+            (mc_root / "kubejs" / "client_scripts" / "ui.js").write_text(
+                "// client-only tested script\n", encoding="utf-8"
+            )
+
+            instance = SimpleNamespace(
+                path=str(server), name="CreatePlus", minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.1",
+            )
+            output = root / "CreatePlus - Player Pack - v1.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", include_config=True,
+                client_source=str(source),
+            )
+            self.assertTrue(result.ok, result.error)
+            warning_text = "\n".join(result.warnings)
+            self.assertIn("Client profile configuration differs from the server copy", warning_text)
+            self.assertIn("config/shared.toml", warning_text)
+            self.assertIn("credential assignment", warning_text)
+            self.assertIn("config/client-only.toml", warning_text)
+            self.assertNotIn("client_profile_fake_secret_value_12345", warning_text)
+
+            with zipfile.ZipFile(output) as archive:
+                names = set(archive.namelist())
+                prefix = "CreatePlus/.minecraft/"
+                self.assertIn(prefix + "config/server-only.toml", names)
+                self.assertIn(prefix + "config/client-only.toml", names)
+                self.assertIn(prefix + "kubejs/client_scripts/ui.js", names)
+                self.assertEqual(
+                    archive.read(prefix + "config/shared.toml").decode("utf-8"),
+                    "side = 'server-authoritative'\n",
+                )
+                manifest = json.loads(archive.read("CreatePlus/crucible-manifest.json"))
+                manifest_paths = {row["path"] for row in manifest["files"]}
+                self.assertIn(prefix + "config/client-only.toml", manifest_paths)
+                self.assertIn(prefix + "kubejs/client_scripts/ui.js", manifest_paths)
+                self.assertTrue(any(
+                    "config/client-only.toml" in warning
+                    for warning in manifest["privacyReview"]["warnings"]
+                ))
+
+    def test_nested_symlink_in_client_profile_config_is_skipped_and_warned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source = root / "working-prism"
+            mc_root = source / ".minecraft"
+            (mc_root / "mods").mkdir(parents=True)
+            config = mc_root / "config"
+            config.mkdir()
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.1"},
+                ],
+            }), encoding="utf-8")
+            external = root / "outside.toml"
+            external.write_text("api_key = 'must-not-follow-this-link'\n", encoding="utf-8")
+            try:
+                (config / "linked.toml").symlink_to(external)
+            except OSError as exc:
+                self.skipTest(f"symlinks unavailable: {exc}")
+            instance = SimpleNamespace(
+                path=str(server), name="CreatePlus", minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.1",
+            )
+            output = root / "source-config-symlink.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", client_source=str(source)
+            )
+            self.assertTrue(result.ok, result.error)
+            self.assertTrue(any(
+                "Excluded symlink from client configuration: linked.toml" in warning
+                for warning in result.warnings
+            ), result.warnings)
+            with zipfile.ZipFile(output) as archive:
+                self.assertFalse(any(name.endswith("/config/linked.toml") for name in archive.namelist()))
+                manifest = json.loads(archive.read(result.manifest_path))
+                self.assertFalse(any("linked.toml" in row["path"] for row in manifest["files"]))
+            self.assertNotIn("must-not-follow-this-link", "\n".join(result.warnings))
+
+    def test_symlinked_client_profile_config_root_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source = root / "working-prism"
+            mc_root = source / ".minecraft"
+            (mc_root / "mods").mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.1"},
+                ],
+            }), encoding="utf-8")
+            external = root / "external-config"
+            external.mkdir()
+            (external / "private.toml").write_text("secret = true\n", encoding="utf-8")
+            try:
+                (mc_root / "config").symlink_to(external, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlinks unavailable: {exc}")
+            instance = SimpleNamespace(
+                path=str(server), name="CreatePlus", minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.1",
+            )
+            output = root / "linked-config-root.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", client_source=str(source)
+            )
+            self.assertFalse(result.ok)
+            self.assertIn("symbolic-link config/ directory", result.error)
+            self.assertFalse(output.exists())
+
+    def test_client_profile_config_is_not_copied_when_config_is_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source = root / "working-prism"
+            mc_root = source / ".minecraft"
+            (mc_root / "mods").mkdir(parents=True)
+            (mc_root / "config").mkdir()
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.1"},
+                ],
+            }), encoding="utf-8")
+            (mc_root / "config" / "client-only.toml").write_text(
+                "personal_setting = true\n", encoding="utf-8"
+            )
+            instance = SimpleNamespace(
+                path=str(server), name="CreatePlus", minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.1",
+            )
+            output = root / "no-config.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", include_config=False,
+                client_source=str(source),
+            )
+            self.assertTrue(result.ok, result.error)
+            with zipfile.ZipFile(output) as archive:
+                self.assertFalse(any("/config/" in name for name in archive.namelist()))
+
+
 if __name__ == "__main__":
     unittest.main()

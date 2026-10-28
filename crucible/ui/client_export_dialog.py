@@ -30,14 +30,20 @@ _FORMATS = [
 class _ExportWorker(QObject):
     done = pyqtSignal(object)
 
-    def __init__(self, instance, out_path, fmt, include_config, client_source=""):
+    def __init__(
+        self, instance, out_path, fmt, include_config, client_source="",
+        include_resourcepacks=False,
+    ):
         super().__init__()
-        self._a = (instance, out_path, fmt, include_config, client_source)
+        self._a = (instance, out_path, fmt, include_config, client_source, include_resourcepacks)
 
     def run(self):
-        inst, out, fmt, cfg, source = self._a
+        inst, out, fmt, cfg, source, include_resourcepacks = self._a
         try:
-            result = client_export.export(inst, out, fmt=fmt, include_config=cfg, client_source=source)
+            result = client_export.export(
+                inst, out, fmt=fmt, include_config=cfg, client_source=source,
+                include_resourcepacks=include_resourcepacks,
+            )
         except Exception as exc:
             result = client_export.ExportResult(error=f"Unexpected export error: {exc}")
         self.done.emit(result)
@@ -92,6 +98,15 @@ class ClientExportDialog(QDialog):
         source_row.addWidget(pick)
         lay.addLayout(source_row)
 
+        self._resourcepacks = QCheckBox(
+            "Include resource packs from this Prism profile (off by default)"
+        )
+        self._resourcepacks.setChecked(False)
+        self._resourcepacks.setToolTip(
+            "Includes the selected profile's resourcepacks/ files. Use only if the pack needs them; they may be unrelated or have separate distribution terms."
+        )
+        lay.addWidget(self._resourcepacks)
+
         self._remember_source = QCheckBox("Remember this Prism source for future exports")
         self._remember_source.setChecked(True)
         self._remember_source.setToolTip(
@@ -142,8 +157,10 @@ class ClientExportDialog(QDialog):
         self._status.setText("Building…")
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         self._thread = QThread()
-        self._worker = _ExportWorker(self._instance, out, fmt,
-                                     self._cfg.isChecked(), self._source.text().strip())
+        self._worker = _ExportWorker(
+            self._instance, out, fmt, self._cfg.isChecked(),
+            self._source.text().strip(), self._resourcepacks.isChecked(),
+        )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.done.connect(self._on_done)

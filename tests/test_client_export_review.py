@@ -146,6 +146,7 @@ class ClientExportReviewTests(unittest.TestCase):
             config = server / "config"
             config.mkdir(parents=True)
             (config / "odd.toml").write_bytes(b"setting = true\x00\x01binary")
+            (config / "unrecognized.dat").write_bytes(b"opaque config data")
             output = root / "binary-config.zip"
             result = client_export.export(self._instance(server), output, fmt="prism")
             self.assertTrue(result.ok, result.error)
@@ -155,6 +156,7 @@ class ClientExportReviewTests(unittest.TestCase):
             review = manifest["privacyReview"]
             self.assertFalse(review["coverageComplete"])
             self.assertIn("heuristic", review["scanner"])
+            self.assertIn("JARs, resource packs", review["scope"])
             self.assertTrue(
                 any("Privacy scan skipped binary-looking config file" in warning
                     for warning in review["warnings"]),
@@ -164,6 +166,16 @@ class ClientExportReviewTests(unittest.TestCase):
                 any("Privacy scan skipped binary-looking config file" in warning
                     for warning in result.warnings),
                 result.warnings,
+            )
+            self.assertTrue(
+                any("unrecognized file types" in warning and "unrecognized.dat" in warning
+                    for warning in result.warnings),
+                result.warnings,
+            )
+            self.assertTrue(
+                any("unrecognized.dat" in warning
+                    for warning in review["warnings"]),
+                review["warnings"],
             )
 
     def test_manifest_warns_and_names_config_files_over_scan_limit(self):

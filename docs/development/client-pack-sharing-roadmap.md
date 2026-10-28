@@ -1,6 +1,6 @@
 # One-click Share with players: implementation roadmap
 
-**Status:** Planned, with one immediate exporter-safety fix included in this change.
+**Status:** P0 and the clean Prism-import portion of P1 are merged. The P2 Gofile adapter and review-first sharing UI are implemented on a follow-up branch and covered by mocked-provider/UI tests; a live public upload and large-file soak test remain intentionally unrun until an owner approves a test upload.
 **Tracking issue:** [Crucible #5](https://github.com/Roaring1/Crucible/issues/5).
 
 ## Product outcome
@@ -22,23 +22,54 @@ remain under an advanced export path.
 
 - `crucible/exporters/client_export.py` builds Prism/MultiMC ZIP, Modrinth
   `.mrpack`, and CurseForge-style ZIP archives locally.
-- `crucible/ui/client_export_dialog.py` exposes a format selector and a
-  destination-file picker, shows the local archive SHA-256 and manifest path,
-  and has a **Remember this Prism source** option that saves a validated source
-  to the registered server after a successful export. It does not upload or
-  create a share link.
-- A saved matching Prism source contributes only explicitly client-only mods;
-  content-hash deduplication avoids duplicate JARs, and version/source conflicts
-  and unknown side metadata are reported instead of guessed.
+- `crucible/ui/client_export_dialog.py` remains the advanced local export
+  dialog (Prism ZIP, MRPACK and CurseForge-style ZIP), including an archive
+  SHA-256/manifest path and the **Remember this Prism source** option.
+- `crucible/ui/share_players_dialog.py` is the default **Share with players**
+  workflow. With a saved Prism source it starts building the default Prism ZIP
+  when opened; otherwise the owner can choose a client profile and build it.
+  It displays the full included-file list and per-file hashes, privacy warnings,
+  scan-coverage status and a separate unverified-distribution warning for every
+  bundled JAR. Upload stays disabled until all review, license and public-link
+  acknowledgements are checked.
+- `crucible/sharing/provider.py` defines the hosting interface and
+  `crucible/sharing/gofile.py` implements guest uploads by default. If Gofile
+  requires account authentication, the owner can enter an optional API token in
+  a masked field; it exists only in the dialog/worker memory and is never saved.
+  The adapter streams multipart data from disk, checks local SHA-256 before
+  sending and again over the exact bytes streamed, and compares remote size/MD5
+  when provided. It uses finite socket timeouts and cancellation; manual retry
+  reuses the same local ZIP. On POSIX the sharing cache folder is mode 0700 and
+  completed ZIP files are mode 0600.
+- A saved matching Prism source contributes explicitly client-only mods and
+  fills in client-profile-only `config/` and `kubejs/` files. The server's
+  copy wins when a relative path conflicts, with a warning; identical content
+  is deduplicated. KubeJS is restricted to `client_scripts/`,
+  `startup_scripts/`, `assets/` and `config/`; server scripts, data dumps
+  and unrecognized folders are excluded with warnings.
+- Client resource packs are excluded by default. The owner can explicitly opt
+  in to including the selected profile's `resourcepacks/` folder, after which
+  each included pack is shown in the license review. Shaderpacks are never
+  included by this workflow. Version/source conflicts and unknown side metadata
+  are reported instead of guessed.
 - The exporter embeds a per-file size/SHA-256 manifest and performs bounded
-  heuristic secret scans on included text configuration. The manifest records
-  scanner warnings and whether scan coverage was complete. This helps identify
-  suspicious files but is not proof that a pack contains no secrets.
+  heuristic scans on eligible text files beneath included `config/` and
+  KubeJS roots. The manifest and owner review state that this scan does **not**
+  inspect mod JARs, resource packs or other payloads for secrets. Unsupported
+  binary/config types and oversized files are flagged for manual review, and
+  secret values are never echoed. The scan is not proof that a pack contains no
+  secrets.
+- After an approved upload succeeds, the returned Gofile share link is copied
+  automatically and remains available for manual copy/open actions. Crucible
+  does not retain Gofile guest-management tokens or locally store the optional
+  owner API token.
 - A real Prism Launcher 11.1.1 import has been verified in an isolated fresh
-  data directory using Crucible's produced ZIP. Prism created the instance and
-  preserved the exact Minecraft/NeoForge versions. The test fixture verifies
-  archive/launcher structure and config integrity, not whether a real modded
-  game launches successfully.
+  data directory using the current scope-annotated ZIP. Its 8 manifest payload
+  entries were hash-checked against the archive and imported files; Prism
+  preserved Minecraft 1.21.1 / NeoForge 21.1.233, client-only config/KubeJS
+  survived, server config won collisions, and server KubeJS/data/resourcepacks/
+  defaultconfigs/worlds/screenshots stayed out. This verifies archive import,
+  not whether a real modded game launches successfully.
 - The exporter previously included `defaultconfigs/` while its checkbox named
   only `config/` and `kubejs/`. This mismatch is fixed by the accompanying
   change: `defaultconfigs/` is excluded by default and a warning is shown if it
@@ -54,8 +85,15 @@ remain under an advanced export path.
 - [x] Compare source and server mods by content hashes and known metadata,
   deduplicate identical JARs, and report source/version conflicts and unknown
   side information rather than guessing.
-- [x] Make the config checkbox truthful: only include `config/` and `kubejs/`
-  by default, exclude `defaultconfigs/`, and warn when it was excluded.
+- [x] Merge missing client-profile `config/` and client-safe KubeJS files;
+  server files remain authoritative for conflicting paths and conflicts are
+  reported. Only KubeJS `client_scripts/`, `startup_scripts/`, `assets/`
+  and `config/` are copied; `server_scripts/`, `data/`, `exported/` and
+  other unrecognized folders are excluded with warnings.
+- [x] Make config selection truthful: include `config/` and the client-safe
+  KubeJS subset from validated roots, exclude `defaultconfigs/`, and warn
+  when it was excluded. Exclude client resourcepacks by default, with a separate
+  opt-in that lists pack names and license status; shaderpacks stay excluded.
 - [x] Scan included text config/KubeJS content for common tokens, webhooks,
   credentials, private keys and private addresses. Values are never echoed in
   warnings. The scan has explicit size/finding bounds and records incomplete
@@ -66,9 +104,11 @@ remain under an advanced export path.
 - [x] Produce an embedded manifest containing each included relative path, size
   and SHA-256. Reject unsafe archive paths and special files, reject linked
   source roots, and exclude nested symlinks without following them.
-- [ ] Keep mod distribution/license status in the review. Do not silently
-  promise a fully bundled pack when redistribution is not allowed or a download
-  is restricted; explain the exception and the permitted alternative.
+- [x] Mark every bundled JAR as **distribution permission not verified** in
+  the review and require explicit owner confirmation. Crucible does not pretend
+  it can infer the author's licensing terms from JAR bytes alone.
+- [ ] Add a source-of-truth license/download-permission catalog and explain
+  per-mod exceptions and permitted alternatives where direct download is allowed.
 
 **Exit criterion:** a local-only player ZIP has an explained file list, matching
 versions, known unresolved compatibility warnings, privacy results and a
@@ -76,8 +116,8 @@ reproducible manifest.
 
 ### P1 — Make the default Prism ZIP import for real
 
-- [ ] Make Prism instance ZIP the default artifact for **Share with players**.
-  Keep `.mrpack` and CurseForge export options in an advanced menu.
+- [x] Make Prism instance ZIP the default artifact for **Share with players**.
+  Keep `.mrpack` and CurseForge export options in **Advanced export**.
 - [x] Check the instance folder, `instance.cfg`, `mmc-pack.json`,
   `.minecraft/mods/` and selected config paths, with exact Minecraft/loader
   metadata.
@@ -99,30 +139,36 @@ working modded client before promising every pack can launch successfully.
 
 ### P2 — Add Gofile upload and the one-click share experience
 
-- [ ] Define a small upload-provider interface, keeping archive generation
-  independent from Gofile. Implement Gofile first after verifying the exact
-  API/domain, authentication and current plan behavior.
-- [ ] Keep provider credentials private to the owner, if required. Recipients
-  must not need API keys or account credentials to download the archive.
-- [ ] Upload from a file stream on a worker thread, with byte-level progress,
-  cancellation, finite timeouts, bounded retries and clear error recovery.
-  Never read a potentially gigabyte-sized ZIP into memory just for upload.
-- [ ] Compute SHA-256 as part of the build and preserve the local ZIP. Verify
-  remote metadata/checksum when the provider exposes enough information; do not
-  claim server-side checksum verification when the API does not offer it.
-- [ ] On success, show **Copy link**, **Copy player instructions**, and
-  **Open local ZIP**. Tell the owner whether the link is new, reused or unknown
-  to be valid, and retain the local artifact when the upload fails.
-- [ ] Treat a link as shareable by anyone who obtains it. Require an explicit
-  pre-upload confirmation after showing the exact file list and privacy/mod
-  distribution warnings.
-- [ ] Confirm current file-size, traffic and retention limits against the exact
-  Gofile host/plan used. Do not bake a marketing quota into the UI or promise
-  permanent retention. Keep the local ZIP as the durable copy.
+- [x] Define a small `UploadProvider` protocol, keeping archive generation
+  independent from Gofile; implement the official `upload.gofile.io/uploadfile`
+  endpoint in guest mode. The API is beta, so response validation is strict.
+- [x] Keep provider credentials out of Crucible's settings and generated ZIP.
+  Guest mode is the default; an optional owner token is memory-only, and the
+  returned guest-management token is discarded. Recipients do not need API
+  keys or account credentials.
+- [x] Stream from disk on a worker thread, report byte-level progress, support
+  cancellation, use finite socket timeouts, and offer manual retry from the same
+  ZIP. No automatic retry is performed because a lost response can leave an
+  unconfirmed public upload and duplicates would be misleading.
+- [x] Verify the local SHA-256 against the build result before sending. Compare
+  Gofile's reported size and MD5 when present; the remote MD5 is not described
+  as a SHA-256 check. If metadata is absent, the UI says so.
+- [x] Show **Copy link**, **Copy player instructions**, **Open local ZIP** and
+  **Open link** after upload. Copy the new link automatically on success; say
+  that it has not been independently re-fetched for validity.
+- [x] Show exact included paths, sizes and hashes, privacy findings/scan gaps,
+  compatibility warnings, every bundled JAR's unverified license status and
+  each explicitly included resource pack before upload. Require three explicit
+  acknowledgements; treat the link as public to anyone who obtains it.
+- [x] Warn that free Gofile storage is ephemeral and do not hard-code a monthly
+  traffic/file-size quota or promise permanent retention.
+- [ ] Verify a real owner-approved Gofile upload and a large-file cancel/retry
+  run. No live upload has been performed by this implementation pass.
 
-**Exit criterion:** a realistic large upload can be cancelled/retried without
-freezing the UI or rebuilding the pack, the returned link is copied reliably,
-and errors leave a usable local archive.
+**Exit criterion:** mocked-provider tests currently validate streaming request
+construction, hash/size/MD5 checks, cancellation, safe-link parsing and error
+recovery. A live large upload/cancel/retry soak test remains open; no real pack
+has been uploaded during implementation.
 
 ### P3 — Caching, expiry and recovery
 
@@ -164,11 +210,12 @@ and errors leave a usable local archive.
 - **Default archive:** Prism/MultiMC instance ZIP. Prism's official help states
   that its import flow accepts compatible ZIP and MRPACK files; the integration
   test must verify the exact ZIP format Crucible produces.
-- **Upload host:** Gofile first, behind a provider adapter. Do not assume a
-  stable monthly allowance, maximum upload size or retention period: the
-  published pages for `gofile.io` and `gofile.is` currently describe different
-  plan limits. Reconfirm the selected host, its documented API and policies at
-  implementation time.
+- **Upload host:** Gofile first, behind a provider adapter. The adapter uses
+  the official `https://upload.gofile.io/uploadfile` upload endpoint and
+  validates the `gofile.io/d/` download-page URL and returned file metadata.
+  The API documentation labels the service beta. Free storage is advertised as
+  ephemeral; no traffic/file-size quota is hard-coded. A real account's present
+  plan-specific limits and live retention remain to be validated.
 - **Distribution rights:** JAR files are not automatically redistributable just
   because Crucible can read them. Preserve attribution/manifest information and
   respect author permissions and restricted-download rules. A non-redistributable

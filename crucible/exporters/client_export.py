@@ -20,6 +20,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +39,13 @@ _MRPACK_DEP = {
     "quilt": "quilt-loader",
 }
 _SERVER_ONLY_HINTS = ("spark", "server-only", "serverutilities", "ledger")
+# Only these KubeJS subfolders are appropriate to share with a client. In
+# particular, server_scripts/ and generated data/export dumps are never shipped.
+_KUBEJS_CLIENT_DIRS = frozenset({"client_scripts", "startup_scripts", "assets", "config"})
+_ALREADY_COMPRESSED_SUFFIXES = frozenset({
+    ".jar", ".zip", ".mrpack", ".7z", ".rar", ".gz", ".xz", ".zst", ".pdf",
+    ".png", ".jpg", ".jpeg", ".webp", ".gif", ".ogg", ".mp3", ".mp4", ".m4a",
+})
 
 
 @dataclass
@@ -84,21 +93,132 @@ def _is_server_only(name: str) -> bool:
     return any(h in low for h in _SERVER_ONLY_HINTS)
 
 
-def _config_dirs(server_path: Path) -> list:
-    out = []
-    # defaultconfigs/ is server-side defaults and can contain values meant to be copied
-    # to a server-created world, not ordinary player configuration. Keep it out
-    # of client exports unless a future explicit option opts in after showing
-    # the included paths.
-    for d in ("config", "kubejs"):
-        p = server_path / d
-        if p.is_dir():
-            out.append(p)
-    return out
+def _merge_config_dirs(
+    server_path: Path,
+    client_minecraft_root: Path | None,
+    temporary_root: Path,
+    *,
+    include_config: bool,
+    include_resourcepacks: bool,
+) -> tuple[list[Path], list[str]]:
+    """Stage client-shareable config/KubeJS and optional resource packs safely."""
+    merged_roots: list[Path] = []
+    warnings: list[str] = []
+
+    for dirname in (("config", "kubejs") if include_config else ()):
+        sources = [(server_path / dirname, "server")]
+        if client_minecraft_root is not None:
+            sources.append((client_minecraft_root / dirname, "client"))
+        sources = [(path, kind) for path, kind in sources if path.is_dir()]
+        if not sources:
+            continue
+
+        destination_root = temporary_root / dirname
+        destination_root.mkdir(parents=True, exist_ok=True)
+        for source_root, source_kind in sources:
+            if source_root.is_symlink():
+                raise OSError(f"Refusing to merge symbolic-link {source_kind} configuration root: {dirname}/")
+            root = source_root.resolve(strict=True)
+            excluded_kubejs_roots: set[str] = set()
+            for entry in sorted(source_root.rglob("*"), key=lambda item: item.as_posix()):
+                relative = entry.relative_to(source_root)
+                if dirname == "kubejs" and relative.parts and relative.parts[0] not in _KUBEJS_CLIENT_DIRS:
+                    excluded_root = relative.parts[0]
+                    if excluded_root not in excluded_kubejs_roots:
+                        excluded_kubejs_roots.add(excluded_root)
+                        if excluded_root == "server_scripts":
+                            warnings.append(
+                                "Excluded KubeJS/server_scripts/ from the player pack; server-side scripts stay on the managed server."
+                            )
+                        elif excluded_root in {"data", "exported"}:
+                            warnings.append(
+                                f"Excluded KubeJS/{excluded_root}/ from the player pack; data/generated files stay on the server."
+                            )
+                        else:
+                            suffix = "/" if (source_root / excluded_root).is_dir() else ""
+                            warnings.append(
+                                f"Excluded KubeJS/{excluded_root}{suffix} from the player pack because it is not in the client-safe folder allowlist."
+                            )
+                    continue
+                if entry.is_symlink():
+                    warnings.append(
+                        f"Excluded symlink from client configuration: {relative.as_posix()}."
+                    )
+                    continue
+                if entry.is_dir():
+                    continue
+                if not entry.is_file():
+                    raise OSError(
+                        f"Special files are not exported from {source_kind} {dirname}/: {relative.as_posix()}"
+                    )
+                resolved = entry.resolve(strict=True)
+                try:
+                    resolved.relative_to(root)
+                except ValueError as exc:
+                    raise OSError(
+                        f"Configuration file escapes its {source_kind} root: {relative.as_posix()}"
+                    ) from exc
+
+                target = destination_root / relative
+                if target.exists():
+                    if _sha256_file(target) != _sha256_file(resolved):
+                        if source_kind == "client":
+                            warnings.append(
+                                f"Client profile configuration differs from the server copy; the server file was kept: "
+                                f"{dirname}/{relative.as_posix()}."
+                            )
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(resolved, target)
+
+        merged_roots.append(destination_root)
+
+    if include_resourcepacks and client_minecraft_root is not None:
+        source_root = client_minecraft_root / "resourcepacks"
+        if source_root.is_dir():
+            if source_root.is_symlink():
+                raise OSError("Refusing to package a symbolic-link resourcepacks/ directory.")
+            resolved_root = source_root.resolve(strict=True)
+            destination_root = temporary_root / "resourcepacks"
+            destination_root.mkdir(parents=True, exist_ok=True)
+            copied = 0
+            for entry in sorted(source_root.rglob("*"), key=lambda item: item.as_posix()):
+                relative = entry.relative_to(source_root)
+                if entry.is_symlink():
+                    warnings.append(
+                        f"Excluded symlink from client resource packs: {relative.as_posix()}."
+                    )
+                    continue
+                if entry.is_dir():
+                    continue
+                if not entry.is_file():
+                    raise OSError(
+                        f"Special files are not exported from client resourcepacks/: {relative.as_posix()}"
+                    )
+                resolved = entry.resolve(strict=True)
+                try:
+                    resolved.relative_to(resolved_root)
+                except ValueError as exc:
+                    raise OSError(
+                        f"Resource pack file escapes its source root: {relative.as_posix()}"
+                    ) from exc
+                target = destination_root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(resolved, target)
+                copied += 1
+            if copied:
+                merged_roots.append(destination_root)
+                warnings.append(
+                    "Client resource packs from the selected Prism profile were included by explicit owner choice; review whether each pack is required and licensed for sharing."
+                )
+    # The same excluded KubeJS root can exist in both server and client source;
+    # report a warning once rather than making the review list noisy.
+    return merged_roots, list(dict.fromkeys(warnings))
 
 
 def export(instance, out_path, fmt: str = "mrpack", *,
-           include_config: bool = True, client_source: str = "") -> ExportResult:
+           include_config: bool = True, client_source: str = "",
+           include_resourcepacks: bool = False) -> ExportResult:
     """Build a client instance file from a server instance."""
     server = Path(getattr(instance, "path"))
     name = getattr(instance, "name", "Server")
@@ -119,6 +239,8 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         return ExportResult(error=(
             "Set the exact loader version in Setup before exporting a client; "
             "guessing a loader can make the pack unlaunchable."))
+    if include_resourcepacks and not client_source:
+        return ExportResult(error="Choose a matching Prism client source before including its resource packs.")
 
     # An export written inside the managed server could replace server.properties,
     # a config file, a world file, or another important input by accident.
@@ -138,6 +260,9 @@ def export(instance, out_path, fmt: str = "mrpack", *,
             if candidate.is_symlink():
                 return ExportResult(error=f"Refusing to export symbolic-link directory {dirname}/.")
 
+    client_minecraft_root = None
+    client_resourcepacks_present = False
+    client_shaderpacks_present = False
     from ..mods.mod_manager import ModManager, ModEntry
     inspector = ModManager(instance)
     ship, skipped, unknown = [], [], []
@@ -193,13 +318,49 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         for layout in (".minecraft", "minecraft"):
             if (source / layout).is_symlink():
                 return ExportResult(error=f"The client source has a symbolic-link {layout}/ directory. No archive was written.")
-        client_mods = source / ".minecraft" / "mods"
+        client_minecraft_root = source / ".minecraft"
+        client_mods = client_minecraft_root / "mods"
         if not client_mods.is_dir():
-            client_mods = source / "minecraft" / "mods"
+            client_minecraft_root = source / "minecraft"
+            client_mods = client_minecraft_root / "mods"
         if not client_mods.is_dir():
             return ExportResult(error="The source instance has no installed mods folder.")
         if client_mods.is_symlink():
             return ExportResult(error="The client source mods directory is a symbolic link. No archive was written.")
+        if include_config:
+            for dirname in ("config", "kubejs"):
+                candidate = client_minecraft_root / dirname
+                if candidate.is_symlink():
+                    return ExportResult(
+                        error=f"The client source has a symbolic-link {dirname}/ directory. No archive was written."
+                    )
+                if candidate.exists() and not candidate.is_dir():
+                    return ExportResult(
+                        error=f"The client source {dirname} path is not a directory. No archive was written."
+                    )
+        resourcepacks_candidate = client_minecraft_root / "resourcepacks"
+        shaderpacks_candidate = client_minecraft_root / "shaderpacks"
+        client_resourcepacks_present = resourcepacks_candidate.is_symlink()
+        if not resourcepacks_candidate.is_symlink() and resourcepacks_candidate.is_dir():
+            try:
+                client_resourcepacks_present = any(resourcepacks_candidate.iterdir())
+            except OSError:
+                client_resourcepacks_present = True
+        client_shaderpacks_present = shaderpacks_candidate.is_symlink()
+        if not shaderpacks_candidate.is_symlink() and shaderpacks_candidate.is_dir():
+            try:
+                client_shaderpacks_present = any(shaderpacks_candidate.iterdir())
+            except OSError:
+                client_shaderpacks_present = True
+        if include_resourcepacks:
+            if resourcepacks_candidate.is_symlink():
+                return ExportResult(
+                    error="The client source has a symbolic-link resourcepacks/ directory. No archive was written."
+                )
+            if resourcepacks_candidate.exists() and not resourcepacks_candidate.is_dir():
+                return ExportResult(
+                    error="The client source resourcepacks path is not a directory. No archive was written."
+                )
 
         names = {j.name for j in ship}
         hashes = {_sha256_file(j) for j in ship}
@@ -237,7 +398,6 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         source_conflicts = []
 
     excluded_defaultconfigs = include_config and (server / "defaultconfigs").is_dir()
-    cfg = _config_dirs(server) if include_config else []
 
     if fmt not in {"mrpack", "prism", "curseforge"}:
         return ExportResult(error=f"Unknown format: {fmt}")
@@ -246,25 +406,37 @@ def export(instance, out_path, fmt: str = "mrpack", *,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     partial = out_path.with_suffix(out_path.suffix + ".partial")
     try:
-        partial.unlink(missing_ok=True)
-        if fmt == "mrpack":
-            build_warnings = _build_mrpack(partial, name, mc, loader, loader_version, ship, cfg)
-        elif fmt == "prism":
-            build_warnings = _build_prism(partial, name, mc, loader, loader_version, ship, cfg)
-        else:
-            build_warnings = _build_curseforge(partial, name, mc, loader, loader_version, ship, cfg)
-        manifest = _seal_archive(
-            partial, fmt=fmt, name=name, minecraft_version=mc,
-            loader=loader, loader_version=loader_version,
-        )
-        # Reading each archive member through _seal_archive also validates its
-        # CRC. Keep memory use bounded for large player packs.
-        with zipfile.ZipFile(partial, "r") as check:
-            if manifest["path"] not in check.namelist():
-                raise OSError("ZIP verification failed: manifest missing")
-            json.loads(check.read(manifest["path"]))
-        archive_sha256 = _sha256_file(partial)
-        partial.replace(out_path)
+        # Merge server config first, then add client-profile-only config/KubeJS
+        # files. Where the same relative path differs, the server's copy remains
+        # authoritative and the conflict is surfaced for owner review.
+        with tempfile.TemporaryDirectory(prefix="crucible-client-config-") as cfg_tmp:
+            cfg, config_warnings = _merge_config_dirs(
+                server,
+                client_minecraft_root,
+                Path(cfg_tmp),
+                include_config=include_config,
+                include_resourcepacks=include_resourcepacks,
+            ) if include_config or include_resourcepacks else ([], [])
+            partial.unlink(missing_ok=True)
+            if fmt == "mrpack":
+                build_warnings = _build_mrpack(partial, name, mc, loader, loader_version, ship, cfg)
+            elif fmt == "prism":
+                build_warnings = _build_prism(partial, name, mc, loader, loader_version, ship, cfg)
+            else:
+                build_warnings = _build_curseforge(partial, name, mc, loader, loader_version, ship, cfg)
+            build_warnings = config_warnings + build_warnings
+            manifest = _seal_archive(
+                partial, fmt=fmt, name=name, minecraft_version=mc,
+                loader=loader, loader_version=loader_version,
+            )
+            # Reading each archive member through _seal_archive also validates its
+            # CRC. Keep memory use bounded for large player packs.
+            with zipfile.ZipFile(partial, "r") as check:
+                if manifest["path"] not in check.namelist():
+                    raise OSError("ZIP verification failed: manifest missing")
+                json.loads(check.read(manifest["path"]))
+            archive_sha256 = _sha256_file(partial)
+            partial.replace(out_path)
     except (OSError, zipfile.BadZipFile, ValueError) as e:
         partial.unlink(missing_ok=True)
         return ExportResult(error=f"Could not write {fmt} file: {e}")
@@ -272,6 +444,15 @@ def export(instance, out_path, fmt: str = "mrpack", *,
     warnings = ([f"{len(unknown)} mod(s) have unknown client compatibility; test this pack in Prism before sharing."] if unknown else [])
     if excluded_defaultconfigs:
         warnings.append("defaultconfigs/ was excluded from the client pack; review whether any required player config belongs in config/ or kubejs/.")
+    if client_resourcepacks_present and not include_resourcepacks:
+        warnings.append(
+            "The selected Prism profile contains resourcepacks/ content, but it was excluded by default. "
+            "Rebuild with the resource-pack option enabled only if these packs are required and cleared for sharing."
+        )
+    if client_shaderpacks_present:
+        warnings.append(
+            "Shaderpacks from the selected Prism profile were excluded; Crucible does not bundle shaderpacks in player shares."
+        )
     if client_unknown:
         shown = ", ".join(client_unknown[:8])
         if len(client_unknown) > 8:
@@ -324,7 +505,11 @@ def _add_dir(zf: zipfile.ZipFile, src: Path, arc_prefix: str) -> list[str]:
             resolved.relative_to(root)
         except ValueError as exc:
             raise OSError(f"File escapes its configuration root: {relative.as_posix()}") from exc
-        zf.write(resolved, f"{arc_prefix}/{f.relative_to(src.parent).as_posix()}")
+        archive_name = f"{arc_prefix}/{f.relative_to(src.parent).as_posix()}"
+        if resolved.suffix.lower() in _ALREADY_COMPRESSED_SUFFIXES:
+            zf.write(resolved, archive_name, compress_type=zipfile.ZIP_STORED)
+        else:
+            zf.write(resolved, archive_name)
     return warnings
 
 
@@ -492,6 +677,8 @@ def _seal_archive(
     scan_bytes = 0
     scan_incomplete_count = 0
     scan_incomplete_examples = []
+    unsupported_config_count = 0
+    unsupported_config_examples = []
     binary_config_skipped = 0
     privacy_findings_truncated = False
     with zipfile.ZipFile(archive_path, "r") as zf:
@@ -509,6 +696,10 @@ def _seal_archive(
             text_candidate = _is_text_config_entry(member_name)
             should_scan = False
             sample = bytearray()
+            if _is_config_entry(member_name) and not text_candidate:
+                unsupported_config_count += 1
+                if len(unsupported_config_examples) < 10:
+                    unsupported_config_examples.append(member_name)
             if text_candidate:
                 if info.file_size > _MAX_PRIVACY_FILE_BYTES:
                     scan_incomplete_count += 1
@@ -564,6 +755,14 @@ def _seal_archive(
             f"Privacy scan incomplete for {scan_incomplete_count} included config file(s): "
             f"{examples}{suffix}. Bounded size limits were reached; review these files manually before sharing."
         )
+    if unsupported_config_count:
+        examples = ", ".join(unsupported_config_examples)
+        more = unsupported_config_count - len(unsupported_config_examples)
+        suffix = f" (and {more} more)" if more else ""
+        privacy_warnings.append(
+            f"Privacy scan skipped {unsupported_config_count} config/KubeJS file(s) with unrecognized file types: "
+            f"{examples}{suffix}. Review these files manually before sharing."
+        )
     if privacy_findings_truncated:
         privacy_warnings.append(
             f"Privacy finding display was capped at {_MAX_PRIVACY_FINDINGS}; review all included config files manually before sharing."
@@ -578,7 +777,16 @@ def _seal_archive(
         "manifestPath": manifest_name,
         "privacyReview": {
             "scanner": "bounded heuristic pattern scan; this is not a guarantee that a pack contains no secrets",
-            "coverageComplete": not scan_incomplete_count and not binary_config_skipped and not privacy_findings_truncated,
+            "scope": (
+                "Scans eligible text files under included config/ and KubeJS/ roots only. "
+                "Binary/unknown config files, oversized files, mod JARs, resource packs, and other payloads are not inspected for secrets."
+            ),
+            "coverageComplete": (
+                not scan_incomplete_count
+                and not unsupported_config_count
+                and not binary_config_skipped
+                and not privacy_findings_truncated
+            ),
             "warnings": privacy_warnings,
         },
         "files": rows,

@@ -464,9 +464,9 @@ class MainWindow(QMainWindow):
             + "\n\nYou can start the server again now.")
 
     def _on_export_requested(self, instance: ServerInstance) -> None:
-        """Open the safe client exporter (mods/config only; no worlds/admin files)."""
-        from .client_export_dialog import ClientExportDialog
-        ClientExportDialog(instance, self, manager=self._manager).exec()
+        """Open the review-first player-sharing flow for this server."""
+        from .share_players_dialog import SharePlayersDialog
+        SharePlayersDialog(instance, self, manager=self._manager).exec()
 
     def _on_status_changed(self, instance_id: str, status: str) -> None:
         self._sidebar.update_status(instance_id, status)
