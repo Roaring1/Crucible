@@ -540,14 +540,24 @@ class ServerInstance:
         return False
 
     def server_port(self) -> str:
+        """Return the effective server-port value using Java's last-key-wins rule.
+
+        A missing key uses the vanilla default 25565. A present but blank key
+        stays blank so callers don't mistake an invalid port for that default.
+        """
         props = self.path_obj / "server.properties"
         if props.exists():
             try:
+                value: str | None = None
                 for line in props.read_text(encoding="utf-8", errors="replace").splitlines():
-                    if line.strip().startswith("server-port="):
-                        port = line.split("=", 1)[1].strip()
-                        if port:
-                            return port
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith(("#", "!")) or "=" not in line:
+                        continue
+                    key, _, raw_value = line.partition("=")
+                    if key.strip() == "server-port":
+                        value = raw_value.strip()
+                if value is not None:
+                    return value
             except OSError:
                 pass
         return "25565"
