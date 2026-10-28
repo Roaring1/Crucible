@@ -195,16 +195,24 @@ has been uploaded during implementation.
   exact archive-member/manifest agreement, every payload size/SHA-256 and ZIP CRC.
   Damaged/malformed cache entries are ignored and rebuilt; review acknowledgements
   are still required for every sharing session. Cached artifacts remain local.
+- [x] Keep a bounded local event history (last 50 events) for pack preparation
+  and Gofile upload outcomes, including source/archive fingerprints, local path,
+  size, provider, returned link, UTC timestamp, outcome category and remote
+  size/MD5 verification flags. History files/directories are owner-private and
+  atomic; only allowlisted fields are stored and raw exceptions/tokens are never
+  persisted. The UI clearly labels saved links as not re-verified.
 - [ ] Reuse a previously uploaded link only if the provider can confirm it is
   still valid. Otherwise explain that a new upload/link was created.
-- [ ] Keep a bounded export/upload history with fingerprint, local path, size,
-  checksum, provider, link, creation time, last verification, outcome and error.
-  Never persist provider secrets in the manifest or history.
-- [ ] Add cleanup and invalidation policies for old local artifacts and expired
-  provider links. Make deletion visible and never remove the only valid local
-  copy automatically.
-- [ ] Test no-change reuse, changed-mod rebuild, changed-config rebuild, expired
-  link recovery, interrupted upload, checksum mismatch, and retry.
+- [ ] Add visible cleanup/expiry handling for old local ZIP artifacts and expired
+  provider links. Clearing history forgets metadata only; it does not delete ZIPs
+  or claim to revoke remote links. Any future artifact deletion must be visible
+  and must never remove the only valid local copy automatically.
+- [x] Test bounded retention, no-secret persistence, safe-link validation, history
+  clear without ZIP deletion, and local-link/path display. Cache tests also cover
+  no-change reuse, changed-config rebuild, stale-fingerprint rejection and a
+  corrupted-cache rebuild.
+- [ ] Test link expiry/recovery, interrupted upload, checksum mismatch, and retry
+  across a real owner-approved Gofile upload and large-file soak run.
 
 ## Acceptance criteria for the complete workflow
 
