@@ -15,6 +15,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from .world_paths import (
+    UnsafeWorldPathError,
+    configured_world_path,
+    world_name_issue,
+    world_names,
+)
+
 # Files that indicate a runnable dedicated server is actually present
 # (as opposed to a client-only pack staging folder).
 _SERVER_LAUNCHER_GLOBS = [
@@ -406,71 +413,40 @@ class ServerInstance:
         return bundled
 
     def get_world_names(self) -> list[str]:
-        """
-        Return names of world directories present in the server folder.
-        Reads level-name from server.properties first (handles custom world names
-        like 'jojo's bizarre adventure diamond is unbreakable').
-        Falls back to scanning for standard world directory names.
-        """
+        """Return safe world folders configured for this server."""
         p = self.path_obj
-        found: list[str] = []
+        if world_name_issue(p):
+            return []
 
-        # Primary: read level-name from server.properties
-        props = p / "server.properties"
-        if props.exists():
-            try:
-                for line in props.read_text(encoding="utf-8", errors="replace").splitlines():
-                    line = line.strip()
-                    if line.startswith("level-name="):
-                        level_name = line.split("=", 1)[1].strip()
-                        if level_name and (p / level_name).exists():
-                            found.append(level_name)
-                        # Also check DIM dirs alongside the level-name dir
-                        nether = p / f"{level_name}_nether"
-                        the_end = p / f"{level_name}_the_end"
-                        if nether.exists():
-                            found.append(nether.name)
-                        if the_end.exists():
-                            found.append(the_end.name)
-                        break
-            except OSError:
-                pass
-
+        found = world_names(p)
         if found:
             return found
 
-        # Fallback: standard world dir names
-        for candidate in ["world", "world_nether", "world_the_end"]:
-            if (p / candidate).exists():
-                found.append(candidate)
+        # Preserve the legacy display fallback only when the configured path
+        # has passed validation. Never follow a symlink or escape the server
+        # root just to populate the world list.
+        root = p.resolve(strict=False)
+        for name in ("world", "world_nether", "world_the_end"):
+            candidate = p / name
+            try:
+                if (
+                    not candidate.is_symlink()
+                    and candidate.resolve(strict=False).parent == root
+                    and candidate.is_dir()
+                ):
+                    found.append(name)
+            except OSError:
+                continue
         return found
 
-    # World identification, sizing, and swap support (World Backup & Swap).
-    # These are read-only filesystem queries -- they never write anything.
-
     def world_root_path(self) -> Path:
-        """Absolute path to this server's world (level) folder.
+        """Return a safe direct-child world root.
 
-        Reads level-name from server.properties (default "world" -- the
-        vanilla/Forge/GTNH default). Does NOT check existence; a server that
-        has never been started won't have generated a world folder yet, so
-        callers must check world_root_path().exists()/.is_dir() themselves.
+        Raises UnsafeWorldPathError when level-name is unsafe, the server/world
+        root is a symlink, or the resolved path is not directly under this
+        server folder. Destructive callers must not guess a fallback path.
         """
-        p = self.path_obj
-        level_name = "world"
-        props = p / "server.properties"
-        if props.exists():
-            try:
-                for line in props.read_text(encoding="utf-8", errors="replace").splitlines():
-                    stripped = line.strip()
-                    if stripped.startswith("level-name="):
-                        candidate = stripped.split("=", 1)[1].strip()
-                        if candidate:
-                            level_name = candidate
-                        break
-            except OSError:
-                pass
-        return p / level_name
+        return configured_world_path(self.path_obj)
 
     def world_dimension_dirs(self) -> list[Path]:
         """List Forge/vanilla-style nested dimension folders (DIM*) found
@@ -487,7 +463,10 @@ class ServerInstance:
         "<level>_nether"/"<level>_the_end" folders -- see is_dimension_dir_name
         for why that convention doesn't apply to Crucible's Forge-first target.
         """
-        root = self.world_root_path()
+        try:
+            root = self.world_root_path()
+        except UnsafeWorldPathError:
+            return []
         if not root.is_dir():
             return []
         dims = []
@@ -507,7 +486,10 @@ class ServerInstance:
         accounting is needed. Returns 0 if the world hasn't been generated
         yet (server never started) or the folder is unreadable.
         """
-        root = self.world_root_path()
+        try:
+            root = self.world_root_path()
+        except UnsafeWorldPathError:
+            return 0
         if not root.is_dir():
             return 0
         total = 0
