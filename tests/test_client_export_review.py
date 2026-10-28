@@ -72,6 +72,79 @@ class ClientExportReviewTests(unittest.TestCase):
                 self.assertEqual(manifest["loaderVersion"], "21.1.233")
                 self.assertNotIn(secret, archive.read(manifest_path).decode("utf-8"))
 
+    def test_input_fingerprint_changes_when_client_payload_or_options_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            (server / "mods").mkdir(parents=True)
+            (server / "config").mkdir()
+            (server / "config" / "server.toml").write_text("value = 1\n", encoding="utf-8")
+            source = root / "client-profile"
+            (source / ".minecraft" / "mods").mkdir(parents=True)
+            (source / ".minecraft" / "config").mkdir()
+            (source / "mmc-pack.json").write_text(
+                json.dumps({"formatVersion": 1, "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.233"},
+                ]}), encoding="utf-8"
+            )
+            client_config = source / ".minecraft" / "config" / "client.toml"
+            client_config.write_text("value = 1\n", encoding="utf-8")
+            instance = self._instance(server)
+
+            first = client_export.compute_input_fingerprint(
+                instance, client_source=str(source), include_config=True, include_resourcepacks=False
+            )
+            self.assertEqual(len(first), 64)
+            self.assertNotIn(str(server), first)
+            self.assertNotIn(str(source), first)
+
+            client_config.write_text("value = 2\n", encoding="utf-8")
+            changed_payload = client_export.compute_input_fingerprint(
+                instance, client_source=str(source), include_config=True, include_resourcepacks=False
+            )
+            self.assertNotEqual(first, changed_payload)
+
+            changed_option = client_export.compute_input_fingerprint(
+                instance, client_source=str(source), include_config=True, include_resourcepacks=True
+            )
+            self.assertNotEqual(changed_payload, changed_option)
+
+    def test_export_refuses_a_source_that_changed_after_fingerprint_capture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            (server / "mods").mkdir(parents=True)
+            (server / "config").mkdir()
+            source = root / "profile"
+            (source / ".minecraft" / "mods").mkdir(parents=True)
+            (source / ".minecraft" / "config").mkdir()
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.233"},
+                ],
+            }), encoding="utf-8")
+            client_config = source / ".minecraft" / "config" / "client.toml"
+            client_config.write_text("value = 1\n", encoding="utf-8")
+            instance = self._instance(server)
+            baseline = client_export.compute_input_fingerprint(
+                instance, client_source=str(source), include_config=True, include_resourcepacks=False
+            )
+            client_config.write_text("value = 2\n", encoding="utf-8")
+
+            output = root / "changed-during-build.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", client_source=str(source),
+                expected_input_fingerprint=baseline,
+            )
+
+            self.assertFalse(result.ok)
+            self.assertIn("inputs changed", result.error.lower())
+            self.assertFalse(output.exists())
+            self.assertFalse(output.with_suffix(".zip.partial").exists())
+
     def test_config_paths_reject_backslash_based_traversal(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

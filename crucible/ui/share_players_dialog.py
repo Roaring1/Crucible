@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import tempfile
 import threading
 import zipfile
 from pathlib import Path
@@ -102,6 +104,207 @@ def _next_pack_path(directory: Path, name: str) -> Path:
             return candidate
 
 
+def _cache_metadata_path(archive_path: Path) -> Path:
+    return archive_path.with_suffix(archive_path.suffix + ".crucible-cache.json")
+
+
+def _is_sha256(value) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def _write_cache_metadata(result: client_export.ExportResult) -> None:
+    """Atomically persist non-secret cache metadata beside a private local ZIP."""
+    if not result.ok or not result.input_fingerprint or not result.archive_sha256:
+        return
+    archive_path = Path(result.path)
+    if archive_path.is_symlink() or not archive_path.is_file():
+        return
+    sidecar = _cache_metadata_path(archive_path)
+    if sidecar.is_symlink():
+        return
+    if len(result.skipped) > 1000 or len(result.warnings) > 1000:
+        return
+    if any(not isinstance(item, str) or len(item) > 8192 for item in result.warnings):
+        return
+    if any(not isinstance(item, str) or len(item) > 2048 for item in result.skipped):
+        return
+    metadata = {
+        "schemaVersion": 1,
+        "inputFingerprint": result.input_fingerprint,
+        "archiveSha256": result.archive_sha256,
+        "format": result.fmt,
+        "manifestPath": result.manifest_path,
+        "modCount": result.mod_count,
+        "skipped": list(result.skipped),
+        "warnings": list(result.warnings),
+    }
+    serialized_metadata = json.dumps(metadata, ensure_ascii=True, separators=(",", ":")) + "\n"
+    if len(serialized_metadata.encode("utf-8")) > 1024 * 1024:
+        return
+    temporary_name = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".crucible-cache-", suffix=".tmp", dir=str(archive_path.parent)
+        )
+        if os.name == "posix":
+            os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(serialized_metadata)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, sidecar)
+        temporary_name = None
+    except OSError:
+        # The ZIP remains usable; absent metadata merely means a future run
+        # will rebuild instead of trusting a cache entry it cannot validate.
+        return
+    finally:
+        if temporary_name:
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                pass
+
+
+def _verified_cached_pack(archive_path: Path, expected_fingerprint: str):
+    """Return a reusable Prism ZIP only after full archive and manifest validation."""
+    sidecar = _cache_metadata_path(archive_path)
+    try:
+        if (
+            archive_path.is_symlink()
+            or not archive_path.is_file()
+            or archive_path.stat().st_size <= 0
+            or sidecar.is_symlink()
+            or not sidecar.is_file()
+            or sidecar.stat().st_size > 1024 * 1024
+        ):
+            return None
+        if os.name == "posix" and (archive_path.stat().st_mode & 0o077 or sidecar.stat().st_mode & 0o077):
+            return None
+        metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+        if not isinstance(metadata, dict) or metadata.get("schemaVersion") != 1:
+            return None
+        if metadata.get("inputFingerprint") != expected_fingerprint or metadata.get("format") != "prism":
+            return None
+        expected_archive_sha = metadata.get("archiveSha256")
+        manifest_path = metadata.get("manifestPath")
+        mod_count = metadata.get("modCount")
+        warnings = metadata.get("warnings")
+        skipped = metadata.get("skipped")
+        if (
+            not _is_sha256(expected_archive_sha)
+            or not isinstance(manifest_path, str)
+            or not manifest_path
+            or isinstance(mod_count, bool)
+            or not isinstance(mod_count, int)
+            or mod_count < 0
+            or not isinstance(warnings, list)
+            or any(not isinstance(item, str) for item in warnings)
+            or not isinstance(skipped, list)
+            or any(not isinstance(item, str) for item in skipped)
+        ):
+            return None
+        actual_archive_sha = client_export._sha256_file(archive_path)
+        if actual_archive_sha != expected_archive_sha:
+            return None
+
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            infos = archive.infolist()
+            member_names = [item.filename for item in infos if not item.is_dir()]
+            all_names = [item.filename for item in infos]
+            if len(all_names) != len(set(all_names)):
+                return None
+            for info in infos:
+                if not info.is_dir():
+                    client_export._validate_archive_member_name(info.filename)
+            if manifest_path not in member_names:
+                return None
+            manifest = json.loads(archive.read(manifest_path).decode("utf-8"))
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("manifestPath") != manifest_path
+                or manifest.get("format") != "prism"
+                or manifest.get("inputFingerprint") != expected_fingerprint
+                or not isinstance(manifest.get("files"), list)
+            ):
+                return None
+            rows = manifest["files"]
+            expected_files = {}
+            for row in rows:
+                if not isinstance(row, dict):
+                    return None
+                row_path = row.get("path")
+                size = row.get("size_bytes")
+                digest = row.get("sha256")
+                if (
+                    not isinstance(row_path, str)
+                    or not row_path
+                    or row_path == manifest_path
+                    or not _is_sha256(digest)
+                    or isinstance(size, bool)
+                    or not isinstance(size, int)
+                    or size < 0
+                    or row_path in expected_files
+                ):
+                    return None
+                client_export._validate_archive_member_name(row_path)
+                expected_files[row_path] = (size, digest)
+            if set(member_names) != set(expected_files) | {manifest_path}:
+                return None
+            for name, (expected_size, expected_sha) in expected_files.items():
+                info = archive.getinfo(name)
+                if info.file_size != expected_size:
+                    return None
+                digest = hashlib.sha256()
+                count = 0
+                with archive.open(info, "r") as member:
+                    for chunk in iter(lambda: member.read(1024 * 1024), b""):
+                        count += len(chunk)
+                        digest.update(chunk)
+                if count != expected_size or digest.hexdigest() != expected_sha:
+                    return None
+
+        privacy_review = manifest.get("privacyReview")
+        if not isinstance(privacy_review, dict):
+            return None
+        return client_export.ExportResult(
+            path=str(archive_path),
+            fmt="prism",
+            mod_count=mod_count,
+            skipped=skipped[:1000],
+            warnings=warnings[:1000],
+            manifest_path=manifest_path,
+            included_files=list(expected_files),
+            archive_sha256=actual_archive_sha,
+            input_fingerprint=expected_fingerprint,
+        )
+    except (OSError, ValueError, TypeError, KeyError, zipfile.BadZipFile, RuntimeError):
+        return None
+
+
+def _find_reusable_pack(directory: Path, expected_fingerprint: str):
+    candidates = []
+    try:
+        for path in directory.glob("*.zip"):
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                candidates.append((path.stat().st_mtime_ns, path))
+            except OSError:
+                continue
+    except OSError:
+        return None
+    for _, path in sorted(candidates, key=lambda pair: pair[0], reverse=True):
+        result = _verified_cached_pack(path, expected_fingerprint)
+        if result is not None:
+            return result
+    return None
+
+
 class _PrepareWorker(QObject):
     done = pyqtSignal(object)
 
@@ -116,14 +319,42 @@ class _PrepareWorker(QObject):
 
     def run(self):
         try:
-            result = client_export.export(
+            fingerprint = client_export.compute_input_fingerprint(
                 self._instance,
-                self._output,
-                fmt="prism",
-                include_config=True,
                 client_source=self._client_source,
+                include_config=True,
                 include_resourcepacks=self._include_resourcepacks,
+                fmt="prism",
             )
+            result = _find_reusable_pack(self._output.parent, fingerprint)
+            if result is not None:
+                # This reservation was created before the worker started. A
+                # cache hit should reuse the existing immutable ZIP instead.
+                try:
+                    if (
+                        self._output != Path(result.path)
+                        and self._output.is_file()
+                        and not self._output.is_symlink()
+                        and self._output.stat().st_size == 0
+                    ):
+                        self._output.unlink()
+                except OSError:
+                    pass
+                result.warnings = [
+                    "Reused an existing local ZIP whose source fingerprint, archive checksum, manifest and payload hashes were verified."
+                ] + result.warnings
+            else:
+                result = client_export.export(
+                    self._instance,
+                    self._output,
+                    fmt="prism",
+                    include_config=True,
+                    client_source=self._client_source,
+                    include_resourcepacks=self._include_resourcepacks,
+                    expected_input_fingerprint=fingerprint,
+                )
+                if result.ok:
+                    _write_cache_metadata(result)
         except Exception as exc:
             result = client_export.ExportResult(error=f"Unexpected pack-build error: {exc}")
         if result.ok and os.name == "posix":
@@ -469,7 +700,7 @@ class SharePlayersDialog(QDialog):
         self._progress.setRange(0, 0)
         self._progress.setFormat("Preparing player pack…")
         self._progress.show()
-        self._status.setText("Checking versions, building ZIP, validating the archive and scanning configuration…")
+        self._status.setText("Checking source fingerprint/cache, then building or validating the ZIP and reviewing configuration…")
 
         base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)
         out_root = (Path(base) if base else Path.home() / ".local" / "share" / "crucible") / "player-packs"

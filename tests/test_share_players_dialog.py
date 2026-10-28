@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -86,6 +87,122 @@ class SharePlayersDialogTests(unittest.TestCase):
             self.assertEqual(second.name, "CreatePlus - Player Pack - v2.zip")
             self.assertEqual(first.read_bytes(), b"keep old pack")
 
+    def test_worker_reuses_verified_pack_and_rebuilds_after_input_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out_root = root / "player-packs"
+            out_root.mkdir(mode=0o700)
+            server = root / "server"
+            (server / "mods").mkdir(parents=True)
+            (server / "config").mkdir()
+            (server / "config" / "server.toml").write_text("server_value = 1\n", encoding="utf-8")
+            source = root / "working-prism"
+            (source / ".minecraft" / "mods").mkdir(parents=True)
+            (source / ".minecraft" / "config").mkdir()
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.233"},
+                ],
+            }), encoding="utf-8")
+            client_config = source / ".minecraft" / "config" / "client.toml"
+            client_config.write_text("client_value = 1\n", encoding="utf-8")
+            instance = SimpleNamespace(
+                name="CachePack", path=str(server), minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.233",
+            )
+
+            first_path = _next_pack_path(out_root, instance.name)
+            first_outcomes = []
+            first_worker = _PrepareWorker(instance, first_path, str(source), False)
+            first_worker.done.connect(first_outcomes.append)
+            first_worker.run()
+            self.assertEqual(len(first_outcomes), 1)
+            self.assertTrue(first_outcomes[0].ok, first_outcomes[0].error)
+            first_result = first_outcomes[0]
+            self.assertTrue(first_result.input_fingerprint)
+            cache_sidecar = first_path.with_suffix(first_path.suffix + ".crucible-cache.json")
+            self.assertTrue(cache_sidecar.is_file())
+            with zipfile.ZipFile(first_path, "r") as archive:
+                manifest = json.loads(archive.read(first_result.manifest_path))
+            self.assertEqual(manifest["inputFingerprint"], first_result.input_fingerprint)
+            self.assertNotIn(str(source), json.dumps(manifest))
+            if os.name == "posix":
+                self.assertEqual(first_path.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(cache_sidecar.stat().st_mode & 0o777, 0o600)
+
+            second_path = _next_pack_path(out_root, instance.name)
+            second_outcomes = []
+            second_worker = _PrepareWorker(instance, second_path, str(source), False)
+            second_worker.done.connect(second_outcomes.append)
+            with patch(
+                "crucible.ui.share_players_dialog.client_export.export",
+                side_effect=AssertionError("unchanged inputs should reuse the ZIP"),
+            ):
+                second_worker.run()
+            self.assertEqual(len(second_outcomes), 1)
+            self.assertTrue(second_outcomes[0].ok, second_outcomes[0].error)
+            self.assertEqual(Path(second_outcomes[0].path), first_path)
+            self.assertEqual(second_outcomes[0].archive_sha256, first_result.archive_sha256)
+            self.assertTrue(any("Reused an existing local ZIP" in warning for warning in second_outcomes[0].warnings))
+            self.assertFalse(second_path.exists(), "the unused filename reservation should be removed on a cache hit")
+
+            client_config.write_text("client_value = 2\n", encoding="utf-8")
+            third_path = _next_pack_path(out_root, instance.name)
+            third_outcomes = []
+            third_worker = _PrepareWorker(instance, third_path, str(source), False)
+            third_worker.done.connect(third_outcomes.append)
+            third_worker.run()
+            self.assertEqual(len(third_outcomes), 1)
+            self.assertTrue(third_outcomes[0].ok, third_outcomes[0].error)
+            self.assertEqual(Path(third_outcomes[0].path), third_path)
+            self.assertNotEqual(third_outcomes[0].input_fingerprint, first_result.input_fingerprint)
+            self.assertTrue(third_path.with_suffix(third_path.suffix + ".crucible-cache.json").is_file())
+
+    def test_worker_rebuilds_instead_of_reusing_a_corrupted_cache_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out_root = root / "player-packs"
+            out_root.mkdir(mode=0o700)
+            server = root / "server"
+            (server / "mods").mkdir(parents=True)
+            (server / "config").mkdir()
+            source = root / "working-prism"
+            (source / ".minecraft" / "mods").mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.233"},
+                ],
+            }), encoding="utf-8")
+            instance = SimpleNamespace(
+                name="CorruptCache", path=str(server), minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.233",
+            )
+
+            first_path = _next_pack_path(out_root, instance.name)
+            first_outcomes = []
+            first_worker = _PrepareWorker(instance, first_path, str(source), False)
+            first_worker.done.connect(first_outcomes.append)
+            first_worker.run()
+            self.assertTrue(first_outcomes[0].ok, first_outcomes[0].error)
+            first_path.write_bytes(b"corrupted archive bytes")
+
+            second_path = _next_pack_path(out_root, instance.name)
+            second_outcomes = []
+            second_worker = _PrepareWorker(instance, second_path, str(source), False)
+            second_worker.done.connect(second_outcomes.append)
+            second_worker.run()
+
+            self.assertTrue(second_outcomes[0].ok, second_outcomes[0].error)
+            self.assertEqual(Path(second_outcomes[0].path), second_path)
+            with zipfile.ZipFile(second_path, "r") as archive:
+                self.assertIsNone(archive.testzip())
+                manifest = json.loads(archive.read(second_outcomes[0].manifest_path))
+            self.assertEqual(manifest["inputFingerprint"], second_outcomes[0].input_fingerprint)
+
     def test_symlinked_player_pack_directory_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -131,6 +248,9 @@ class SharePlayersDialogTests(unittest.TestCase):
             outcomes = []
             worker.done.connect(outcomes.append)
             with patch(
+                "crucible.ui.share_players_dialog.client_export.compute_input_fingerprint",
+                return_value="b" * 64,
+            ), patch(
                 "crucible.ui.share_players_dialog.client_export.export",
                 return_value=ExportResult(
                     path=str(path),

@@ -59,6 +59,7 @@ class ExportResult:
     manifest_path: str = ""
     included_files: list = field(default_factory=list)
     archive_sha256: str = ""
+    input_fingerprint: str = ""
 
     @property
     def ok(self) -> bool:
@@ -86,6 +87,153 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _fingerprint_input_tree(root: Path, *, label: str, top_level_jars: bool = False) -> list[dict]:
+    """Hash files that can affect an export without following symlinks."""
+    if root.is_symlink():
+        return [{"label": label, "state": "symlink-root"}]
+    if not root.exists():
+        return [{"label": label, "state": "missing"}]
+    if not root.is_dir():
+        return [{"label": label, "state": "not-directory"}]
+
+    if top_level_jars:
+        candidates = sorted(root.glob("*.jar"), key=lambda item: (item.name.casefold(), item.name))
+    else:
+        candidates = sorted(root.rglob("*"), key=lambda item: (item.as_posix().casefold(), item.as_posix()))
+
+    rows: list[dict] = []
+    for path in candidates:
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            rows.append({"label": label, "path": relative, "state": "symlink"})
+            continue
+        if path.is_dir():
+            if not top_level_jars:
+                rows.append({"label": label, "path": relative, "state": "directory"})
+            continue
+        if not path.is_file():
+            # The exporter rejects special entries under configuration roots;
+            # fail closed here rather than letting a cache hide the problem.
+            raise OSError(f"Cannot fingerprint special input file: {relative}")
+        before = path.stat()
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        after = path.stat()
+        signature_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        signature_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+        if signature_before != signature_after:
+            raise OSError(f"Input changed while its fingerprint was computed: {relative}")
+        rows.append({
+            "label": label,
+            "path": relative,
+            "size": after.st_size,
+            "sha256": digest.hexdigest(),
+        })
+    return rows
+
+
+def compute_input_fingerprint(
+    instance,
+    *,
+    client_source: str = "",
+    include_config: bool = True,
+    include_resourcepacks: bool = False,
+    fmt: str = "prism",
+) -> str:
+    """Return a deterministic hash of the source data and options for a client export.
+
+    The fingerprint is opaque: local absolute paths contribute to the hash but
+    are never embedded in the archive. File content hashes, relative names,
+    exact game/loader versions, source-profile identity and export options are
+    included. Excluded resource packs are represented only by their presence,
+    because that affects the review warning but not the archive payload.
+    """
+    server = Path(getattr(instance, "path")).expanduser()
+    if not server.is_dir() or server.is_symlink():
+        raise OSError("The server folder is unavailable for fingerprinting.")
+    server = server.resolve(strict=True)
+    name = getattr(instance, "name", "Server")
+    mc = (getattr(instance, "minecraft_version", "") or "").strip()
+    loader = (getattr(instance, "loader", "vanilla") or "vanilla").strip().lower()
+    loader_version = (getattr(instance, "loader_version", "") or "").strip()
+
+    source: Path | None = None
+    client_root: Path | None = None
+    if client_source:
+        source = Path(client_source).expanduser()
+        if source.is_symlink() or not source.is_dir():
+            raise OSError("The selected Prism source is unavailable for fingerprinting.")
+        source = source.resolve(strict=True)
+        prism_root = source / ".minecraft"
+        multimc_root = source / "minecraft"
+        if prism_root.is_symlink() or multimc_root.is_symlink():
+            raise OSError("The selected Prism source has a symbolic-link Minecraft directory.")
+        if (prism_root / "mods").is_dir():
+            client_root = prism_root
+        elif (multimc_root / "mods").is_dir():
+            client_root = multimc_root
+        else:
+            raise OSError("The selected Prism source has no installed mods folder.")
+        mmc_pack = source / "mmc-pack.json"
+        if mmc_pack.is_symlink() or not mmc_pack.is_file():
+            raise OSError("The selected Prism source has no regular mmc-pack.json.")
+
+    records: list[dict] = []
+    records.extend(_fingerprint_input_tree(server / "mods", label="server-mods", top_level_jars=True))
+    if include_config:
+        records.extend(_fingerprint_input_tree(server / "config", label="server-config"))
+        records.extend(_fingerprint_input_tree(server / "kubejs", label="server-kubejs"))
+    records.append({
+        "label": "defaultconfigs-review-warning",
+        "present": bool(include_config and (server / "defaultconfigs").is_dir()),
+    })
+
+    client_resourcepacks_present = False
+    client_shaderpacks_present = False
+    if source is not None and client_root is not None:
+        mmc = source / "mmc-pack.json"
+        records.append({
+            "label": "client-mmc-pack",
+            "sha256": _sha256_file(mmc),
+            "size": mmc.stat().st_size,
+        })
+        records.extend(_fingerprint_input_tree(client_root / "mods", label="client-mods", top_level_jars=True))
+        if include_config:
+            records.extend(_fingerprint_input_tree(client_root / "config", label="client-config"))
+            records.extend(_fingerprint_input_tree(client_root / "kubejs", label="client-kubejs"))
+
+        resourcepacks = client_root / "resourcepacks"
+        shaderpacks = client_root / "shaderpacks"
+        client_resourcepacks_present = resourcepacks.is_symlink() or (
+            resourcepacks.is_dir() and any(resourcepacks.iterdir())
+        )
+        client_shaderpacks_present = shaderpacks.is_symlink() or (
+            shaderpacks.is_dir() and any(shaderpacks.iterdir())
+        )
+        if include_resourcepacks:
+            records.extend(_fingerprint_input_tree(resourcepacks, label="client-resourcepacks"))
+        records.append({"label": "client-resourcepacks-review-warning", "present": client_resourcepacks_present})
+        records.append({"label": "client-shaderpacks-review-warning", "present": client_shaderpacks_present})
+
+    material = {
+        "schema": 1,
+        "format": fmt,
+        "server_root": str(server),
+        "client_source": str(source) if source is not None else "",
+        "instance_name": str(name),
+        "minecraft_version": mc,
+        "loader": loader,
+        "loader_version": loader_version,
+        "include_config": bool(include_config),
+        "include_resourcepacks": bool(include_resourcepacks),
+        "inputs": records,
+    }
+    encoded = json.dumps(material, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _is_server_only(name: str) -> bool:
@@ -218,7 +366,8 @@ def _merge_config_dirs(
 
 def export(instance, out_path, fmt: str = "mrpack", *,
            include_config: bool = True, client_source: str = "",
-           include_resourcepacks: bool = False) -> ExportResult:
+           include_resourcepacks: bool = False,
+           expected_input_fingerprint: str = "") -> ExportResult:
     """Build a client instance file from a server instance."""
     server = Path(getattr(instance, "path"))
     name = getattr(instance, "name", "Server")
@@ -406,6 +555,21 @@ def export(instance, out_path, fmt: str = "mrpack", *,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     partial = out_path.with_suffix(out_path.suffix + ".partial")
     try:
+        if fmt == "prism":
+            if expected_input_fingerprint:
+                if not re.fullmatch(r"[0-9a-f]{64}", expected_input_fingerprint):
+                    raise OSError("The expected input fingerprint is invalid.")
+                input_fingerprint = expected_input_fingerprint
+            else:
+                input_fingerprint = compute_input_fingerprint(
+                    instance,
+                    client_source=client_source,
+                    include_config=include_config,
+                    include_resourcepacks=include_resourcepacks,
+                    fmt=fmt,
+                )
+        else:
+            input_fingerprint = ""
         # Merge server config first, then add client-profile-only config/KubeJS
         # files. Where the same relative path differs, the server's copy remains
         # authoritative and the conflict is surfaced for owner review.
@@ -428,6 +592,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
             manifest = _seal_archive(
                 partial, fmt=fmt, name=name, minecraft_version=mc,
                 loader=loader, loader_version=loader_version,
+                input_fingerprint=input_fingerprint,
             )
             # Reading each archive member through _seal_archive also validates its
             # CRC. Keep memory use bounded for large player packs.
@@ -436,6 +601,14 @@ def export(instance, out_path, fmt: str = "mrpack", *,
                     raise OSError("ZIP verification failed: manifest missing")
                 json.loads(check.read(manifest["path"]))
             archive_sha256 = _sha256_file(partial)
+            if input_fingerprint and compute_input_fingerprint(
+                instance,
+                client_source=client_source,
+                include_config=include_config,
+                include_resourcepacks=include_resourcepacks,
+                fmt=fmt,
+            ) != input_fingerprint:
+                raise OSError("Client-pack inputs changed before the ZIP could be finalized. Rebuild and review the stable source before sharing.")
             partial.replace(out_path)
     except (OSError, zipfile.BadZipFile, ValueError) as e:
         partial.unlink(missing_ok=True)
@@ -481,6 +654,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         manifest_path=manifest["path"],
         included_files=[row["path"] for row in manifest["files"]],
         archive_sha256=archive_sha256,
+        input_fingerprint=input_fingerprint,
     )
 
 
@@ -665,6 +839,7 @@ def _seal_archive(
     minecraft_version: str,
     loader: str,
     loader_version: str,
+    input_fingerprint: str = "",
 ) -> dict:
     """Validate member paths, hash all content, scan included config, and embed a manifest."""
     manifest_name = (
@@ -775,6 +950,7 @@ def _seal_archive(
         "loader": loader,
         "loaderVersion": loader_version,
         "manifestPath": manifest_name,
+        "inputFingerprint": input_fingerprint,
         "privacyReview": {
             "scanner": "bounded heuristic pattern scan; this is not a guarantee that a pack contains no secrets",
             "scope": (
