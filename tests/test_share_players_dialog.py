@@ -908,6 +908,157 @@ class SharePlayersDialogTests(unittest.TestCase):
         dialog.close()
 
 
+    def test_stale_input_upload_result_clears_approvals_and_blocks_upload(self):
+        dialog = self._dialog()
+        dialog._phase = "uploading"
+        dialog._review_ack.setEnabled(True)
+        dialog._license_ack.setEnabled(True)
+        dialog._public_ack.setEnabled(True)
+        dialog._review_ack.setChecked(True)
+        dialog._license_ack.setChecked(True)
+        dialog._public_ack.setChecked(True)
+        dialog._source.setEnabled(False)
+        dialog._resourcepacks.setEnabled(False)
+
+        dialog._on_upload_done({
+            "result": None,
+            "error": "The server or Prism client files changed after this ZIP was built.",
+            "cancelled": False,
+            "stale_inputs": True,
+        })
+
+        self.assertEqual(dialog._phase, "stale-review")
+        self.assertFalse(dialog._review_ack.isChecked())
+        self.assertFalse(dialog._license_ack.isChecked())
+        self.assertFalse(dialog._public_ack.isChecked())
+        self.assertFalse(dialog._review_ack.isEnabled())
+        self.assertFalse(dialog._license_ack.isEnabled())
+        self.assertFalse(dialog._public_ack.isEnabled())
+        self.assertFalse(dialog._upload_btn.isEnabled())
+        self.assertTrue(dialog._prepare_btn.isEnabled())
+        self.assertTrue(dialog._source.isEnabled())
+        self.assertTrue(dialog._resourcepacks.isEnabled())
+        self.assertIn("changed after this ZIP was built", dialog._status.text())
+        dialog.close()
+
+    def test_upload_worker_blocks_network_when_inputs_changed_after_review(self):
+        class RecordingProvider:
+            name = "Recording provider"
+
+            def __init__(self):
+                self.called = False
+
+            def upload_file(self, path, *, expected_sha256, progress_cb=None, cancel_event=None):
+                self.called = True
+                return None
+
+        provider = RecordingProvider()
+        worker = _UploadWorker(
+            provider,
+            Path("synthetic-pack.zip"),
+            "a" * 64,
+            threading.Event(),
+            instance=SimpleNamespace(path="/synthetic-server", name="Demo Server"),
+            client_source="/synthetic-prism",
+            include_resourcepacks=False,
+            expected_input_fingerprint="b" * 64,
+        )
+        outcomes = []
+        worker.done.connect(outcomes.append)
+        with patch(
+            "crucible.ui.share_players_dialog.client_export.compute_input_fingerprint",
+            return_value="c" * 64,
+        ) as fingerprint:
+            worker.run()
+
+        fingerprint.assert_called_once_with(
+            worker._instance,
+            client_source="/synthetic-prism",
+            include_config=True,
+            include_resourcepacks=False,
+            fmt="prism",
+        )
+        self.assertFalse(provider.called, "stale source inputs must block any network upload")
+        self.assertEqual(len(outcomes), 1)
+        self.assertTrue(outcomes[0]["stale_inputs"])
+        self.assertIn("changed after this ZIP was built", outcomes[0]["error"])
+
+    def test_upload_worker_allows_upload_when_inputs_still_match(self):
+        class RecordingProvider:
+            name = "Recording provider"
+
+            def __init__(self):
+                self.called = False
+
+            def upload_file(self, path, *, expected_sha256, progress_cb=None, cancel_event=None):
+                self.called = True
+                return GofileUploadResult(
+                    download_url="https://gofile.io/d/TestFile123",
+                    file_id="synthetic-id",
+                    file_name="synthetic-pack.zip",
+                    file_size=10,
+                    local_sha256="a" * 64,
+                    remote_md5="",
+                    size_verified=False,
+                    md5_verified=False,
+                )
+
+        provider = RecordingProvider()
+        worker = _UploadWorker(
+            provider,
+            Path("synthetic-pack.zip"),
+            "a" * 64,
+            threading.Event(),
+            instance=SimpleNamespace(path="/synthetic-server", name="Demo Server"),
+            client_source="/synthetic-prism",
+            include_resourcepacks=False,
+            expected_input_fingerprint="b" * 64,
+        )
+        outcomes = []
+        worker.done.connect(outcomes.append)
+        with patch(
+            "crucible.ui.share_players_dialog.client_export.compute_input_fingerprint",
+            return_value="b" * 64,
+        ) as fingerprint:
+            worker.run()
+
+        fingerprint.assert_called_once()
+        self.assertTrue(provider.called)
+        self.assertEqual(len(outcomes), 1)
+        self.assertFalse(outcomes[0].get("stale_inputs", False))
+        self.assertEqual(outcomes[0]["result"].download_url, "https://gofile.io/d/TestFile123")
+        self.assertFalse(outcomes[0]["error"])
+
+    def test_upload_worker_fails_closed_when_input_revalidation_fails(self):
+        class RecordingProvider:
+            name = "Recording provider"
+
+            def upload_file(self, path, *, expected_sha256, progress_cb=None, cancel_event=None):
+                self.fail("provider must not be called")
+
+        worker = _UploadWorker(
+            RecordingProvider(),
+            Path("synthetic-pack.zip"),
+            "a" * 64,
+            threading.Event(),
+            instance=SimpleNamespace(path="/synthetic-server", name="Demo Server"),
+            client_source="/synthetic-prism",
+            include_resourcepacks=False,
+            expected_input_fingerprint="b" * 64,
+        )
+        outcomes = []
+        worker.done.connect(outcomes.append)
+        with patch(
+            "crucible.ui.share_players_dialog.client_export.compute_input_fingerprint",
+            side_effect=OSError("synthetic source disappeared"),
+        ):
+            worker.run()
+
+        self.assertEqual(len(outcomes), 1)
+        self.assertTrue(outcomes[0]["stale_inputs"])
+        self.assertIn("could not revalidate", outcomes[0]["error"])
+        self.assertNotIn("synthetic source disappeared", outcomes[0]["error"])
+
     def test_unexpected_provider_exception_does_not_echo_sensitive_details(self):
         secret = "private-owner-token-value"
 
