@@ -35,7 +35,7 @@ from . import netfix
 
 def _listening_ipv4_addresses(
     port: int, proc_net_tcp: Path = Path("/proc/net/tcp")
-) -> list[str]:
+) -> list[str] | None:
     """Read IPv4 TCP LISTEN sockets from procfs, excluding transient TIME_WAIT.
 
     Crucible is a Linux/tmux application. Procfs provides a dependency-free,
@@ -50,7 +50,9 @@ def _listening_ipv4_addresses(
             encoding="ascii", errors="replace"
         ).splitlines()[1:]
     except OSError:
-        return []
+        # None is intentionally distinct from an empty list. The caller must
+        # not treat an inaccessible procfs file as evidence that the port is free.
+        return None
 
     addresses: set[str] = set()
     for line in lines:
@@ -335,6 +337,13 @@ class TmuxManager:
             return None
 
         listeners = _listening_ipv4_addresses(port)
+        if listeners is None:
+            return (
+                f"Crucible could not verify whether port {port} for '{instance.name}' "
+                "is already in use because /proc/net/tcp could not be read. "
+                "Crucible did not start this server to avoid a possible port collision. "
+                "Check local process/socket visibility and retry."
+            )
         if not listeners:
             return None
         if bind_ip == "0.0.0.0":

@@ -2,6 +2,7 @@
 
 ## v0.8.0 — Server-manager refinement
 
+- Port-preflight safety: if Crucible cannot read `/proc/net/tcp` to check a configured port, it now reports the check as unknown and refuses to assume the port is free.
 - Legacy loader detection: infer a missing loader from exact server launcher artifacts (including old Forge universal JARs) for read-only features such as TPS polling, while explicit registry metadata remains authoritative. Normalize human-labelled Minecraft version metadata too.
 - Port reporting: `server_port()` now honors Java's last-property-value rule for duplicate `server-port` entries, and the connection-address buttons refuse to copy an invalid port instead of fabricating an `IP:port` string.
 - Startup safety: check live local IPv4 TCP listeners before launching a server and explain a port collision before creating a tmux session; ignore transient TIME_WAIT sockets and fail open if procfs cannot be inspected.

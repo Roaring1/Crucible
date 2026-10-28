@@ -45,10 +45,10 @@ class ListeningSocketParserTests(unittest.TestCase):
             )
             self.assertEqual(_listening_ipv4_addresses(25566, proc_file), ["0.0.0.0"])
 
-    def test_unreadable_proc_file_is_unknown_not_a_crash(self):
+    def test_unreadable_proc_file_is_unknown_not_an_empty_listener_list(self):
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "missing"
-            self.assertEqual(_listening_ipv4_addresses(25566, missing), [])
+            self.assertIsNone(_listening_ipv4_addresses(25566, missing))
 
 
 class PortConflictGuardTests(unittest.TestCase):
@@ -71,6 +71,18 @@ class PortConflictGuardTests(unittest.TestCase):
                 message = tm._port_conflict_message(inst)
             self.assertIn("Port 25566", message)
             self.assertIn("127.0.0.1:25566", message)
+            self.assertIn("did not start", message)
+
+    def test_procfs_unreadable_blocks_start_instead_of_assuming_port_is_free(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inst = self._instance(Path(tmp))
+            tm = TmuxManager()
+            with patch(
+                "crucible.process.tmux_manager._listening_ipv4_addresses",
+                return_value=None,
+            ):
+                message = tm._port_conflict_message(inst)
+            self.assertIn("could not verify", message)
             self.assertIn("did not start", message)
 
     def test_specific_bind_ignores_listener_on_unrelated_local_address(self):
