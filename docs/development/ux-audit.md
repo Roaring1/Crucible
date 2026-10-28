@@ -107,5 +107,14 @@ The phased design, safety requirements, and acceptance checks are in the
 exporter excludes `defaultconfigs/`, saves an optional verified Prism source
 after successful export, and includes a bounded privacy scanner and SHA-256
 manifest. A clean Prism 11.1.1 import has been verified in an isolated test root.
-Gofile upload, explicit pre-upload file review, and the one-click sharing UI
-remain open work.
+The follow-up introduces a Gofile provider, streamed/cancellable uploads, and a
+review-first **Share with players** flow. A saved Prism profile supplies missing
+client-only mods and client-profile config/KubeJS files; server config is
+authoritative when a path conflicts. The upload gate shows every included file
+and per-file checksum, privacy findings and scan gaps, JAR license warnings and
+each explicitly included resource pack. It includes only client-relevant KubeJS
+folders; server scripts/data dumps stay out. Resource packs are opt-in and
+shaderpacks remain excluded. The local sharing folder/ZIP are restricted to the
+current user on POSIX. Provider behavior is mock-tested; no live Gofile
+upload has been performed. Live upload and large-file cancel/retry remain open
+under issue #5.

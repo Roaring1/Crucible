@@ -339,7 +339,7 @@ class Sidebar(QWidget):
         copy_path_act    = menu.addAction("📋  Copy server path")
         menu.addSeparator()
         fixload_act = menu.addAction("🩺  Fix loading errors…")
-        export_act  = menu.addAction("📤  Export for Prism…")
+        export_act  = menu.addAction("📤  Share with players…")
         menu.addSeparator()
         remove_act  = menu.addAction("🗑  Remove from Crucible…")
 
