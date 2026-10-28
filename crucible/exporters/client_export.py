@@ -26,6 +26,8 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..mods import distribution_catalog
+
 _PRISM_UID = {
     "forge": "net.minecraftforge",
     "neoforge": "net.neoforged",
@@ -183,6 +185,7 @@ def compute_input_fingerprint(
             raise OSError("The selected Prism source has no regular mmc-pack.json.")
 
     records: list[dict] = []
+    records.append({"label": "distribution-catalog", "revision": distribution_catalog.catalog_revision()})
     records.extend(_fingerprint_input_tree(server / "mods", label="server-mods", top_level_jars=True))
     if include_config:
         records.extend(_fingerprint_input_tree(server / "config", label="server-config"))
@@ -234,6 +237,52 @@ def compute_input_fingerprint(
     }
     encoded = json.dumps(material, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _archive_mod_member(fmt: str, instance_name: str, filename: str) -> str:
+    if fmt == "prism":
+        return f"{_safe_name(instance_name)}/.minecraft/mods/{filename}"
+    return f"overrides/mods/{filename}"
+
+
+def _write_download_requirements(archive_path: Path, fmt: str, instance_name: str, requirements: list[dict]) -> None:
+    """Embed transparent manual-install instructions for curated non-redistributable artifacts."""
+    if not requirements:
+        return
+    prefix = _safe_name(instance_name) if fmt == "prism" else "overrides"
+    guide_path = f"{prefix}/CRUCIBLE-MOD-DOWNLOADS.txt"
+    lines = [
+        "Crucible did not bundle the following exact JAR artifact(s) because its curated",
+        "distribution catalog marks those bytes as prohibited for redistribution.",
+        "This instance may not start until you obtain and install the required mod(s).",
+        "",
+        "For each item below, use the reviewed alternative download page and choose the",
+        "compatible version. Import/open the pack in the target launcher first, then",
+        "close that instance before copying the downloaded JAR into its mods folder.",
+        "For Prism this is typically .minecraft/mods/; then relaunch the instance.",
+        "Do not copy the original server JAR; only use a source you are allowed to download.",
+        "",
+    ]
+    for index, item in enumerate(requirements, start=1):
+        lines.extend([
+            f"{index}. {item['filename']} ({item.get('modId') or 'mod ID not recorded'} {item.get('modVersion') or ''})".rstrip(),
+            f"   Project: {item['projectUrl']}",
+            f"   Reviewed alternative download: {item['alternativeDownloadUrl']}",
+            f"   Catalog evidence: {item['evidenceUrl']}",
+            f"   Evidence checked: {item['verifiedOn']}",
+            f"   SHA-256 of the excluded local artifact: {item['sha256']}",
+            "",
+        ])
+    lines.extend([
+        "The alternative page was curated as a permitted source, but this file cannot",
+        "verify what you ultimately download. Confirm the mod/version and its terms.",
+        "",
+    ])
+    with zipfile.ZipFile(archive_path, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+        if guide_path in archive.namelist():
+            raise OSError("Generated mod-download instructions collide with an existing archive member.")
+        _validate_archive_member_name(guide_path)
+        archive.writestr(guide_path, "\n".join(lines))
 
 
 def _is_server_only(name: str) -> bool:
@@ -550,6 +599,85 @@ def export(instance, out_path, fmt: str = "mrpack", *,
 
     if fmt not in {"mrpack", "prism", "curseforge"}:
         return ExportResult(error=f"Unknown format: {fmt}")
+
+    try:
+        catalog = distribution_catalog.load_catalog()
+    except (distribution_catalog.DistributionCatalogError, OSError) as exc:
+        return ExportResult(error=f"Could not verify the curated mod distribution catalog; no client pack was written: {exc}")
+
+    distribution_review = []
+    required_downloads = []
+    distributable_ship = []
+    distribution_warnings = []
+    for jar in ship:
+        digest = _sha256_file(jar)
+        member_path = _archive_mod_member(fmt, name, jar.name)
+        record = catalog.lookup(digest)
+        if record is None:
+            review_row = {
+                "path": member_path,
+                "filename": jar.name,
+                "sha256": digest,
+                "modId": "",
+                "modVersion": "",
+                "decision": "unverified",
+                "projectUrl": "",
+                "evidenceUrl": "",
+                "verifiedOn": "",
+                "basis": "No curated record matches this exact JAR SHA-256.",
+                "license": "",
+                "licenseUrl": "",
+                "conditions": [],
+                "alternativeDownloadUrl": "",
+                "notes": "",
+                "bundled": True,
+            }
+            distributable_ship.append(jar)
+            distribution_warnings.append(
+                f"No curated distribution record matches the exact SHA-256 of {jar.name}; redistribution remains unverified."
+            )
+        else:
+            review_row = record.review_entry(
+                archive_path=member_path,
+                filename=jar.name,
+                bundled=record.decision != "prohibited",
+            )
+            if record.decision == "prohibited":
+                if not record.alternative_download_url:
+                    return ExportResult(error=(
+                        f"Cannot build a complete player pack: the curated catalog marks {jar.name} "
+                        f"(SHA-256 {digest}) as prohibited for redistribution and has no reviewed alternative download URL. "
+                        f"Review the catalog evidence: {record.evidence_url}. No ZIP was written."
+                    ))
+                required_downloads.append({
+                    "path": member_path,
+                    "filename": jar.name,
+                    "sha256": digest,
+                    "modId": record.mod_id,
+                    "modVersion": record.mod_version,
+                    "projectUrl": record.project_url,
+                    "alternativeDownloadUrl": record.alternative_download_url,
+                    "evidenceUrl": record.evidence_url,
+                    "verifiedOn": record.verified_on,
+                    "notes": record.notes,
+                })
+                distribution_warnings.append(
+                    f"Excluded {jar.name} because the curated catalog marks this exact artifact prohibited; "
+                    "the ZIP includes manual instructions for a reviewed alternative download."
+                )
+            else:
+                distributable_ship.append(jar)
+                if record.decision == "conditional":
+                    distribution_warnings.append(
+                        f"Conditional distribution record for {jar.name}; review its listed conditions and evidence before sharing."
+                    )
+                else:
+                    distribution_warnings.append(
+                        f"Curated catalog permits bundling the exact artifact {jar.name} based on the recorded evidence; verify terms remain current."
+                    )
+        distribution_review.append(review_row)
+    ship = distributable_ship
+
     if any(out_path.resolve() == p.resolve() for p in ship):
         return ExportResult(error="The export destination cannot overwrite a mod JAR.")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -589,11 +717,34 @@ def export(instance, out_path, fmt: str = "mrpack", *,
             else:
                 build_warnings = _build_curseforge(partial, name, mc, loader, loader_version, ship, cfg)
             build_warnings = config_warnings + build_warnings
+            _write_download_requirements(partial, fmt, name, required_downloads)
             manifest = _seal_archive(
                 partial, fmt=fmt, name=name, minecraft_version=mc,
                 loader=loader, loader_version=loader_version,
                 input_fingerprint=input_fingerprint,
+                distribution_catalog_version=catalog.catalog_version,
+                distribution_catalog_revision=catalog.revision,
+                distribution_review=distribution_review,
+                required_downloads=required_downloads,
             )
+            # Distribution decisions apply to the exact JAR bytes that were
+            # reviewed. A source JAR can change between the catalog lookup above
+            # and the builder reading it (notably for MRPACK/CurseForge, which do
+            # not use the Prism input fingerprint). Compare the sealed ZIP payload
+            # against each bundled JAR's reviewed digest before finalizing.
+            sealed_hashes = {
+                row["path"]: row["sha256"] for row in manifest["files"]
+            }
+            for review_row in distribution_review:
+                if not review_row.get("bundled"):
+                    continue
+                reviewed_path = review_row["path"]
+                if sealed_hashes.get(reviewed_path) != review_row["sha256"]:
+                    raise OSError(
+                        "Bundled JAR changed after its distribution review "
+                        f"({review_row['filename']}); no ZIP was written. "
+                        "Restore the reviewed file and retry."
+                    )
             # Reading each archive member through _seal_archive also validates its
             # CRC. Keep memory use bounded for large player packs.
             with zipfile.ZipFile(partial, "r") as check:
@@ -601,6 +752,8 @@ def export(instance, out_path, fmt: str = "mrpack", *,
                     raise OSError("ZIP verification failed: manifest missing")
                 json.loads(check.read(manifest["path"]))
             archive_sha256 = _sha256_file(partial)
+            if distribution_catalog.catalog_revision() != catalog.revision:
+                raise OSError("The curated distribution catalog changed while the ZIP was being built. Restart the export and review it again.")
             if input_fingerprint and compute_input_fingerprint(
                 instance,
                 client_source=client_source,
@@ -642,11 +795,12 @@ def export(instance, out_path, fmt: str = "mrpack", *,
             "Shared client-source mods that were not identical to a server JAR were not added; review versions and compatibility: " + shown
         )
     warnings.extend(build_warnings)
+    warnings.extend(distribution_warnings)
     warnings.extend(manifest["privacy_warnings"])
     warnings.extend([
         "A SHA-256 manifest is embedded in the archive. Review privacy warnings before sharing.",
         "Server packs may not include required client-side mods. Only explicitly client-only files from the optional matching Prism source were added.",
-        "Bundled mod JARs are for personal use; check authors’ licenses before redistribution.",
+        "Distribution status is artifact-specific: follow catalog conditions, and check every JAR with no matching curated record before redistribution.",
     ])
     return ExportResult(
         path=str(out_path), fmt=fmt, mod_count=len(ship),
@@ -840,6 +994,10 @@ def _seal_archive(
     loader: str,
     loader_version: str,
     input_fingerprint: str = "",
+    distribution_catalog_version: str = "",
+    distribution_catalog_revision: str = "",
+    distribution_review: list[dict] | None = None,
+    required_downloads: list[dict] | None = None,
 ) -> dict:
     """Validate member paths, hash all content, scan included config, and embed a manifest."""
     manifest_name = (
@@ -951,6 +1109,12 @@ def _seal_archive(
         "loaderVersion": loader_version,
         "manifestPath": manifest_name,
         "inputFingerprint": input_fingerprint,
+        "distributionCatalog": {
+            "version": distribution_catalog_version,
+            "revision": distribution_catalog_revision,
+        },
+        "distributionReview": distribution_review or [],
+        "requiredDownloads": required_downloads or [],
         "privacyReview": {
             "scanner": "bounded heuristic pattern scan; this is not a guarantee that a pack contains no secrets",
             "scope": (

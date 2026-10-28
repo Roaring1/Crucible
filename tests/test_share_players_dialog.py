@@ -14,9 +14,11 @@ from unittest.mock import Mock, patch
 from PyQt6.QtCore import QStandardPaths
 from PyQt6.QtWidgets import QApplication
 
+from crucible.exporters import client_export
 from crucible.exporters.client_export import ExportResult
+from crucible.mods import distribution_catalog
 from crucible.sharing.gofile import GofileUploadResult
-from crucible.ui.share_players_dialog import SharePlayersDialog, _PrepareWorker, _UploadWorker, _next_pack_path
+from crucible.ui.share_players_dialog import SharePlayersDialog, _PrepareWorker, _UploadWorker, _next_pack_path, _verified_cached_pack
 
 
 class SharePlayersDialogTests(unittest.TestCase):
@@ -36,6 +38,7 @@ class SharePlayersDialogTests(unittest.TestCase):
         config_hash = hashlib.sha256(config).hexdigest()
         resource_pack_hash = hashlib.sha256(resource_pack).hexdigest()
         manifest_path = "Demo Server/crucible-manifest.json"
+        catalog = distribution_catalog.load_catalog()
         manifest = {
             "schemaVersion": 1,
             "format": "prism",
@@ -43,6 +46,29 @@ class SharePlayersDialogTests(unittest.TestCase):
             "loader": "neoforge",
             "loaderVersion": "21.1.233",
             "manifestPath": manifest_path,
+            "distributionCatalog": {
+                "version": catalog.catalog_version,
+                "revision": catalog.revision,
+            },
+            "distributionReview": [{
+                "path": "Demo Server/.minecraft/mods/example.jar",
+                "filename": "example.jar",
+                "sha256": jar_hash,
+                "modId": "",
+                "modVersion": "",
+                "decision": "unverified",
+                "projectUrl": "",
+                "evidenceUrl": "",
+                "verifiedOn": "",
+                "basis": "No curated record matches this exact JAR SHA-256.",
+                "license": "",
+                "licenseUrl": "",
+                "conditions": [],
+                "alternativeDownloadUrl": "",
+                "notes": "",
+                "bundled": True,
+            }],
+            "requiredDownloads": [],
             "privacyReview": {
                 "scanner": "bounded heuristic pattern scan",
                 "coverageComplete": True,
@@ -159,6 +185,60 @@ class SharePlayersDialogTests(unittest.TestCase):
             self.assertEqual(Path(third_outcomes[0].path), third_path)
             self.assertNotEqual(third_outcomes[0].input_fingerprint, first_result.input_fingerprint)
             self.assertTrue(third_path.with_suffix(third_path.suffix + ".crucible-cache.json").is_file())
+
+    def test_cache_rejects_archive_with_forged_distribution_permission_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out_root = root / "player-packs"
+            out_root.mkdir(mode=0o700)
+            server = root / "server"
+            (server / "mods").mkdir(parents=True)
+            (server / "config").mkdir()
+            with zipfile.ZipFile(server / "mods" / "example.jar", "w") as jar:
+                jar.writestr("fabric.mod.json", json.dumps({
+                    "id": "examplemod", "name": "Example Mod", "version": "1.2.3", "environment": "*"
+                }))
+            source = root / "working-prism"
+            (source / ".minecraft" / "mods").mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.233"},
+                ],
+            }), encoding="utf-8")
+            instance = SimpleNamespace(
+                name="ForgedCatalogCache", path=str(server), minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.233",
+            )
+            archive_path = _next_pack_path(out_root, instance.name)
+            outcomes = []
+            worker = _PrepareWorker(instance, archive_path, str(source), False)
+            worker.done.connect(outcomes.append)
+            worker.run()
+            self.assertTrue(outcomes[0].ok, outcomes[0].error)
+            result = outcomes[0]
+            sidecar = archive_path.with_suffix(archive_path.suffix + ".crucible-cache.json")
+
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                entries = [(item.filename, archive.read(item.filename)) for item in archive.infolist()]
+            replacement = out_root / "replacement.tmp"
+            with zipfile.ZipFile(replacement, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for name, payload in entries:
+                    if name == result.manifest_path:
+                        manifest = json.loads(payload)
+                        row = manifest["distributionReview"][0]
+                        row["decision"] = "permitted"
+                        payload = json.dumps(manifest).encode("utf-8")
+                    archive.writestr(name, payload)
+            replacement.replace(archive_path)
+
+            # Simulate a self-consistent stale cache entry: update the sidecar's
+            # archive checksum too, so only catalog-to-manifest validation catches it.
+            metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+            metadata["archiveSha256"] = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+            sidecar.write_text(json.dumps(metadata), encoding="utf-8")
+            self.assertIsNone(_verified_cached_pack(archive_path, result.input_fingerprint))
 
     def test_worker_rebuilds_instead_of_reusing_a_corrupted_cache_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -351,9 +431,9 @@ class SharePlayersDialogTests(unittest.TestCase):
             self.assertIn("Demo Server/.minecraft/config/test.toml", report)
             self.assertIn("credential assignment", report)
             self.assertEqual(report.count("possible credential assignment"), 1)
-            self.assertIn("DISTRIBUTION RIGHTS (not automatically verified)", report)
-            self.assertIn("UNVERIFIED JAR — check the author's license/distribution terms", report)
-            self.assertIn("UNVERIFIED RESOURCE PACK — check distribution terms: ExamplePack.zip", report)
+            self.assertIn("DISTRIBUTION RIGHTS (curated, exact-artifact SHA-256 catalog)", report)
+            self.assertIn("UNVERIFIED JAR — no reviewed catalog record for these exact bytes", report)
+            self.assertIn("UNVERIFIED RESOURCE PACK — check distribution terms separately: ExamplePack.zip", report)
             self.assertIn(result.archive_sha256, report)
             self.assertIn(result.manifest_path, report)
             self.assertIn("cannot guarantee a secret-free pack", dialog._review_ack.text())
@@ -384,6 +464,127 @@ class SharePlayersDialogTests(unittest.TestCase):
         self.assertIn("copied to the clipboard", dialog._status.text())
         dialog.close()
 
+    def test_modified_zip_is_rejected_before_file_review_or_upload(self):
+        dialog = self._dialog()
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "pack.zip"
+            result = self._result_archive(archive_path)
+
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                entries = [(item.filename, archive.read(item.filename)) for item in archive.infolist()]
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                for name, payload in entries:
+                    if name.endswith("/.minecraft/config/test.toml"):
+                        payload = b"changed after build = true\\n"
+                    archive.writestr(name, payload)
+
+            dialog._on_pack_ready(result)
+
+            self.assertEqual(dialog._phase, "error")
+            self.assertIsNone(dialog._result)
+            self.assertIn("local ZIP changed after preparation", dialog._status.text())
+            self.assertFalse(dialog._upload_btn.isEnabled())
+
+        dialog.close()
+
+    def test_manifest_cannot_claim_permission_without_a_current_catalog_record(self):
+        dialog = self._dialog()
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "pack.zip"
+            result = self._result_archive(archive_path)
+
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                entries = [(item.filename, archive.read(item.filename)) for item in archive.infolist()]
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                for name, payload in entries:
+                    if name == result.manifest_path:
+                        manifest = json.loads(payload)
+                        row = manifest["distributionReview"][0]
+                        row.update({
+                            "decision": "permitted",
+                            "projectUrl": "https://example.org/project",
+                            "evidenceUrl": "https://example.org/claimed-permission",
+                            "verifiedOn": "2026-10-01",
+                            "basis": "Synthetic test claim; no real permission.",
+                            "license": "Example-License",
+                            "licenseUrl": "https://example.org/license",
+                        })
+                        payload = json.dumps(manifest).encode("utf-8")
+                    archive.writestr(name, payload)
+            result.archive_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+
+            dialog._on_pack_ready(result)
+
+            self.assertEqual(dialog._phase, "error")
+            self.assertIsNone(dialog._result)
+            self.assertIn("unknown artifact hash", dialog._status.text())
+            self.assertFalse(dialog._upload_btn.isEnabled())
+
+        dialog.close()
+
+    def test_manifest_cannot_claim_permission_for_unknown_jar_hash(self):
+        dialog = self._dialog()
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "pack.zip"
+            result = self._result_archive(archive_path)
+
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                entries = [(item.filename, archive.read(item.filename)) for item in archive.infolist()]
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                for name, payload in entries:
+                    if name == result.manifest_path:
+                        manifest = json.loads(payload)
+                        row = manifest["distributionReview"][0]
+                        row.update({
+                            "decision": "permitted",
+                            "projectUrl": "https://example.org/fake-project",
+                            "evidenceUrl": "https://example.org/fake-permission",
+                            "verifiedOn": "2026-10-01",
+                            "basis": "Fabricated permission claim for a hash not present in the current catalog.",
+                            "license": "Fake-License",
+                            "licenseUrl": "https://example.org/fake-license",
+                        })
+                        payload = json.dumps(manifest).encode("utf-8")
+                    archive.writestr(name, payload)
+            result.archive_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+
+            dialog._on_pack_ready(result)
+
+            self.assertEqual(dialog._phase, "error")
+            self.assertIsNone(dialog._result)
+            self.assertIn("manifest claims a curated distribution decision for an unknown artifact hash", dialog._status.text())
+            self.assertFalse(dialog._upload_btn.isEnabled())
+
+        dialog.close()
+
+    def test_manifest_without_distribution_catalog_fails_closed(self):
+        dialog = self._dialog()
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "pack.zip"
+            result = self._result_archive(archive_path)
+
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                entries = [(item.filename, archive.read(item.filename)) for item in archive.infolist()]
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                for name, payload in entries:
+                    if name == result.manifest_path:
+                        manifest = json.loads(payload)
+                        manifest.pop("distributionCatalog")
+                        manifest.pop("distributionReview")
+                        manifest.pop("requiredDownloads")
+                        payload = json.dumps(manifest).encode("utf-8")
+                    archive.writestr(name, payload)
+            result.archive_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+
+            dialog._on_pack_ready(result)
+
+            self.assertEqual(dialog._phase, "error")
+            self.assertIsNone(dialog._result)
+            self.assertIn("must include complete distribution-catalog", dialog._status.text())
+            self.assertFalse(dialog._upload_btn.isEnabled())
+
+        dialog.close()
+
     def test_malformed_manifest_fails_closed_without_crashing_review(self):
         dialog = self._dialog()
         with tempfile.TemporaryDirectory() as tmp:
@@ -397,6 +598,7 @@ class SharePlayersDialogTests(unittest.TestCase):
                     if name == result.manifest_path:
                         payload = b"[]"
                     archive.writestr(name, payload)
+            result.archive_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
 
             dialog._on_pack_ready(result)
 
@@ -404,6 +606,65 @@ class SharePlayersDialogTests(unittest.TestCase):
             self.assertIsNone(dialog._result)
             self.assertIn("manifest root is not a JSON object", dialog._status.text())
             self.assertFalse(dialog._upload_btn.isEnabled())
+
+        dialog.close()
+
+    def test_review_explains_curated_prohibited_mod_alternative_download(self):
+        dialog = self._dialog()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            (server / "mods").mkdir(parents=True)
+            jar = server / "mods" / "examplemod-1.2.3.jar"
+            with zipfile.ZipFile(jar, "w") as archive:
+                archive.writestr("fabric.mod.json", json.dumps({
+                    "id": "examplemod", "name": "Example Mod", "version": "1.2.3", "environment": "*"
+                }))
+            alternative = "https://downloads.example.org/examplemod"
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(json.dumps({
+                "schemaVersion": 1,
+                "catalogVersion": "ui-test-1",
+                "records": [{
+                    "sha256": hashlib.sha256(jar.read_bytes()).hexdigest(),
+                    "modId": "examplemod",
+                    "modVersion": "1.2.3",
+                    "decision": "prohibited",
+                    "projectUrl": "https://example.org/examplemod",
+                    "evidenceUrl": "https://example.org/redistribution",
+                    "verifiedOn": "2026-10-01",
+                    "basis": "The source terms prohibit redistributing this exact artifact.",
+                    "license": "",
+                    "licenseUrl": "",
+                    "conditions": [],
+                    "alternativeDownloadUrl": alternative,
+                    "notes": "Synthetic test fixture only.",
+                }],
+            }), encoding="utf-8")
+            output = root / "player.zip"
+            instance = SimpleNamespace(
+                name="Demo Server", path=str(server), minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.233",
+            )
+            original_loader = distribution_catalog.load_catalog
+            def load_test_catalog(path=None):
+                return original_loader(catalog_path if path is None else path)
+
+            with patch.object(distribution_catalog, "load_catalog", side_effect=load_test_catalog):
+                result = client_export.export(instance, output, fmt="prism")
+                self.assertTrue(result.ok, result.error)
+                dialog._on_pack_ready(result)
+
+            report = dialog._review.toPlainText()
+            self.assertIn("NOT BUNDLED — REQUIRED MANUAL MOD DOWNLOADS", report)
+            self.assertIn(alternative, report)
+            self.assertIn("CRUCIBLE-MOD-DOWNLOADS.txt", report)
+            self.assertIn("1 required manual mod download(s)", dialog._license_ack.text())
+            self.assertIn("DISTRIBUTION RIGHTS", report)
+            with zipfile.ZipFile(output) as archive:
+                members = set(archive.namelist())
+                self.assertNotIn("Demo Server/.minecraft/mods/examplemod-1.2.3.jar", members)
+                self.assertIn("Demo Server/CRUCIBLE-MOD-DOWNLOADS.txt", members)
 
         dialog.close()
 

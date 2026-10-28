@@ -10,6 +10,7 @@ import threading
 import zipfile
 from pathlib import Path
 
+from ..mods import distribution_catalog
 from PyQt6.QtCore import QObject, QThread, QTimer, QStandardPaths, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
@@ -47,6 +48,7 @@ def _validate_review_manifest(manifest):
     files = manifest.get("files")
     if not isinstance(files, list):
         raise ValueError("manifest file list is missing or malformed")
+    file_rows = {}
     for row in files:
         if not isinstance(row, dict):
             raise ValueError("manifest contains a malformed file entry")
@@ -63,8 +65,10 @@ def _validate_review_manifest(manifest):
             or not isinstance(digest, str)
             or len(digest) != 64
             or any(char not in "0123456789abcdefABCDEF" for char in digest)
+            or row_path in file_rows
         ):
-            raise ValueError("manifest contains invalid file path, size, or SHA-256 metadata")
+            raise ValueError("manifest contains invalid or duplicate file path, size, or SHA-256 metadata")
+        file_rows[row_path] = row
 
     privacy_review = manifest.get("privacyReview")
     if not isinstance(privacy_review, dict):
@@ -78,7 +82,225 @@ def _validate_review_manifest(manifest):
     if scope is not None and not isinstance(scope, str):
         raise ValueError("manifest privacy-scan scope is malformed")
 
+    distribution_keys = {"distributionCatalog", "distributionReview", "requiredDownloads"}
+    present_distribution_keys = distribution_keys.intersection(manifest)
+    if present_distribution_keys != distribution_keys:
+        raise ValueError("manifest must include complete distribution-catalog review sections")
+    if present_distribution_keys:
+        catalog = manifest.get("distributionCatalog")
+        if (
+            not isinstance(catalog, dict)
+            or not isinstance(catalog.get("version"), str)
+            or not catalog["version"]
+            or not isinstance(catalog.get("revision"), str)
+            or len(catalog["revision"]) != 64
+            or any(char not in "0123456789abcdef" for char in catalog["revision"])
+        ):
+            raise ValueError("manifest distribution-catalog metadata is malformed")
+        try:
+            current_distribution_catalog = distribution_catalog.load_catalog()
+        except (distribution_catalog.DistributionCatalogError, OSError) as exc:
+            raise ValueError("the current curated distribution catalog cannot be verified") from exc
+        if (
+            catalog["revision"] != current_distribution_catalog.revision
+            or catalog["version"] != current_distribution_catalog.catalog_version
+        ):
+            raise ValueError("the curated distribution catalog changed after this ZIP was prepared; rebuild and review it again")
+
+        review_rows = manifest.get("distributionReview")
+        downloads = manifest.get("requiredDownloads")
+        if not isinstance(review_rows, list) or not isinstance(downloads, list):
+            raise ValueError("manifest distribution review/download lists are malformed")
+        review_by_path = {}
+        for row in review_rows:
+            if not isinstance(row, dict):
+                raise ValueError("manifest contains a malformed distribution record")
+            row_path = row.get("path")
+            filename = row.get("filename")
+            digest = row.get("sha256")
+            decision = row.get("decision")
+            bundled = row.get("bundled")
+            if (
+                not isinstance(row_path, str)
+                or not row_path
+                or row_path in review_by_path
+                or not isinstance(filename, str)
+                or not filename
+                or filename != row_path.rsplit("/", 1)[-1]
+                or not isinstance(digest, str)
+                or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)
+                or decision not in {"unverified", "permitted", "prohibited", "conditional"}
+                or not isinstance(bundled, bool)
+            ):
+                raise ValueError("manifest contains invalid or duplicate distribution-review metadata")
+            if (decision == "prohibited") == bundled:
+                raise ValueError("manifest distribution decision conflicts with whether the JAR is bundled")
+            if not row_path.lower().endswith(".jar"):
+                raise ValueError("distribution-review record is not for a JAR artifact")
+            client_export._validate_archive_member_name(row_path)
+
+            curated_record = current_distribution_catalog.lookup(digest)
+            if decision == "unverified":
+                if curated_record is not None:
+                    raise ValueError("manifest marks a catalog-listed artifact unverified")
+                expected_unverified = {
+                    "path": row_path,
+                    "filename": filename,
+                    "sha256": digest,
+                    "modId": "",
+                    "modVersion": "",
+                    "decision": "unverified",
+                    "projectUrl": "",
+                    "evidenceUrl": "",
+                    "verifiedOn": "",
+                    "basis": "No curated record matches this exact JAR SHA-256.",
+                    "license": "",
+                    "licenseUrl": "",
+                    "conditions": [],
+                    "alternativeDownloadUrl": "",
+                    "notes": "",
+                    "bundled": True,
+                }
+                if row != expected_unverified:
+                    raise ValueError("unverified distribution entry contains unsupported catalog claims")
+            else:
+                if curated_record is None:
+                    raise ValueError("manifest claims a curated distribution decision for an unknown artifact hash")
+                expected_curated = curated_record.review_entry(
+                    archive_path=row_path,
+                    filename=filename,
+                    bundled=curated_record.decision != "prohibited",
+                )
+                if row != expected_curated:
+                    raise ValueError("manifest distribution decision does not match the current catalog record")
+
+            if decision != "unverified":
+                if not isinstance(row.get("verifiedOn"), str) or not row["verifiedOn"] or not isinstance(row.get("basis"), str) or not row["basis"]:
+                    raise ValueError("curated distribution decision is missing its review date or basis")
+            for field_name in ("projectUrl", "evidenceUrl", "licenseUrl", "alternativeDownloadUrl"):
+                field_value = row.get(field_name, "")
+                if not isinstance(field_value, str):
+                    raise ValueError(f"manifest distribution field {field_name!r} is malformed")
+                if field_value:
+                    distribution_catalog.validate_https_url(field_value, required=True)
+                elif decision != "unverified" and field_name in {"projectUrl", "evidenceUrl"}:
+                    raise ValueError(f"curated distribution record is missing {field_name}")
+            conditions = row.get("conditions", [])
+            if decision == "conditional" and not conditions:
+                raise ValueError("conditional distribution record is missing its conditions")
+            if not isinstance(conditions, list) or any(not isinstance(item, str) for item in conditions):
+                raise ValueError("manifest distribution conditions are malformed")
+            for text_field in ("modId", "modVersion", "license", "notes"):
+                text_value = row.get(text_field, "")
+                if not isinstance(text_value, str) or len(text_value) > 8192:
+                    raise ValueError(f"manifest distribution field {text_field!r} is malformed")
+            basis = row.get("basis", "")
+            if not isinstance(basis, str) or len(basis) > 8192:
+                raise ValueError("manifest distribution basis is malformed")
+            if bundled:
+                file_row = file_rows.get(row_path)
+                if file_row is None or file_row.get("sha256", "").lower() != digest:
+                    raise ValueError("bundled JAR distribution record does not match the payload manifest")
+            elif decision != "prohibited":
+                raise ValueError("only a prohibited artifact may be excluded by the distribution catalog")
+            review_by_path[row_path] = row
+
+        for path, row in file_rows.items():
+            if path.lower().endswith(".jar") and path not in review_by_path:
+                raise ValueError("manifest is missing a distribution decision for a bundled JAR")
+
+        required_by_path = {}
+        for item in downloads:
+            if not isinstance(item, dict):
+                raise ValueError("manifest contains a malformed required-download entry")
+            row_path = item.get("path")
+            digest = item.get("sha256")
+            filename = item.get("filename")
+            if (
+                not isinstance(row_path, str)
+                or row_path in required_by_path
+                or not isinstance(digest, str)
+                or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)
+                or not isinstance(filename, str)
+                or not filename
+                or filename != row_path.rsplit("/", 1)[-1]
+            ):
+                raise ValueError("manifest required-download metadata is malformed")
+            review = review_by_path.get(row_path)
+            if (
+                review is None
+                or review.get("decision") != "prohibited"
+                or review.get("bundled") is not False
+                or review.get("sha256") != digest
+                or row_path in file_rows
+                or filename != review.get("filename")
+                or item.get("modId", "") != review.get("modId", "")
+                or item.get("modVersion", "") != review.get("modVersion", "")
+                or item.get("verifiedOn") != review.get("verifiedOn")
+                or item.get("notes", "") != review.get("notes", "")
+                or item.get("projectUrl") != review.get("projectUrl")
+                or item.get("evidenceUrl") != review.get("evidenceUrl")
+                or item.get("alternativeDownloadUrl") != review.get("alternativeDownloadUrl")
+            ):
+                raise ValueError("required-download entry does not match a prohibited distribution record")
+            for field_name in ("projectUrl", "evidenceUrl", "alternativeDownloadUrl"):
+                field_value = item.get(field_name)
+                distribution_catalog.validate_https_url(field_value, required=True)
+            for text_field in ("modId", "modVersion", "notes"):
+                text_value = item.get(text_field, "")
+                if not isinstance(text_value, str) or len(text_value) > 8192:
+                    raise ValueError(f"required-download field {text_field!r} is malformed")
+            verified_on = item.get("verifiedOn")
+            if not isinstance(verified_on, str) or not verified_on:
+                raise ValueError("required-download evidence date is missing")
+            required_by_path[row_path] = item
+        for row_path, row in review_by_path.items():
+            if row.get("decision") == "prohibited" and row_path not in required_by_path:
+                raise ValueError("prohibited JAR is missing its required alternative-download instructions")
+
     return manifest
+
+
+def _verify_review_archive(archive_path: Path, expected_archive_sha256: str, manifest_path: str, manifest: dict) -> None:
+    """Ensure the owner reviews the exact archive and payload described by the manifest."""
+    if (
+        not isinstance(expected_archive_sha256, str)
+        or len(expected_archive_sha256) != 64
+        or any(char not in "0123456789abcdef" for char in expected_archive_sha256)
+    ):
+        raise ValueError("the expected archive SHA-256 is missing or invalid")
+    actual_archive_sha256 = client_export._sha256_file(archive_path)
+    if actual_archive_sha256 != expected_archive_sha256:
+        raise ValueError("the local ZIP changed after preparation; rebuild and review it again")
+    if manifest.get("manifestPath") != manifest_path:
+        raise ValueError("the manifest path in the ZIP does not match the build result")
+    client_export._validate_archive_member_name(manifest_path)
+    expected_files = {row["path"]: row for row in manifest["files"]}
+    with zipfile.ZipFile(archive_path, "r") as archive:
+        infos = archive.infolist()
+        names = [info.filename for info in infos if not info.is_dir()]
+        if len(names) != len(set(names)):
+            raise ValueError("the local ZIP contains duplicate archive paths")
+        for info in infos:
+            if not info.is_dir():
+                client_export._validate_archive_member_name(info.filename)
+        if manifest_path not in names or set(names) != set(expected_files) | {manifest_path}:
+            raise ValueError("the local ZIP members do not exactly match its manifest")
+        for name, row in expected_files.items():
+            info = archive.getinfo(name)
+            if info.file_size != row["size_bytes"]:
+                raise ValueError(f"the local ZIP file size differs from its manifest: {name}")
+            digest = hashlib.sha256()
+            count = 0
+            with archive.open(info, "r") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    count += len(chunk)
+                    digest.update(chunk)
+            if count != row["size_bytes"] or digest.hexdigest() != row["sha256"].lower():
+                raise ValueError(f"the local ZIP payload hash differs from its manifest: {name}")
+    # Reading each entry to EOF above also checks its ZIP CRC.
 
 
 def _next_pack_path(directory: Path, name: str) -> Path:
@@ -268,6 +490,10 @@ def _verified_cached_pack(archive_path: Path, expected_fingerprint: str):
                 if count != expected_size or digest.hexdigest() != expected_sha:
                     return None
 
+        # Cache integrity is not enough: reuse must also satisfy the current
+        # catalog/evidence policy, otherwise a stale or edited manifest could
+        # loop back into the UI and fail review on every launch.
+        _validate_review_manifest(manifest)
         privacy_review = manifest.get("privacyReview")
         if not isinstance(privacy_review, dict):
             return None
@@ -804,6 +1030,12 @@ class SharePlayersDialog(QDialog):
             with zipfile.ZipFile(self._archive_path, "r") as archive:
                 manifest = json.loads(archive.read(result.manifest_path).decode("utf-8"))
             manifest = _validate_review_manifest(manifest)
+            _verify_review_archive(
+                self._archive_path,
+                result.archive_sha256,
+                result.manifest_path,
+                manifest,
+            )
         except (OSError, zipfile.BadZipFile, KeyError, TypeError, ValueError) as exc:
             self._result = None
             self._phase = "error"
@@ -835,24 +1067,67 @@ class SharePlayersDialog(QDialog):
                 tail = row_path.split(marker, 1)[1]
                 if tail:
                     resource_pack_names.add(tail.split("/", 1)[0])
+        distribution_review = manifest.get("distributionReview", [])
+        distribution_by_path = {
+            item["path"]: item for item in distribution_review if isinstance(item, dict) and isinstance(item.get("path"), str)
+        }
+        required_downloads = manifest.get("requiredDownloads", [])
         lines.extend([
             "",
-            "DISTRIBUTION RIGHTS (not automatically verified):",
+            "DISTRIBUTION RIGHTS (curated, exact-artifact SHA-256 catalog):",
         ])
         if jar_rows:
-            lines.extend(
-                f"  - UNVERIFIED JAR — check the author's license/distribution terms: {jar_path}"
-                for jar_path in jar_rows
-            )
+            for jar_path in jar_rows:
+                decision = distribution_by_path.get(jar_path)
+                if not decision or decision.get("decision") == "unverified":
+                    lines.append(
+                        f"  - UNVERIFIED JAR — no reviewed catalog record for these exact bytes; check the author's terms: {jar_path}"
+                    )
+                    continue
+                status = decision["decision"].upper()
+                lines.append(
+                    f"  - CURATED {status} RECORD for exact SHA-256: {jar_path} "
+                    f"(SHA-256 {decision['sha256']}; checked {decision['verifiedOn']})"
+                )
+                lines.append(f"      Basis: {decision['basis']}")
+                lines.append(f"      Project: {decision['projectUrl']}")
+                lines.append(f"      Evidence: {decision['evidenceUrl']}")
+                if decision.get("license"):
+                    lines.append(f"      License: {decision['license']}")
+                if decision.get("licenseUrl"):
+                    lines.append(f"      License text: {decision['licenseUrl']}")
+                if decision.get("notes"):
+                    lines.append(f"      Curator notes: {decision['notes']}")
+                for condition in decision.get("conditions", []):
+                    lines.append(f"      CONDITION: {condition}")
         else:
-            lines.append("  - No mod JAR files were included.")
+            lines.append("  - No mod JAR files were included in this archive.")
         if resource_pack_names:
             lines.extend(
-                f"  - UNVERIFIED RESOURCE PACK — check distribution terms: {pack_name}"
+                f"  - UNVERIFIED RESOURCE PACK — check distribution terms separately: {pack_name}"
                 for pack_name in sorted(resource_pack_names)
             )
         else:
             lines.append("  - No client resource packs were included.")
+
+        if required_downloads:
+            lines.extend([
+                "",
+                "NOT BUNDLED — REQUIRED MANUAL MOD DOWNLOADS:",
+                "  These exact JARs were excluded because the curated catalog marks them prohibited.",
+                "  This player instance may not launch correctly until the required mod is installed.",
+            ])
+            for item in required_downloads:
+                lines.extend([
+                    f"  - {item['filename']} ({item.get('modId') or 'mod ID not recorded'} {item.get('modVersion') or ''})".rstrip(),
+                    f"      Reviewed alternative download: {item['alternativeDownloadUrl']}",
+                    f"      Project: {item['projectUrl']}",
+                    f"      Catalog evidence: {item['evidenceUrl']} (checked {item['verifiedOn']})",
+                ])
+            lines.append(
+                "  The ZIP also contains CRUCIBLE-MOD-DOWNLOADS.txt with these instructions. "
+                "Download the compatible version from the listed page and install it into .minecraft/mods/ before launch."
+            )
         privacy_review = manifest.get("privacyReview", {})
         lines.extend([
             "",
@@ -877,7 +1152,7 @@ class SharePlayersDialog(QDialog):
             "",
             "REVIEW NOTES:",
             "  - Only the files listed above plus this generated manifest are in the ZIP.",
-            "  - Crucible cannot determine all mod redistribution rights from JAR contents; each JAR is marked unverified until you check it.",
+            "  - A curated decision applies only to the exact JAR SHA-256 shown. No matching record means unverified; still confirm the evidence is current and all listed conditions are met.",
             "  - The Gofile share link can be passed to anyone. Free/guest storage may be ephemeral; account retention depends on the selected plan.",
             "  - Crucible discards any guest-management token returned by Gofile. The optional owner API token is kept in memory only and is never saved.",
             "  - The Gofile upload API is beta; no fixed quota or permanent-retention promise is made.",
@@ -897,8 +1172,9 @@ class SharePlayersDialog(QDialog):
             "I reviewed every listed file and privacy finding, and understand the scanner cannot guarantee a secret-free pack."
         )
         self._license_ack.setText(
-            f"I checked distribution rights for {len(jar_rows)} bundled JAR(s), "
-            f"{len(resource_pack_names)} resource pack(s), and included configuration."
+            f"I reviewed curated/unknown distribution status for {len(jar_rows)} bundled JAR(s), "
+            f"{len(required_downloads)} required manual mod download(s), {len(resource_pack_names)} resource pack(s), "
+            "and included configuration; I will follow all listed conditions and install any required mods before launch."
         )
         self._review_ack.setChecked(False)
         self._license_ack.setChecked(False)

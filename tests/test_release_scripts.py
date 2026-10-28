@@ -152,10 +152,12 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertIn("stat.S_ISLNK", text)
         self.assertNotRegex(text, re.compile(r"first .*\\.zip", re.I))
 
-    def test_wheel_declares_icon_package_data(self):
+    def test_wheel_declares_icon_and_distribution_catalog_package_data(self):
         text = (ROOT / "pyproject.toml").read_text()
         self.assertIn('[tool.setuptools.package-data]', text)
-        self.assertIn('crucible = ["assets/*.png"]', text)
+        self.assertIn('crucible = ["assets/*.png", "data/*.json"]', text)
+        catalog = ROOT / "crucible" / "data" / "mod_distribution_catalog.json"
+        self.assertTrue(catalog.is_file())
 
 
     def test_stale_async_results_are_generation_guarded(self):

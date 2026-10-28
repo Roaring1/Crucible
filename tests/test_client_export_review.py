@@ -7,8 +7,10 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from crucible.exporters import client_export
+from crucible.mods import distribution_catalog
 
 
 class ClientExportReviewTests(unittest.TestCase):
@@ -110,6 +112,16 @@ class ClientExportReviewTests(unittest.TestCase):
             )
             self.assertNotEqual(changed_payload, changed_option)
 
+            with patch.object(distribution_catalog, "catalog_revision", return_value="a" * 64):
+                old_catalog_fingerprint = client_export.compute_input_fingerprint(
+                    instance, client_source=str(source), include_config=True, include_resourcepacks=False
+                )
+            with patch.object(distribution_catalog, "catalog_revision", return_value="b" * 64):
+                new_catalog_fingerprint = client_export.compute_input_fingerprint(
+                    instance, client_source=str(source), include_config=True, include_resourcepacks=False
+                )
+            self.assertNotEqual(old_catalog_fingerprint, new_catalog_fingerprint)
+
     def test_export_refuses_a_source_that_changed_after_fingerprint_capture(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -144,6 +156,171 @@ class ClientExportReviewTests(unittest.TestCase):
             self.assertIn("inputs changed", result.error.lower())
             self.assertFalse(output.exists())
             self.assertFalse(output.with_suffix(".zip.partial").exists())
+
+    def _catalog_test_jar(self, root: Path):
+        server = root / "server"
+        (server / "mods").mkdir(parents=True)
+        jar = server / "mods" / "examplemod-1.2.3.jar"
+        with zipfile.ZipFile(jar, "w") as archive:
+            archive.writestr("fabric.mod.json", json.dumps({
+                "id": "examplemod", "name": "Example Mod", "version": "1.2.3", "environment": "*"
+            }))
+        return self._instance(server), jar
+
+    def _distribution_record(self, jar: Path, *, decision: str, alternative: str = ""):
+        return {
+            "sha256": client_export._sha256_file(jar),
+            "modId": "examplemod",
+            "modVersion": "1.2.3",
+            "decision": decision,
+            "projectUrl": "https://example.org/examplemod",
+            "evidenceUrl": "https://example.org/redistribution-policy",
+            "verifiedOn": "2026-10-01",
+            "basis": "The cited publisher policy was checked for this exact artifact.",
+            "license": "Example-License-1.0" if decision == "permitted" else "",
+            "licenseUrl": "https://example.org/license" if decision == "permitted" else "",
+            "conditions": ["Preserve the included attribution notice."] if decision == "conditional" else [],
+            "alternativeDownloadUrl": alternative,
+            "notes": "Synthetic test fixture only; not a real mod license.",
+        }
+
+    def _with_catalog(self, catalog_path: Path):
+        original_loader = distribution_catalog.load_catalog
+        return patch.object(
+            distribution_catalog,
+            "load_catalog",
+            side_effect=lambda path=None: original_loader(catalog_path if path is None else path),
+        )
+
+    def test_unknown_jar_remains_unverified_in_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            instance, jar = self._catalog_test_jar(root)
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(json.dumps({
+                "schemaVersion": 1, "catalogVersion": "test-unknown", "records": []
+            }), encoding="utf-8")
+            output = root / "player.zip"
+            with self._with_catalog(catalog_path):
+                result = client_export.export(instance, output, fmt="prism")
+            self.assertTrue(result.ok, result.error)
+            with zipfile.ZipFile(output) as archive:
+                manifest = json.loads(archive.read(result.manifest_path))
+                row = next(item for item in manifest["distributionReview"] if item["filename"] == jar.name)
+                self.assertIn(f"CreatePlus/.minecraft/mods/{jar.name}", archive.namelist())
+            self.assertEqual(row["decision"], "unverified")
+            self.assertTrue(row["bundled"])
+
+    def test_prohibited_jar_without_alternative_blocks_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            instance, jar = self._catalog_test_jar(root)
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(json.dumps({
+                "schemaVersion": 1, "catalogVersion": "test-prohibited",
+                "records": [self._distribution_record(jar, decision="prohibited")],
+            }), encoding="utf-8")
+            output = root / "player.zip"
+            with self._with_catalog(catalog_path):
+                result = client_export.export(instance, output, fmt="prism")
+            self.assertFalse(result.ok)
+            self.assertIn("prohibited for redistribution", result.error)
+            self.assertFalse(output.exists())
+
+    def test_prohibited_jar_with_reviewed_alternative_is_omitted_with_instructions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            instance, jar = self._catalog_test_jar(root)
+            alternative = "https://downloads.example.org/examplemod"
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(json.dumps({
+                "schemaVersion": 1, "catalogVersion": "test-alternative",
+                "records": [self._distribution_record(jar, decision="prohibited", alternative=alternative)],
+            }), encoding="utf-8")
+            output = root / "player.zip"
+            with self._with_catalog(catalog_path):
+                result = client_export.export(instance, output, fmt="prism")
+            self.assertTrue(result.ok, result.error)
+            with zipfile.ZipFile(output) as archive:
+                members = set(archive.namelist())
+                guide_path = "CreatePlus/CRUCIBLE-MOD-DOWNLOADS.txt"
+                self.assertIn(guide_path, members)
+                self.assertNotIn(f"CreatePlus/.minecraft/mods/{jar.name}", members)
+                guide = archive.read(guide_path).decode("utf-8")
+                manifest = json.loads(archive.read(result.manifest_path))
+            self.assertIn(alternative, guide)
+            self.assertIn("redistribution.\nThis instance may not start", guide)
+            self.assertEqual(len(manifest["requiredDownloads"]), 1)
+            review = manifest["distributionReview"][0]
+            self.assertEqual(review["decision"], "prohibited")
+            self.assertFalse(review["bundled"])
+            self.assertEqual(review["sha256"], client_export._sha256_file(jar))
+
+    def test_permitted_catalog_entry_is_bound_to_exact_jar_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            instance, jar = self._catalog_test_jar(root)
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(json.dumps({
+                "schemaVersion": 1, "catalogVersion": "test-permitted",
+                "records": [self._distribution_record(jar, decision="permitted")],
+            }), encoding="utf-8")
+            output = root / "player.zip"
+            with self._with_catalog(catalog_path):
+                result = client_export.export(instance, output, fmt="prism")
+            self.assertTrue(result.ok, result.error)
+            with zipfile.ZipFile(output) as archive:
+                manifest = json.loads(archive.read(result.manifest_path))
+            review = manifest["distributionReview"][0]
+            self.assertEqual(review["decision"], "permitted")
+            self.assertTrue(review["bundled"])
+            self.assertEqual(review["sha256"], client_export._sha256_file(jar))
+            self.assertEqual(manifest["distributionCatalog"]["revision"], distribution_catalog.load_catalog(catalog_path).revision)
+
+    def test_non_prism_export_rejects_jar_changed_after_distribution_review(self):
+        # MRPACK and CurseForge local exports do not use the Prism input
+        # fingerprint, so the sealed archive must independently prove that the
+        # bytes bundled still match the digest used for the catalog decision.
+        for fmt, builder_name in (
+            ("mrpack", "_build_mrpack"),
+            ("curseforge", "_build_curseforge"),
+        ):
+            with self.subTest(fmt=fmt), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                instance, jar = self._catalog_test_jar(root)
+                # The source starts as an explicitly permitted artifact, but the
+                # changed bytes below are a separately catalogued prohibited JAR.
+                prohibited_bytes = b"synthetic prohibited artifact bytes"
+                prohibited_digest = hashlib.sha256(prohibited_bytes).hexdigest()
+                permitted_record = self._distribution_record(jar, decision="permitted")
+                prohibited_record = self._distribution_record(
+                    jar,
+                    decision="prohibited",
+                    alternative="https://downloads.example.org/prohibited",
+                )
+                prohibited_record["sha256"] = prohibited_digest
+                catalog_path = root / "catalog.json"
+                catalog_path.write_text(json.dumps({
+                    "schemaVersion": 1,
+                    "catalogVersion": f"test-race-{fmt}",
+                    "records": [permitted_record, prohibited_record],
+                }), encoding="utf-8")
+                output = root / f"{fmt}.zip"
+                original_builder = getattr(client_export, builder_name)
+
+                def replace_jar_before_packaging(*args, **kwargs):
+                    jar.write_bytes(prohibited_bytes)
+                    return original_builder(*args, **kwargs)
+
+                with self._with_catalog(catalog_path), patch.object(
+                    client_export, builder_name, side_effect=replace_jar_before_packaging
+                ):
+                    result = client_export.export(instance, output, fmt=fmt)
+
+                self.assertFalse(result.ok, result.error)
+                self.assertIn("changed after its distribution review", result.error.lower())
+                self.assertFalse(output.exists())
+                self.assertFalse(output.with_suffix(output.suffix + ".partial").exists())
 
     def test_config_paths_reject_backslash_based_traversal(self):
         with tempfile.TemporaryDirectory() as tmp:
