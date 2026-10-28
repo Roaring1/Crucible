@@ -389,6 +389,7 @@ def _seal_archive(
     seen = set()
     scan_bytes = 0
     scan_incomplete = []
+    privacy_findings_truncated = False
     with zipfile.ZipFile(archive_path, "r") as zf:
         for info in zf.infolist():
             member_name = info.filename
@@ -424,9 +425,16 @@ def _seal_archive(
 
             if should_scan:
                 scan_bytes += info.file_size
-                findings = _privacy_findings(member_name, bytes(sample))
-                remaining_findings = max(0, _MAX_PRIVACY_FINDINGS - len(privacy_warnings))
-                privacy_warnings.extend(findings[:remaining_findings])
+                if b"\\x00" in sample[:4096]:
+                    privacy_warnings.append(
+                        f"Privacy scan skipped binary-looking config file {member_name}; review it manually before sharing."
+                    )
+                else:
+                    findings = _privacy_findings(member_name, bytes(sample))
+                    remaining_findings = max(0, _MAX_PRIVACY_FINDINGS - len(privacy_warnings))
+                    privacy_warnings.extend(findings[:remaining_findings])
+                    if len(findings) > remaining_findings:
+                        privacy_findings_truncated = True
 
             rows.append({
                 "path": member_name,
@@ -438,6 +446,10 @@ def _seal_archive(
         privacy_warnings.append(
             f"Privacy scan incomplete for {len(scan_incomplete)} included config file(s) "
             "because bounded size limits were reached; review these files manually before sharing."
+        )
+    if privacy_findings_truncated:
+        privacy_warnings.append(
+            f"Privacy finding display was capped at {_MAX_PRIVACY_FINDINGS}; review all included config files manually before sharing."
         )
     manifest_data = {
         "schemaVersion": 1,
