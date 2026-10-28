@@ -398,7 +398,10 @@ class RollbackTests(TempDirCase):
         self.assertEqual(res.to_version, "2.8.4")
 
     def test_rollback_never_deletes_the_install_it_replaces(self):
-        res = rollback_update(self.inst, self.prev, running=False)
+        res = rollback_update(
+            self.inst, self.prev, running=False,
+            running_check=lambda: False, port_check=lambda _instance: None,
+        )
         aside = Path(res.previous_dir)
         self.assertTrue(aside.is_dir())
         self.assertTrue((aside / "mods" / "new.jar").is_file())
