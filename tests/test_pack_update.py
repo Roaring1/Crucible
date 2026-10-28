@@ -309,7 +309,7 @@ class WorldNameTests(TempDirCase):
         for name in ("first", "second", "second_nether"):
             (d / name).mkdir()
         (d / "server.properties").write_text(
-            "level-name=first\\nlevel-name = second\\n", encoding="utf-8"
+            "level-name=first\nlevel-name = second\n", encoding="utf-8"
         )
         self.assertEqual(
             _world_names(FakeInstance(path=str(d))),
@@ -324,11 +324,11 @@ class WorldNameTests(TempDirCase):
         outside.mkdir()
         (outside / "marker.txt").write_text("must survive", encoding="utf-8")
         for contents in (
-            "level-name=world\\nlevel-name=../../outside\\n",
-            "level-name=world\\nlevel-name=\\n",
-            "level-name = ../outside\\n",
-            "level-name ../../outside\\n",
-            "level-name=world \\n",
+            "level-name=world\nlevel-name=../../outside\n",
+            "level-name=world\nlevel-name=\n",
+            "level-name = ../outside\n",
+            "level-name ../../outside\n",
+            "level-name=world \n",
         ):
             with self.subTest(contents=contents):
                 (d / "server.properties").write_text(contents, encoding="utf-8")
@@ -342,7 +342,7 @@ class WorldNameTests(TempDirCase):
         outside = self.tmp / "outside"
         outside.mkdir()
         (outside / "marker.txt").write_text("must survive", encoding="utf-8")
-        for candidate in ("..", "../outside", "../../outside", r"..\\outside", "C:\\outside"):
+        for candidate in ("..", "../outside", "../../outside", r"..\outside", "C:\\outside"):
             with self.subTest(candidate=candidate):
                 (d / "server.properties").write_text(
                     f"level-name={candidate}\n", encoding="utf-8"
