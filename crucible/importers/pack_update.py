@@ -552,28 +552,93 @@ def _safe_world_component(value: str) -> bool:
     )
 
 
+def _logical_property_lines(text: str) -> list[str]:
+    """Join Java-properties continuation lines and remove their escape slash."""
+    logical: list[str] = []
+    pending: str | None = None
+    for physical in text.splitlines():
+        if pending is None:
+            pending = physical.lstrip()
+        else:
+            pending += physical.lstrip()
+        trailing_slashes = len(pending) - len(pending.rstrip("\\"))
+        if trailing_slashes % 2:
+            pending = pending[:-1]
+            continue
+        logical.append(pending)
+        pending = None
+    if pending is not None:
+        logical.append(pending)
+    return logical
+
+
+def _java_property_key_value(line: str) -> tuple[str, str] | None:
+    """Parse a Java-properties key and raw value, including escaped key chars."""
+    s = line.lstrip()
+    if not s or s.startswith(("#", "!")):
+        return None
+
+    key: list[str] = []
+    i = 0
+    while i < len(s):
+        char = s[i]
+        if char == "\\":
+            i += 1
+            if i >= len(s):
+                break
+            escaped = s[i]
+            if escaped == "u":
+                digits = s[i + 1:i + 5]
+                if len(digits) != 4 or any(ch not in "0123456789abcdefABCDEF" for ch in digits):
+                    raise ValueError("malformed Unicode escape in server.properties key")
+                key.append(chr(int(digits, 16)))
+                i += 5
+                continue
+            key.append({"t": "\t", "n": "\n", "r": "\r", "f": "\f"}.get(escaped, escaped))
+            i += 1
+            continue
+        if char in " \t\f=:":
+            break
+        key.append(char)
+        i += 1
+
+    # Java Properties allows whitespace as a separator, optionally followed
+    # by '=' or ':', then more whitespace.
+    while i < len(s) and s[i] in " \t\f":
+        i += 1
+    if i < len(s) and s[i] in "=:":
+        i += 1
+        while i < len(s) and s[i] in " \t\f":
+            i += 1
+    return "".join(key), s[i:]
+
+
 def _configured_level_name(root: Path) -> str | None:
     """Read the effective safe level-name; None means an unsafe explicit value."""
     props = root / "server.properties"
     try:
-        lines = props.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = _logical_property_lines(
+            props.read_text(encoding="utf-8", errors="replace")
+        )
     except OSError:
         return "world"
 
-    # java.util.Properties accepts whitespace or ':' as a key separator and
-    # applies last-value-wins semantics to duplicate keys. Mirror those rules
-    # for this safety decision instead of accidentally inspecting an earlier,
-    # safer level-name while Minecraft uses a later unsafe one.
+    # java.util.Properties unescapes keys, accepts whitespace or ':' as a
+    # separator, and applies last-value-wins semantics. Mirror that behavior
+    # for this safety decision rather than inspecting a safer spelling/value
+    # than the server actually uses.
     found = False
     candidate: str | None = None
-    for line in lines:
-        s = line.lstrip()
-        if not s or s.startswith(("#", "!")):
-            continue
-        match = re.match(r"^level-name(?:\s*[:=]\s*|\s+)(.*)$", s)
-        if match:
-            found = True
-            candidate = match.group(1)
+    try:
+        for line in lines:
+            parsed = _java_property_key_value(line)
+            if parsed is not None and parsed[0] == "level-name":
+                found = True
+                candidate = parsed[1]
+    except ValueError:
+        # Invalid Java-property escapes mean we cannot make a safe prediction.
+        return None
+
     if not found:
         return "world"
     if not candidate or not _safe_world_component(candidate):
