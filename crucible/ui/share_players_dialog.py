@@ -29,9 +29,17 @@ from PyQt6.QtWidgets import (
 
 from ..exporters import client_export
 from ..sharing.gofile import GofileProvider, GofileUploadError, UploadCancelled, GofileUploadResult
+from ..sharing.history import ShareHistoryError, ShareHistoryStore
 from ..sharing.provider import UploadProvider
 from . import theme
+from .share_history_dialog import ShareHistoryDialog
 from .thread_lifecycle import connect_thread_cleanup
+
+
+def _default_share_history_store() -> ShareHistoryStore:
+    base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)
+    root = Path(base) if base else Path.home() / ".local" / "share" / "crucible"
+    return ShareHistoryStore(root / "share-history" / "history.json")
 
 
 def _safe_stem(name: str) -> str:
@@ -649,10 +657,11 @@ class _UploadWorker(QObject):
 class SharePlayersDialog(QDialog):
     """Build a Prism ZIP, require an explicit file/risks review, then upload it."""
 
-    def __init__(self, instance, parent=None, manager=None):
+    def __init__(self, instance, parent=None, manager=None, history_store: ShareHistoryStore | None = None):
         super().__init__(parent)
         self._instance = instance
         self._instance_manager = manager
+        self._history_store = history_store or _default_share_history_store()
         self._prepare_thread = None
         self._prepare_worker = None
         self._upload_thread = None
@@ -750,6 +759,9 @@ class SharePlayersDialog(QDialog):
         self._open_local_btn.setEnabled(False)
         self._open_local_btn.clicked.connect(self._open_local)
         actions.addWidget(self._open_local_btn)
+        self._history_btn = QPushButton("Share history…")
+        self._history_btn.clicked.connect(self._show_history)
+        actions.addWidget(self._history_btn)
         actions.addStretch()
         root.addLayout(actions)
 
@@ -984,6 +996,7 @@ class SharePlayersDialog(QDialog):
         self._public_ack.setEnabled(False)
         self._progress.hide()
         self._status.setText(message)
+        self._record_history("build-failed", error_code="build-failed")
         self._prepare_btn.setText("Build and review ZIP")
         self._prepare_btn.setEnabled(True)
         self._browse_source.setEnabled(True)
@@ -993,6 +1006,65 @@ class SharePlayersDialog(QDialog):
     def _prepare_finished(self):
         self._prepare_thread = None
         self._prepare_worker = None
+
+    def _record_history(
+        self,
+        event: str,
+        *,
+        pack_result=None,
+        upload_result: GofileUploadResult | None = None,
+        error_code: str = "",
+    ) -> None:
+        """Record allowlisted metadata only; history failure must never block sharing."""
+        pack = pack_result or self._result
+        raw_path = getattr(pack, "path", "") if pack is not None else ""
+        if not raw_path and self._archive_path is not None:
+            raw_path = str(self._archive_path)
+        path = Path(raw_path) if raw_path else None
+        size_bytes = 0
+        if path is not None:
+            try:
+                if path.is_file() and not path.is_symlink():
+                    size_bytes = path.stat().st_size
+            except OSError:
+                size_bytes = 0
+
+        archive_sha256 = (
+            getattr(pack, "archive_sha256", "") if pack is not None else ""
+        ) or self._archive_sha256
+        input_fingerprint = getattr(pack, "input_fingerprint", "") if pack is not None else ""
+        status = {
+            "pack-prepared": "not-attempted",
+            "build-failed": "not-attempted",
+            "upload-started": "uploading",
+            "upload-succeeded": "succeeded",
+            "upload-failed": "failed",
+            "upload-cancelled": "cancelled",
+        }.get(event, "not-attempted")
+        share_url = upload_result.download_url if upload_result is not None else ""
+        try:
+            self._history_store.append(
+                event=event,
+                instance_name=str(getattr(self._instance, "name", "Unknown server")),
+                archive_sha256=archive_sha256,
+                input_fingerprint=input_fingerprint,
+                local_path=path or "",
+                size_bytes=size_bytes,
+                provider="Gofile" if event.startswith("upload-") else "",
+                share_url=share_url,
+                upload_status=status,
+                size_verified=bool(upload_result and upload_result.size_verified),
+                md5_verified=bool(upload_result and upload_result.md5_verified),
+                error_code=error_code,
+            )
+        except (OSError, ShareHistoryError, TypeError, ValueError):
+            # A failed local history write must not alter a validated ZIP or an
+            # already-completed upload. Raw errors are deliberately not persisted.
+            pass
+
+    def _show_history(self):
+        dialog = ShareHistoryDialog(self._history_store, self)
+        dialog.exec()
 
     def _on_pack_ready(self, result):
         self._progress.hide()
@@ -1010,6 +1082,7 @@ class SharePlayersDialog(QDialog):
             self._archive_path = None
             self._archive_sha256 = ""
             self._phase = "error"
+            self._record_history("build-failed", error_code="build-failed")
             self._status.setText("Pack preparation failed. No upload was started.")
             self._review.setPlainText(result.error or "Pack preparation failed.")
             self._prepare_btn.setEnabled(True)
@@ -1037,6 +1110,7 @@ class SharePlayersDialog(QDialog):
                 manifest,
             )
         except (OSError, zipfile.BadZipFile, KeyError, TypeError, ValueError) as exc:
+            self._record_history("build-failed", error_code="build-failed")
             self._result = None
             self._phase = "error"
             self._status.setText(f"Manifest verification failed; nothing can be uploaded: {exc}")
@@ -1163,6 +1237,7 @@ class SharePlayersDialog(QDialog):
         self._status.setText(
             "ZIP ready. Read the complete file list and warnings, then tick all three acknowledgements to enable upload."
         )
+        self._record_history("pack-prepared", pack_result=result)
 
         # If a fully validated source was selected, persist it now through the
         # normal registry writer. A failed export never saves the source path.
@@ -1236,6 +1311,7 @@ class SharePlayersDialog(QDialog):
             return
         self._phase = "uploading"
         self._cancel_event = threading.Event()
+        self._record_history("upload-started")
         self._upload_btn.setEnabled(False)
         self._upload_btn.setText("Uploading…")
         self._cancel_upload_btn.setEnabled(True)
@@ -1284,6 +1360,7 @@ class SharePlayersDialog(QDialog):
         self._api_token.setEnabled(self._use_api_token.isChecked())
         if outcome.get("cancelled"):
             self._phase = "review"
+            self._record_history("upload-cancelled", error_code="cancelled")
             self._status.setText(
                 "Upload cancelled. The local ZIP is preserved. Gofile may have received an incomplete or unconfirmed copy; Crucible cannot retract it. Review and retry the same local ZIP only when ready."
             )
@@ -1292,6 +1369,12 @@ class SharePlayersDialog(QDialog):
             return
         if outcome.get("error"):
             self._phase = "upload-error"
+            error_code = (
+                "unexpected-upload-error"
+                if str(outcome.get("error", "")).startswith("Unexpected upload error")
+                else "upload-failed"
+            )
+            self._record_history("upload-failed", error_code=error_code)
             self._status.setText(
                 "Upload was not verified. The local ZIP is preserved. A connection failure after sending can leave an unconfirmed remote copy; a retry may create another link. "
                 + outcome["error"]
@@ -1301,6 +1384,7 @@ class SharePlayersDialog(QDialog):
             return
 
         result: GofileUploadResult = outcome["result"]
+        self._record_history("upload-succeeded", upload_result=result)
         self._api_token.clear()
         self._use_api_token.setChecked(False)
         self._upload_result = result

@@ -18,6 +18,7 @@ from crucible.exporters import client_export
 from crucible.exporters.client_export import ExportResult
 from crucible.mods import distribution_catalog
 from crucible.sharing.gofile import GofileUploadResult
+from crucible.sharing.history import ShareHistoryStore
 from crucible.ui.share_players_dialog import SharePlayersDialog, _PrepareWorker, _UploadWorker, _next_pack_path, _verified_cached_pack
 
 
@@ -28,7 +29,11 @@ class SharePlayersDialogTests(unittest.TestCase):
 
     def _dialog(self):
         instance = SimpleNamespace(name="Demo Server", path="/not-used", prism_source="")
-        return SharePlayersDialog(instance)
+        history_tmp = tempfile.TemporaryDirectory()
+        store = ShareHistoryStore(Path(history_tmp.name) / "history" / "events.json")
+        dialog = SharePlayersDialog(instance, history_store=store)
+        dialog._test_history_tmp = history_tmp
+        return dialog
 
     def _result_archive(self, path: Path):
         jar = b"synthetic jar content"
@@ -305,9 +310,12 @@ class SharePlayersDialogTests(unittest.TestCase):
                     {"uid": "net.neoforged", "version": "21.1.233"},
                 ],
             }), encoding="utf-8")
-            dialog = SharePlayersDialog(SimpleNamespace(
-                name="Demo Server", path="/not-used", prism_source=str(source)
-            ))
+            history_tmp = tempfile.TemporaryDirectory()
+            dialog = SharePlayersDialog(
+                SimpleNamespace(name="Demo Server", path="/not-used", prism_source=str(source)),
+                history_store=ShareHistoryStore(Path(history_tmp.name) / "history" / "events.json"),
+            )
+            dialog._test_history_tmp = history_tmp
             dialog._source.setText(str(source))
             with patch.object(
                 QStandardPaths, "writableLocation", return_value=str(app_data)
@@ -437,6 +445,10 @@ class SharePlayersDialogTests(unittest.TestCase):
             self.assertIn(result.archive_sha256, report)
             self.assertIn(result.manifest_path, report)
             self.assertIn("cannot guarantee a secret-free pack", dialog._review_ack.text())
+            history = dialog._history_store.load()
+            self.assertEqual(history[-1]["event"], "pack-prepared")
+            self.assertEqual(history[-1]["archiveSha256"], result.archive_sha256)
+            self.assertEqual(history[-1]["localPath"], result.path)
 
         dialog.close()
 
@@ -462,6 +474,80 @@ class SharePlayersDialogTests(unittest.TestCase):
         self.assertTrue(dialog._copy_instructions_btn.isEnabled())
         self.assertTrue(dialog._open_link_btn.isEnabled())
         self.assertIn("copied to the clipboard", dialog._status.text())
+        dialog.close()
+
+    def test_successful_upload_records_link_and_verification_without_credentials(self):
+        dialog = self._dialog()
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "player-pack.zip"
+            archive_path.write_bytes(b"synthetic player ZIP")
+            archive_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+            dialog._archive_path = archive_path
+            dialog._archive_sha256 = archive_sha
+            dialog._result = ExportResult(
+                path=str(archive_path),
+                fmt="prism",
+                archive_sha256=archive_sha,
+                input_fingerprint="b" * 64,
+            )
+            token = "never-store-this-owner-token"
+            result = GofileUploadResult(
+                download_url="https://gofile.io/d/AbCdEf123",
+                file_id="synthetic-file-id",
+                file_name=archive_path.name,
+                file_size=archive_path.stat().st_size,
+                local_sha256=archive_sha,
+                remote_md5="",
+                size_verified=True,
+                md5_verified=False,
+            )
+            with patch.object(QApplication, "clipboard", return_value=Mock()):
+                dialog._on_upload_done({"result": result, "error": "", "cancelled": False})
+
+            records = dialog._history_store.load()
+            self.assertEqual(records[-1]["event"], "upload-succeeded")
+            self.assertEqual(records[-1]["archiveSha256"], archive_sha)
+            self.assertEqual(records[-1]["inputFingerprint"], "b" * 64)
+            self.assertEqual(records[-1]["localPath"], str(archive_path))
+            self.assertEqual(records[-1]["shareUrl"], result.download_url)
+            self.assertTrue(records[-1]["sizeVerified"])
+            self.assertFalse(records[-1]["md5Verified"])
+            raw = dialog._history_store.path.read_text(encoding="utf-8")
+            self.assertNotIn(token, raw)
+            self.assertNotIn("apiToken", raw)
+            self.assertEqual(archive_path.read_bytes(), b"synthetic player ZIP")
+
+        dialog.close()
+
+    def test_unexpected_upload_error_history_keeps_only_generic_category(self):
+        dialog = self._dialog()
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "player-pack.zip"
+            archive_path.write_bytes(b"synthetic player ZIP")
+            archive_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+            dialog._archive_path = archive_path
+            dialog._archive_sha256 = archive_sha
+            dialog._result = ExportResult(
+                path=str(archive_path),
+                fmt="prism",
+                archive_sha256=archive_sha,
+                input_fingerprint="c" * 64,
+            )
+            secret = "private-owner-token-that-must-not-be-recorded"
+            dialog._phase = "uploading"
+            dialog._on_upload_done({
+                "result": None,
+                "error": f"Unexpected upload error. Sensitive details were suppressed; token={secret}",
+                "cancelled": False,
+            })
+            records = dialog._history_store.load()
+            self.assertEqual(records[-1]["event"], "upload-failed")
+            self.assertEqual(records[-1]["errorCode"], "unexpected-upload-error")
+            raw = dialog._history_store.path.read_text(encoding="utf-8")
+            self.assertNotIn(secret, raw)
+            self.assertNotIn("token=", raw)
+            self.assertEqual(archive_path.read_bytes(), b"synthetic player ZIP")
+
         dialog.close()
 
     def test_modified_zip_is_rejected_before_file_review_or_upload(self):
@@ -606,6 +692,7 @@ class SharePlayersDialogTests(unittest.TestCase):
             self.assertIsNone(dialog._result)
             self.assertIn("manifest root is not a JSON object", dialog._status.text())
             self.assertFalse(dialog._upload_btn.isEnabled())
+            self.assertEqual(dialog._history_store.load()[-1]["event"], "build-failed")
 
         dialog.close()
 
