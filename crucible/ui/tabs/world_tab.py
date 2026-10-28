@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ...data.instance_model import ServerInstance, dimension_label
+from ...data.world_paths import UnsafeWorldPathError, world_name_issue
 from ...data.backup_manager import (
     BackupManager, BackupWorker, BackupEntry, SwapWorker, SwapResult,
     ResetWorldWorker, WipeWorldWorker,
@@ -109,6 +110,7 @@ class WorldTab(QWidget):
         # requested args here and let _stats_thread_finished start it.
         self._stats_pending: tuple[Path, list[Path]] | None = None
         self._dims_expanded = False
+        self._world_path_safe = True
         self._build_ui()
 
     # Public API
@@ -283,13 +285,54 @@ class WorldTab(QWidget):
 
     # Refresh
 
+    def _current_world_path_issue(self) -> str | None:
+        if self._instance is None:
+            return "No server is selected."
+        return world_name_issue(self._instance.path_obj)
+
+    def _guard_world_path(self, title: str) -> bool:
+        issue = self._current_world_path_issue()
+        if not issue:
+            return True
+        QMessageBox.critical(
+            self,
+            title,
+            f"{issue}\n\nCrucible did not change any world files. Fix level-name/server path configuration and refresh before retrying.",
+        )
+        return False
+
+    def _disable_world_operations(self) -> None:
+        self._world_path_safe = False
+        self._backup_btn.setEnabled(False)
+        self._reset_btn.setEnabled(False)
+        self._wipe_btn.setEnabled(False)
+        self._cleanup_btn.setEnabled(False)
+
     def _refresh(self) -> None:
         if not self._manager or not self._instance:
             return
         inst = self._instance
-        world_root = inst.world_root_path()
+        issue = self._current_world_path_issue()
+        world_root: Path | None = None
+        if not issue:
+            try:
+                world_root = inst.world_root_path()
+            except UnsafeWorldPathError as exc:
+                issue = str(exc)
 
-        if world_root.is_dir():
+        self._world_path_safe = not bool(issue)
+        for button in (self._backup_btn, self._reset_btn, self._wipe_btn):
+            button.setEnabled(self._world_path_safe)
+        if issue:
+            self._world_label.setText("World: unsafe path")
+            self._dims_label.setText(
+                f"{issue}\nWorld backup, swap, reset, wipe and pre-swap cleanup are disabled. "
+                "No files were changed."
+            )
+            self._dims_toggle_btn.hide()
+            self._stats_generation += 1
+            self._stats_pending = None
+        elif world_root is not None and world_root.is_dir():
             # Dimension listing is a cheap shallow directory scan (just the
             # DIM* folder names directly inside the world root) -- safe to
             # do synchronously. The expensive recursive byte-size walk is
@@ -297,7 +340,7 @@ class WorldTab(QWidget):
             dims = inst.world_dimension_dirs()
             self._world_label.setText(f"World: {world_root.name}   (calculating size\u2026)")
             self._set_dims_text(dims)
-        else:
+        elif world_root is not None:
             self._world_label.setText(f"World: {world_root.name}   (not generated yet)")
             self._dims_label.setText(
                 "This server has never been started, so no world folder exists yet."
@@ -306,6 +349,7 @@ class WorldTab(QWidget):
 
         entries = self._manager.list_backups()
         self._table.setRowCount(len(entries))
+        swap_buttons: list[QPushButton] = []
         for row, entry in enumerate(entries):
             name_item = QTableWidgetItem(entry.display_name)
             if not entry.slot_name:
@@ -325,7 +369,9 @@ class WorldTab(QWidget):
 
             swap_btn = QPushButton("Swap to this")
             swap_btn.setAccessibleName(f"Swap to world backup {entry.display_name}")
+            swap_btn.setEnabled(self._world_path_safe)
             swap_btn.clicked.connect(lambda _checked=False, e=entry: self._confirm_and_swap(e))
+            swap_buttons.append(swap_btn)
 
             rename_btn = QPushButton("Rename")
             rename_btn.setAccessibleName(f"Rename world backup {entry.display_name}")
@@ -343,7 +389,31 @@ class WorldTab(QWidget):
             self._table.setCellWidget(row, 3, actions)
             self._table.setRowHeight(row, 32)
 
-        pre_swap_dirs = self._manager.list_pre_swap_dirs()
+        pre_swap_dirs: list[Path] = []
+        if not issue and world_root is not None:
+            try:
+                pre_swap_dirs = self._manager.list_pre_swap_dirs()
+            except UnsafeWorldPathError as exc:
+                issue = str(exc)
+                self._world_label.setText("World: unsafe path")
+                self._dims_label.setText(
+                    f"{issue}\nWorld backup, swap, reset, wipe and pre-swap cleanup are disabled. "
+                    "No files were changed."
+                )
+                self._disable_world_operations()
+                for swap_btn in swap_buttons:
+                    swap_btn.setEnabled(False)
+                world_root = None
+
+        if world_root is None:
+            self._presafe_label.setText(
+                "Pre-swap cleanup unavailable until the configured world path is safe."
+            )
+            self._cleanup_btn.setEnabled(False)
+            self._stats_generation += 1
+            self._stats_pending = None
+            return
+
         if pre_swap_dirs:
             self._presafe_label.setText(
                 f"{len(pre_swap_dirs)} leftover pre-swap folder(s) from previous swaps/resets "
@@ -351,7 +421,7 @@ class WorldTab(QWidget):
                 "your world folder -- once you've confirmed your current world is good, "
                 "you can delete them."
             )
-            self._cleanup_btn.setEnabled(True)
+            self._cleanup_btn.setEnabled(self._world_path_safe)
         else:
             self._presafe_label.setText("No leftover pre-swap folders.")
             self._cleanup_btn.setEnabled(False)
@@ -443,10 +513,20 @@ class WorldTab(QWidget):
     def _on_stats_done(self, generation: int, size: int, presafe_total: int) -> None:
         if generation != self._stats_generation or self._instance is None or self._manager is None:
             return  # stale -- instance changed or a newer refresh already started
-        world_root = self._instance.world_root_path()
+        try:
+            world_root = self._instance.world_root_path()
+            pre_swap_dirs = self._manager.list_pre_swap_dirs()
+        except UnsafeWorldPathError as exc:
+            self._world_label.setText("World: unsafe path")
+            self._dims_label.setText(
+                f"{exc}\nWorld backup, swap, reset, wipe and pre-swap cleanup are disabled. "
+                "No files were changed."
+            )
+            self._disable_world_operations()
+            self._cleanup_btn.setEnabled(False)
+            return
         if world_root.is_dir():
             self._world_label.setText(f"World: {world_root.name}   ({_human_size(size)})")
-        pre_swap_dirs = self._manager.list_pre_swap_dirs()
         if pre_swap_dirs:
             self._presafe_label.setText(
                 f"{len(pre_swap_dirs)} leftover pre-swap folder(s) from previous swaps/resets "
