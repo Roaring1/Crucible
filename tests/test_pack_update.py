@@ -380,6 +380,27 @@ class PreserveListTests(TempDirCase):
         self.assertTrue(live.is_dir())
         self.assertTrue(staging.is_dir())
 
+    def test_copy_preserved_refuses_nested_symlink_without_following_it(self):
+        live = self.tmp / "server"
+        staging = self.tmp / "staging"
+        world = live / "world"
+        world.mkdir(parents=True)
+        staging.mkdir()
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        marker = outside / "private.txt"
+        marker.write_text("must not be copied into the pack", encoding="utf-8")
+        try:
+            (world / "external").symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"directory symlink unavailable on this host: {exc}")
+
+        with self.assertRaisesRegex(PackUpdateError, "symlink inside"):
+            _copy_preserved(live, staging, ["world"], None)
+
+        self.assertEqual(marker.read_text(encoding="utf-8"), "must not be copied into the pack")
+        self.assertFalse((staging / "world").exists())
+
     def test_copy_preserved_refuses_symlink_source_and_destination(self):
         live = self.tmp / "server"
         staging = self.tmp / "staging"
