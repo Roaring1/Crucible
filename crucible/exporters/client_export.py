@@ -167,8 +167,15 @@ def compute_input_fingerprint(
     client_root: Path | None = None
     if client_source:
         source = Path(client_source).expanduser()
-        if source.is_symlink() or not source.is_dir():
-            raise OSError("The selected Prism source is unavailable for fingerprinting.")
+        if source.is_symlink():
+            raise OSError("The selected Prism source is a symbolic link; choose the real instance folder.")
+        if source.is_file() and zipfile.is_zipfile(source):
+            raise OSError(
+                "The saved Prism source is a ZIP archive, not an installed Prism instance folder. "
+                "Import that ZIP into Prism, wait for the instance to finish installing, then select the installed instance folder."
+            )
+        if not source.is_dir():
+            raise OSError("The selected Prism source folder is unavailable; choose the installed instance folder.")
         source = source.resolve(strict=True)
         prism_root = source / ".minecraft"
         multimc_root = source / "minecraft"
