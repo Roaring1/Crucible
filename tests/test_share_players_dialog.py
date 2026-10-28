@@ -983,13 +983,59 @@ class SharePlayersDialogTests(unittest.TestCase):
         self.assertTrue(outcomes[0]["stale_inputs"])
         self.assertIn("changed after this ZIP was built", outcomes[0]["error"])
 
+    def test_upload_worker_allows_upload_when_inputs_still_match(self):
+        class RecordingProvider:
+            name = "Recording provider"
+
+            def __init__(self):
+                self.called = False
+
+            def upload_file(self, path, *, expected_sha256, progress_cb=None, cancel_event=None):
+                self.called = True
+                return GofileUploadResult(
+                    download_url="https://gofile.io/d/TestFile123",
+                    file_id="synthetic-id",
+                    file_name="synthetic-pack.zip",
+                    file_size=10,
+                    local_sha256="a" * 64,
+                    remote_md5="",
+                    size_verified=False,
+                    md5_verified=False,
+                )
+
+        provider = RecordingProvider()
+        worker = _UploadWorker(
+            provider,
+            Path("synthetic-pack.zip"),
+            "a" * 64,
+            threading.Event(),
+            instance=SimpleNamespace(path="/synthetic-server", name="Demo Server"),
+            client_source="/synthetic-prism",
+            include_resourcepacks=False,
+            expected_input_fingerprint="b" * 64,
+        )
+        outcomes = []
+        worker.done.connect(outcomes.append)
+        with patch(
+            "crucible.ui.share_players_dialog.client_export.compute_input_fingerprint",
+            return_value="b" * 64,
+        ) as fingerprint:
+            worker.run()
+
+        fingerprint.assert_called_once()
+        self.assertTrue(provider.called)
+        self.assertEqual(len(outcomes), 1)
+        self.assertFalse(outcomes[0].get("stale_inputs", False))
+        self.assertEqual(outcomes[0]["result"].download_url, "https://gofile.io/d/TestFile123")
+        self.assertFalse(outcomes[0]["error"])
+
     def test_upload_worker_fails_closed_when_input_revalidation_fails(self):
         class RecordingProvider:
             name = "Recording provider"
 
             def upload_file(self, path, *, expected_sha256, progress_cb=None, cancel_event=None):
                 self.fail("provider must not be called")
-        
+
         worker = _UploadWorker(
             RecordingProvider(),
             Path("synthetic-pack.zip"),
