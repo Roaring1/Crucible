@@ -19,7 +19,15 @@ from crucible.exporters.client_export import ExportResult
 from crucible.mods import distribution_catalog
 from crucible.sharing.gofile import GofileUploadResult
 from crucible.sharing.history import ShareHistoryStore
-from crucible.ui.share_players_dialog import SharePlayersDialog, _PrepareWorker, _UploadWorker, _next_pack_path, _verified_cached_pack
+from crucible.ui.share_players_dialog import (
+    SharePlayersDialog,
+    _PrepareWorker,
+    _UploadWorker,
+    _format_transfer_progress,
+    _is_redundant_catalog_warning,
+    _next_pack_path,
+    _verified_cached_pack,
+)
 
 
 class SharePlayersDialogTests(unittest.TestCase):
@@ -34,6 +42,35 @@ class SharePlayersDialogTests(unittest.TestCase):
         dialog = SharePlayersDialog(instance, history_store=store)
         dialog._test_history_tmp = history_tmp
         return dialog
+
+    def test_large_upload_progress_shows_average_rate_and_eta(self):
+        mib = 1024 * 1024
+        progress = _format_transfer_progress(20 * mib, 100 * mib, 10.0)
+        self.assertIn("20,971,520 / 104,857,600 bytes", progress)
+        self.assertIn("2.00 MiB/s", progress)
+        self.assertIn("ETA ~40s", progress)
+
+    def test_slow_upload_progress_uses_kib_rate_and_handles_no_bytes_yet(self):
+        progress = _format_transfer_progress(128 * 1024, 2 * 1024 * 1024, 10.0)
+        self.assertIn("12.8 KiB/s", progress)
+        self.assertIn("ETA ~2m 30s", progress)
+        waiting = _format_transfer_progress(0, 1000, 5.0)
+        self.assertIn("waiting for network", waiting)
+        self.assertNotIn("ETA", waiting)
+
+    def test_distribution_warnings_are_not_repeated_after_exact_artifact_section(self):
+        self.assertTrue(_is_redundant_catalog_warning(
+            "No curated distribution record matches the exact SHA-256 of example.jar; redistribution remains unverified."
+        ))
+        self.assertTrue(_is_redundant_catalog_warning(
+            "Conditional distribution record for example.jar; review its listed conditions and evidence before sharing."
+        ))
+        self.assertTrue(_is_redundant_catalog_warning(
+            "Curated catalog permits bundling the exact artifact example.jar based on the recorded evidence; verify terms remain current."
+        ))
+        self.assertFalse(_is_redundant_catalog_warning(
+            "Privacy review: possible credential assignment in config/example.toml."
+        ))
 
     def _result_archive(self, path: Path):
         jar = b"synthetic jar content"
@@ -441,6 +478,8 @@ class SharePlayersDialogTests(unittest.TestCase):
             self.assertEqual(report.count("possible credential assignment"), 1)
             self.assertIn("DISTRIBUTION RIGHTS (curated, exact-artifact SHA-256 catalog)", report)
             self.assertIn("UNVERIFIED JAR — no reviewed catalog record for these exact bytes", report)
+            self.assertIn("Catalog summary: 1 client JAR artifact(s) reviewed; 1 unverified", report)
+            self.assertNotIn("No curated distribution record matches the exact SHA-256 of example.jar; redistribution remains unverified.", report)
             self.assertIn("UNVERIFIED RESOURCE PACK — check distribution terms separately: ExamplePack.zip", report)
             self.assertIn(result.archive_sha256, report)
             self.assertIn(result.manifest_path, report)

@@ -506,12 +506,47 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         if loader == "vanilla":
             if source_loader_uids:
                 return ExportResult(error="The client source uses a mod loader, but this server is vanilla. No archive was written.")
-        elif (
-            uid not in components
-            or any(source_uid != uid for source_uid in source_loader_uids)
-            or components.get(uid) != loader_version
-        ):
-            return ExportResult(error="The client source uses a different loader/version. No archive was written.")
+        else:
+            loader_labels = {
+                "forge": "Forge",
+                "neoforge": "NeoForge",
+                "fabric": "Fabric Loader",
+                "quilt": "Quilt Loader",
+            }
+            expected_loader = loader_labels.get(loader, loader.title())
+            expected_version = loader_version or "version not set"
+            if uid not in components:
+                source_loaders = [
+                    f"{loader_labels.get(source_loader, source_loader)} {source_version or '(version not set)'}"
+                    for source_uid, source_version in source_loader_uids.items()
+                    for source_loader, expected_uid in _PRISM_UID.items()
+                    if expected_uid == source_uid
+                ]
+                found = ", ".join(source_loaders) if source_loaders else "no recognized mod loader component"
+                return ExportResult(error=(
+                    f"The server expects {expected_loader} {expected_version}, but the selected Prism profile uses {found}. "
+                    "Select a client profile with the same loader and exact version; no archive was written."
+                ))
+            incompatible_uids = [source_uid for source_uid in source_loader_uids if source_uid != uid]
+            if incompatible_uids:
+                source_loaders = [
+                    f"{loader_labels.get(source_loader, source_loader)} {source_loader_uids[source_uid] or '(version not set)'}"
+                    for source_uid in incompatible_uids
+                    for source_loader, expected_uid in _PRISM_UID.items()
+                    if expected_uid == source_uid
+                ]
+                found = ", ".join(source_loaders) or "another mod loader"
+                return ExportResult(error=(
+                    f"The server expects {expected_loader} {expected_version}, but the selected Prism profile also contains {found}. "
+                    "Select a profile with the matching loader only; no archive was written."
+                ))
+            client_loader_version = components.get(uid) or "version not set"
+            if client_loader_version != loader_version:
+                return ExportResult(error=(
+                    f"The server expects {expected_loader} {expected_version}, but the selected Prism profile uses "
+                    f"{expected_loader} {client_loader_version}. Select/update a profile with the exact same loader version; "
+                    "no archive was written."
+                ))
 
         for layout in (".minecraft", "minecraft"):
             if (source / layout).is_symlink():
@@ -919,7 +954,7 @@ _MAX_PRIVACY_FINDINGS = 50
 _TEXT_CONFIG_SUFFIXES = {
     "", ".cfg", ".conf", ".env", ".ini", ".json", ".json5", ".js", ".mjs",
     ".properties", ".ps1", ".sh", ".toml", ".txt", ".xml", ".yaml", ".yml",
-    ".lua", ".properties",
+    ".lua", ".jsonc", ".snbt", ".bak", ".css", ".local",
 }
 _SECRET_PATTERNS = [
     ("credential assignment", re.compile(

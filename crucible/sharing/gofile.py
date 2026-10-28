@@ -27,6 +27,8 @@ _UPLOAD_HOST = "upload.gofile.io"
 _UPLOAD_PATH = "/uploadfile"
 _USER_AGENT = "Crucible/0.8.0 (client-pack sharing)"
 _CHUNK_BYTES = 1024 * 1024
+# Smaller network writes bound the time spent inside a single blocking send on slow links.
+_UPLOAD_CHUNK_BYTES = 256 * 1024
 _MAX_RESPONSE_BYTES = 1024 * 1024
 _DOWNLOAD_HOSTS = frozenset({"gofile.io", "www.gofile.io"})
 
@@ -297,7 +299,7 @@ def upload_file(
             while True:
                 if cancel_event and cancel_event.is_set():
                     raise UploadCancelled("Upload cancelled. The local ZIP is preserved.")
-                chunk = stream.read(_CHUNK_BYTES)
+                chunk = stream.read(_UPLOAD_CHUNK_BYTES)
                 if not chunk:
                     break
                 connection.send(chunk)

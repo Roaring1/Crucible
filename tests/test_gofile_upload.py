@@ -140,6 +140,25 @@ class GofileUploadTests(unittest.TestCase):
             self.assertTrue(result.md5_verified)
             self.assertNotIn("guestToken", repr(result))
 
+    def test_upload_uses_bounded_network_chunks_for_slow_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "large-synthetic-pack.zip"
+            content = b"x" * (gofile._UPLOAD_CHUNK_BYTES * 3 + 17)
+            path.write_bytes(content)
+            expected_sha = hashlib.sha256(content).hexdigest()
+            _FakeHTTPSConnection.response_payload = self._payload(content)
+
+            result = gofile.upload_file(path, expected_sha256=expected_sha)
+
+            conn = _FakeHTTPSConnection.latest
+            file_chunks = conn.send_sizes[1:-1]  # exclude multipart headers and final boundary
+            self.assertEqual(sum(file_chunks), len(content))
+            self.assertEqual(len(file_chunks), 4)
+            self.assertLessEqual(max(file_chunks), gofile._UPLOAD_CHUNK_BYTES)
+            self.assertEqual(result.local_sha256, expected_sha)
+            self.assertTrue(result.size_verified)
+            self.assertTrue(result.md5_verified)
+
     def test_gofile_provider_conforms_to_provider_protocol(self):
         provider = gofile.GofileProvider()
         self.assertIsInstance(provider, UploadProvider)
@@ -171,7 +190,7 @@ class GofileUploadTests(unittest.TestCase):
             conn = _FakeHTTPSConnection.latest
             self.assertIsNotNone(conn)
             self.assertTrue(conn.closed)
-            self.assertEqual(progress, [(0, len(content)), (gofile._CHUNK_BYTES, len(content))])
+            self.assertEqual(progress, [(0, len(content)), (gofile._UPLOAD_CHUNK_BYTES, len(content))])
             # The multipart header and first chunk were sent, but the tail and
             # final bytes were not; cancellation is best-effort after the first
             # network write and never discards the local file.

@@ -57,7 +57,8 @@ remain under an advanced export path.
   are reported instead of guessed.
 - The exporter embeds a per-file size/SHA-256 manifest and performs bounded
   heuristic scans on eligible text files beneath included `config/` and
-  KubeJS roots. The manifest and owner review state that this scan does **not**
+  KubeJS roots, including common JSONC, SNBT, CSS, locale and text-backup
+  formats. The manifest and owner review state that this scan does **not**
   inspect mod JARs, resource packs or other payloads for secrets. Unsupported
   binary/config types and oversized files are flagged for manual review, and
   secret values are never echoed. The scan is not proof that a pack contains no
@@ -65,7 +66,10 @@ remain under an advanced export path.
 - After an approved upload succeeds, the returned Gofile share link is copied
   automatically and remains available for manual copy/open actions. Crucible
   does not retain Gofile guest-management tokens or locally store the optional
-  owner API token.
+  owner API token. Upload progress reports average payload throughput and an
+  approximate ETA; bounded 256 KiB network writes make cancellation checks more
+  frequent on slow links while finite socket timeouts still prevent indefinite
+  hangs.
 - A real Prism Launcher 11.1.1 import has been verified in an isolated fresh
   data directory using the current scope-annotated ZIP. Its 8 manifest payload
   entries were hash-checked against the archive and imported files; Prism
@@ -98,9 +102,11 @@ remain under an advanced export path.
   when it was excluded. Exclude client resourcepacks by default, with a separate
   opt-in that lists pack names and license status; shaderpacks stay excluded.
 - [x] Scan included text config/KubeJS content for common tokens, webhooks,
-  credentials, private keys and private addresses. Values are never echoed in
-  warnings. The scan has explicit size/finding bounds and records incomplete
-  coverage in the manifest; it is heuristic, not a guarantee of no secrets.
+  credentials, private keys and private addresses, including common `.jsonc`,
+  `.snbt`, `.bak`, `.css`, and `.local` text formats found in real profiles.
+  Values are never echoed in warnings. The scan has explicit size/finding
+  bounds and records incomplete coverage (including binary config assets) in
+  the manifest; it is heuristic, not a guarantee of no secrets.
 - [x] Export only mods and the selected `config/` and `kubejs/` paths. Worlds,
   screenshots, logs, crash reports, personal launcher/account data, unrelated
   graphics settings, and shader/resource packs are not copied by this exporter.
@@ -156,10 +162,12 @@ working modded client before promising every pack can launch successfully.
   Guest mode is the default; an optional owner token is memory-only, and the
   returned guest-management token is discarded. Recipients do not need API
   keys or account credentials.
-- [x] Stream from disk on a worker thread, report byte-level progress, support
-  cancellation, use finite socket timeouts, and offer manual retry from the same
-  ZIP. No automatic retry is performed because a lost response can leave an
-  unconfirmed public upload and duplicates would be misleading.
+- [x] Stream from disk on a worker thread, report byte-level progress, average
+  throughput and approximate ETA, support cancellation, use finite socket
+  timeouts, and offer manual retry from the same ZIP. Network writes are bounded
+  to 256 KiB so cancellation is checked more often on slow links. No automatic
+  retry is performed because a lost response can leave an unconfirmed public
+  upload and duplicates would be misleading.
 - [x] Verify the local SHA-256 against the build result before sending. Compare
   Gofile's reported size and MD5 when present; the remote MD5 is not described
   as a SHA-256 check. If metadata is absent, the UI says so.

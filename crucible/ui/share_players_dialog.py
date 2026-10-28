@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import zipfile
 from pathlib import Path
 
@@ -34,6 +35,48 @@ from ..sharing.provider import UploadProvider
 from . import theme
 from .share_history_dialog import ShareHistoryDialog
 from .thread_lifecycle import connect_thread_cleanup
+
+
+def _format_transfer_progress(completed: int, total: int, elapsed_seconds: float) -> str:
+    """Format payload throughput and a cautious ETA for a long, slow upload."""
+    total = max(0, int(total))
+    completed = max(0, min(int(completed), total))
+    elapsed = max(0.0, float(elapsed_seconds))
+    prefix = f"Uploaded {completed:,} / {total:,} bytes"
+    if completed == 0 or elapsed <= 0:
+        return f"{prefix} · waiting for network · %p%"
+
+    speed = completed / elapsed
+    if speed >= 1024 * 1024:
+        speed_label = f"{speed / (1024 * 1024):.2f} MiB/s"
+    else:
+        speed_label = f"{speed / 1024:.1f} KiB/s"
+
+    if completed >= total:
+        return f"{prefix} · average {speed_label} · finalizing · %p%"
+    if elapsed < 1.0 or speed <= 0:
+        return f"{prefix} · {speed_label} · estimating ETA · %p%"
+
+    remaining = max(0, int(round((total - completed) / speed)))
+    if remaining < 60:
+        eta = f"~{max(1, remaining)}s"
+    elif remaining < 3600:
+        minutes, seconds = divmod(remaining, 60)
+        eta = f"~{minutes}m {seconds:02d}s"
+    else:
+        hours, rem = divmod(remaining, 3600)
+        minutes = rem // 60
+        eta = f"~{hours}h {minutes}m"
+    return f"{prefix} · {speed_label} · ETA {eta} · %p%"
+
+
+def _is_redundant_catalog_warning(warning: str) -> bool:
+    """These per-JAR notes already appear with exact hashes in Distribution Rights."""
+    return warning.startswith((
+        "No curated distribution record matches the exact SHA-256 of ",
+        "Conditional distribution record for ",
+        "Curated catalog permits bundling the exact artifact ",
+    ))
 
 
 def _default_share_history_store() -> ShareHistoryStore:
@@ -672,6 +715,7 @@ class SharePlayersDialog(QDialog):
         self._archive_sha256 = ""
         self._built_source = ""
         self._upload_result: GofileUploadResult | None = None
+        self._upload_started_at: float | None = None
         self._started_once = False
         self._phase = "idle"
         self._review_text = ""
@@ -1150,6 +1194,18 @@ class SharePlayersDialog(QDialog):
             "",
             "DISTRIBUTION RIGHTS (curated, exact-artifact SHA-256 catalog):",
         ])
+        catalog_decisions = [item for item in distribution_review if isinstance(item, dict)]
+        decision_counts = {
+            decision: sum(item.get("decision") == decision for item in catalog_decisions)
+            for decision in ("unverified", "permitted", "conditional", "prohibited")
+        }
+        lines.append(
+            "  Catalog summary: "
+            f"{len(catalog_decisions)} client JAR artifact(s) reviewed; "
+            f"{decision_counts['unverified']} unverified, {decision_counts['permitted']} permitted, "
+            f"{decision_counts['conditional']} conditional, {decision_counts['prohibited']} prohibited. "
+            "Unverified does not mean permission was granted."
+        )
         if jar_rows:
             for jar_path in jar_rows:
                 decision = distribution_by_path.get(jar_path)
@@ -1218,6 +1274,7 @@ class SharePlayersDialog(QDialog):
         other_warnings = [
             warning for warning in result.warnings
             if str(warning) not in privacy_warning_set
+            and not _is_redundant_catalog_warning(str(warning))
         ]
         if other_warnings:
             lines.extend(["", "EXPORT / COMPATIBILITY / DISTRIBUTION WARNINGS:"])
@@ -1323,6 +1380,7 @@ class SharePlayersDialog(QDialog):
         self._api_token.setEnabled(False)
         self._progress.setRange(0, 1000)
         self._progress.setValue(0)
+        self._upload_started_at = None
         self._progress.setFormat("Uploading 0 bytes")
         self._progress.show()
         self._status.setText("Verifying the local ZIP checksum, then streaming it to Gofile…")
@@ -1345,9 +1403,13 @@ class SharePlayersDialog(QDialog):
 
     def _on_upload_progress(self, completed: int, total: int):
         if total > 0:
+            if completed <= 0 or self._upload_started_at is None:
+                # Start timing on the first transfer callback, not while a large ZIP is being hashed.
+                self._upload_started_at = time.monotonic()
+            elapsed = max(0.0, time.monotonic() - self._upload_started_at)
             ratio = max(0.0, min(1.0, completed / total))
             self._progress.setValue(round(ratio * 1000))
-            self._progress.setFormat(f"Uploaded {completed:,} / {total:,} bytes · %p%")
+            self._progress.setFormat(_format_transfer_progress(completed, total, elapsed))
 
     def _on_upload_done(self, outcome: dict):
         self._progress.hide()
@@ -1423,6 +1485,7 @@ class SharePlayersDialog(QDialog):
         self._upload_thread = None
         self._upload_worker = None
         self._cancel_event = None
+        self._upload_started_at = None
 
     def _cancel_upload(self):
         if self._cancel_event:
