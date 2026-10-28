@@ -32,6 +32,7 @@ import argparse
 import sys
 
 from .data.instance_manager import InstanceManager, validate_session_name
+from .data.world_paths import UnsafeWorldPathError
 from .process.tmux_manager import TmuxManager
 from .utils import (
     BOLD, DIM, GREEN, YELLOW, CYAN, RESET,
@@ -1156,8 +1157,13 @@ def cmd_update_pack(manager: InstanceManager, tmux: TmuxManager, args) -> None:
             dim("  Aborted; nothing was changed.")
             return
 
+    try:
+        world = inst.world_root_path()
+    except UnsafeWorldPathError as exc:
+        err(f"Unsafe world path; no update was started: {exc}")
+        sys.exit(1)
+
     bm = BackupManager(inst)
-    world = inst.world_root_path()
 
     def _backup() -> str:
         label = f"Before update {ident.version or 'unknown'} -> {target.version}"
