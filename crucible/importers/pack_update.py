@@ -46,6 +46,7 @@ GTNH specifics that drove this design (verified against the live index):
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import ssl
