@@ -705,6 +705,7 @@ class StartTests(unittest.TestCase):
         with (
             patch.object(tm, "tmux_available", return_value=True),
             patch.object(tm, "is_running", return_value=False),
+            patch.object(tm, "_port_conflict_message", return_value=None),
             patch.object(tm, "_run", side_effect=fake),
             patch.object(tm, "_verify_started", return_value=(True, "")),
         ):
