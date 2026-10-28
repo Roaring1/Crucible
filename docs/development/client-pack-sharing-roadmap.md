@@ -1,6 +1,6 @@
 # One-click Share with players: implementation roadmap
 
-**Status:** P0, P1's clean Prism-import validation, and the P2 Gofile adapter/review-first sharing UI are merged to `main`. The post-merge CI run passed on Python 3.11 and 3.13; local regression tests cover provider/UI behavior. A live public upload and large-file cancellation/retry soak test remain intentionally unrun until an owner approves a synthetic test upload.
+**Status:** P0, P1's clean Prism-import validation, and the P2 Gofile adapter/review-first sharing UI are merged to `main`. The post-merge CI run passed on Python 3.11 and 3.13; local regression tests cover provider/UI behavior. On 2026-10-27, an owner-approved small synthetic Gofile upload passed local SHA-256 plus remote size/MD5 checks; the public share page returned HTTP 200, and the synthetic remote folder and local test ZIP were removed. Actual anonymous ZIP download and a large-file cancellation/retry soak test remain open.
 **Tracking issue:** [Crucible #5](https://github.com/Roaring1/Crucible/issues/5).
 
 ## Product outcome
@@ -173,12 +173,18 @@ working modded client before promising every pack can launch successfully.
   the link as public to anyone who obtains it.
 - [x] Warn that free Gofile storage is ephemeral and do not hard-code a monthly
   traffic/file-size quota or promise permanent retention.
-- [ ] Verify a real owner-approved Gofile upload and a large-file cancel/retry
-  run. No live upload has been performed by this implementation pass.
+- [x] Run a small owner-approved synthetic live Gofile upload; verify local
+  SHA-256 and Gofile-reported size/MD5; confirm the public share page responds;
+  delete the synthetic remote folder and local test ZIP. This does not prove an
+  anonymous recipient can download the actual ZIP bytes.
+- [ ] Verify anonymous ZIP download end-to-end and run a large-file cancellation/
+  retry soak test. No real modpack has been uploaded.
 
-**Exit criterion:** mocked-provider tests currently validate streaming request
+**Exit criterion:** mocked-provider tests validate streaming request
 construction, hash/size/MD5 checks, cancellation, safe-link parsing and error
-recovery. A live large upload/cancel/retry soak test remains open; no real pack
+recovery. The small live synthetic upload also passed SHA-256, remote size/MD5,
+share-page HTTP response and cleanup checks. End-to-end anonymous file-byte
+download and the large upload/cancel/retry soak test remain open; no real pack
 has been uploaded during implementation.
 
 ### P3 — Caching, expiry and recovery
@@ -252,9 +258,11 @@ has been uploaded during implementation.
   respect author permissions and restricted-download rules. A non-redistributable
   mod must be explained, with a supported download/import exception when
   available.
-- **Live verification:** online docs and mocked uploads are not substitutes for
-  testing a real Gofile upload, link expiry/retention behavior and Prism import
-  on the installed launcher version.
+- **Live verification:** a small synthetic upload was tested live on 2026-10-27.
+  Gofile returned matching size and MD5, the public page responded with HTTP 200,
+  and cleanup succeeded. Page reachability is not proof of anonymous file-byte
+  download. Link expiry/retention behavior and a large-file cancellation/retry
+  soak test still need validation; no real pack was uploaded.
 
 ## References
 
