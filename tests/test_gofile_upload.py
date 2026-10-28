@@ -31,6 +31,7 @@ class _FakeResponse:
 class _FakeHTTPSConnection:
     response_payload = None
     response_status = 200
+    connect_error = None
     latest = None
 
     def __init__(self, host, timeout, context):
@@ -47,7 +48,8 @@ class _FakeHTTPSConnection:
         _FakeHTTPSConnection.latest = self
 
     def connect(self):
-        pass
+        if _FakeHTTPSConnection.connect_error is not None:
+            raise _FakeHTTPSConnection.connect_error
 
     def putrequest(self, method, path):
         self.request_line = (method, path)
@@ -76,6 +78,7 @@ class _FakeHTTPSConnection:
 class GofileUploadTests(unittest.TestCase):
     def setUp(self):
         _FakeHTTPSConnection.response_status = 200
+        _FakeHTTPSConnection.connect_error = None
         _FakeHTTPSConnection.latest = None
         self._patcher = patch(
             "crucible.sharing.gofile.http.client.HTTPSConnection",
@@ -360,6 +363,25 @@ class GofileUploadTests(unittest.TestCase):
                         local_md5=hashlib.md5(content).hexdigest(),
                         local_sha256=hashlib.sha256(content).hexdigest(),
                     )
+
+    def test_network_timeout_is_wrapped_and_connection_is_closed(self):
+        secret = "private-owner-token-value"
+        _FakeHTTPSConnection.connect_error = TimeoutError(f"timed out with token {secret}")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pack.zip"
+            content = b"synthetic player pack"
+            path.write_bytes(content)
+
+            with self.assertRaisesRegex(gofile.GofileUploadError, "Could not complete") as caught:
+                gofile.upload_file(
+                    path,
+                    expected_sha256=hashlib.sha256(content).hexdigest(),
+                    api_token=secret,
+                )
+
+            self.assertNotIn(secret, str(caught.exception))
+            self.assertIsNotNone(_FakeHTTPSConnection.latest)
+            self.assertTrue(_FakeHTTPSConnection.latest.closed)
 
     def test_provider_status_text_is_not_echoed_into_errors(self):
         secret = "owner-token-never-echo-this"
