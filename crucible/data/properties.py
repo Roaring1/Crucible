@@ -375,10 +375,14 @@ class PropertiesDoc:
             # the Java-properties escaped form ``wover\:normal``; a colon in
             # a value is legal either way. Unknown namespaced presets cannot be
             # checked against vanilla's fixed enum list, so don't recommend
-            # replacing them with minecraft:normal.
+            # replacing them with minecraft:normal. Keep validating the
+            # minecraft namespace strictly so typos in vanilla IDs aren't hidden.
             if spec.key == "level-type":
                 resource_id = v.replace("\\:", ":")
-                if _RESOURCE_LOCATION_RE.fullmatch(resource_id):
+                if (
+                    _RESOURCE_LOCATION_RE.fullmatch(resource_id)
+                    and not resource_id.startswith("minecraft:")
+                ):
                     return []
             # legacy numeric (gamemode=1) or alternate spelling (level-type=default)
             legacy = _LEGACY_NUMERIC_ENUM.get(spec.key, {}).get(v)

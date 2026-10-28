@@ -13,6 +13,11 @@ class ModdedWorldTypeValidationTests(unittest.TestCase):
     def test_accepts_java_properties_escaped_colon_in_modded_world_type(self):
         self.assertEqual(self._level_type_issues(r"wover\:normal"), [])
 
+    def test_still_warns_for_unknown_vanilla_namespaced_world_type(self):
+        issues = self._level_type_issues("minecraft:unknown_preset")
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].kind, "invalid_enum")
+
     def test_still_warns_for_unrecognized_unnamespaced_world_type(self):
         issues = self._level_type_issues("wover-normal")
         self.assertEqual(len(issues), 1)
