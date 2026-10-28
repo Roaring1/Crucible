@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..exporters import client_export
-from ..sharing.gofile import GofileProvider, UploadCancelled, GofileUploadResult
+from ..sharing.gofile import GofileProvider, GofileUploadError, UploadCancelled, GofileUploadResult
 from ..sharing.provider import UploadProvider
 from . import theme
 from .thread_lifecycle import connect_thread_cleanup
@@ -35,6 +35,48 @@ def _safe_stem(name: str) -> str:
     text = "".join(ch if ch.isalnum() or ch in " -_." else "_" for ch in name)
     text = " ".join(text.split()).strip(" .")
     return (text or "Minecraft Server")[:100]
+
+
+def _validate_review_manifest(manifest):
+    """Fail closed on malformed review metadata before enabling public upload."""
+    if not isinstance(manifest, dict):
+        raise ValueError("manifest root is not a JSON object")
+
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        raise ValueError("manifest file list is missing or malformed")
+    for row in files:
+        if not isinstance(row, dict):
+            raise ValueError("manifest contains a malformed file entry")
+        row_path = row.get("path")
+        size = row.get("size_bytes")
+        digest = row.get("sha256")
+        if (
+            not isinstance(row_path, str)
+            or not row_path
+            or any(ord(char) < 32 or ord(char) == 127 for char in row_path)
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 0
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(char not in "0123456789abcdefABCDEF" for char in digest)
+        ):
+            raise ValueError("manifest contains invalid file path, size, or SHA-256 metadata")
+
+    privacy_review = manifest.get("privacyReview")
+    if not isinstance(privacy_review, dict):
+        raise ValueError("manifest privacy-review section is missing or malformed")
+    if not isinstance(privacy_review.get("coverageComplete"), bool):
+        raise ValueError("manifest privacy-scan coverage status is missing or malformed")
+    warnings = privacy_review.get("warnings")
+    if not isinstance(warnings, list) or any(not isinstance(item, str) for item in warnings):
+        raise ValueError("manifest privacy-scan warnings are missing or malformed")
+    scope = privacy_review.get("scope")
+    if scope is not None and not isinstance(scope, str):
+        raise ValueError("manifest privacy-scan scope is malformed")
+
+    return manifest
 
 
 def _next_pack_path(directory: Path, name: str) -> Path:
@@ -134,8 +176,17 @@ class _UploadWorker(QObject):
             self.done.emit({"result": result, "error": "", "cancelled": False})
         except UploadCancelled as exc:
             self.done.emit({"result": None, "error": str(exc), "cancelled": True})
-        except Exception as exc:
+        except GofileUploadError as exc:
+            # Adapter errors are intentionally user-safe and actionable.
             self.done.emit({"result": None, "error": str(exc), "cancelled": False})
+        except Exception:
+            # Never surface arbitrary transport/provider exceptions: some
+            # libraries include request headers or other sensitive context.
+            self.done.emit({
+                "result": None,
+                "error": "Unexpected upload error. Sensitive details were suppressed; the local ZIP is preserved.",
+                "cancelled": False,
+            })
 
 
 class SharePlayersDialog(QDialog):
@@ -517,9 +568,12 @@ class SharePlayersDialog(QDialog):
         self._open_local_btn.setEnabled(True)
 
         try:
+            if not isinstance(result.manifest_path, str) or not result.manifest_path:
+                raise ValueError("manifest path is missing")
             with zipfile.ZipFile(self._archive_path, "r") as archive:
                 manifest = json.loads(archive.read(result.manifest_path).decode("utf-8"))
-        except (OSError, zipfile.BadZipFile, KeyError, ValueError) as exc:
+            manifest = _validate_review_manifest(manifest)
+        except (OSError, zipfile.BadZipFile, KeyError, TypeError, ValueError) as exc:
             self._result = None
             self._phase = "error"
             self._status.setText(f"Manifest verification failed; nothing can be uploaded: {exc}")
