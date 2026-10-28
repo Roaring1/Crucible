@@ -72,7 +72,11 @@ def _is_server_only(name: str) -> bool:
 
 def _config_dirs(server_path: Path) -> list:
     out = []
-    for d in ("config", "kubejs", "defaultconfigs"):
+    # defaultconfigs/ is server-side defaults and can contain values meant to be copied
+    # to a server-created world, not ordinary player configuration. Keep it out
+    # of client exports unless a future explicit option opts in after showing
+    # the included paths.
+    for d in ("config", "kubejs"):
         p = server_path / d
         if p.is_dir():
             out.append(p)
@@ -132,6 +136,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
             inspector.inspect_jar(entry)
             # Restore only explicitly client-only mods. Never mix an older shared mod in.
             if entry.side == "client": ship.append(j); names.add(j.name)
+    excluded_defaultconfigs = include_config and (server / "defaultconfigs").is_dir()
     cfg = _config_dirs(server) if include_config else []
 
     if fmt not in {"mrpack", "prism", "curseforge"}:
@@ -159,9 +164,15 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         partial.unlink(missing_ok=True)
         return ExportResult(error=f"Could not write {fmt} file: {e}")
 
+    warnings = ([f"{len(unknown)} mod(s) have unknown client compatibility; test this pack in Prism before sharing."] if unknown else [])
+    if excluded_defaultconfigs:
+        warnings.append("defaultconfigs/ was excluded from the client pack; review whether any required player config belongs in config/ or kubejs/.")
+    warnings.extend([
+        "Server packs may not include required client-side mods. Only explicitly client-only files from the optional matching Prism source were added.",
+        "Bundled mod JARs are for personal use; check authors’ licenses before redistribution.",
+    ])
     return ExportResult(path=str(out_path), fmt=fmt, mod_count=len(ship),
-                        skipped=[p.name for p in skipped],
-                        warnings=([f"{len(unknown)} mod(s) have unknown client compatibility; test this pack in Prism before sharing."] if unknown else []) + ["Server packs may not include required client-side mods. Only explicitly client-only files from the optional matching Prism source were added.", "Bundled mod JARs are for personal use; check authors’ licenses before redistribution."])
+                        skipped=[p.name for p in skipped], warnings=warnings)
 
 
 def _add_dir(zf: zipfile.ZipFile, src: Path, arc_prefix: str) -> None:

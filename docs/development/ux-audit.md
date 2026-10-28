@@ -91,3 +91,19 @@ pack uses; unavailability is reported rather than guaranteed to be repairable.
 Some operational warnings (for example, missing Java for a loader installer or a
 failed server-program download) remain explicit because they affect whether the
 server can run.
+
+
+## Next product workflow: Share with players
+
+The next planned usability step is one primary **Share with players** action that
+uses a saved, known-good client profile, validates a Prism instance ZIP, checks
+what will be shared, then uploads it and copies the link. This is a separate
+workflow from ordinary export: network upload must not begin before the pack has
+passed validation and the user has reviewed the file list and privacy warnings.
+
+The phased design, safety requirements, and acceptance checks are in the
+[client-pack sharing roadmap](client-pack-sharing-roadmap.md) and
+[Crucible issue #5](https://github.com/Roaring1/Crucible/issues/5). This branch
+fixes the current exporter mismatch: `defaultconfigs/` is now excluded from
+player exports, and the export result warns when that directory exists. No
+hosted upload is implemented by this safety fix.
