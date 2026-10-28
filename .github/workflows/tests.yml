@@ -3,8 +3,9 @@ name: Python tests
 on:
   push:
     branches: [main]
+  # Run validation for stacked PRs too; branch filters here match the PR base,
+  # so limiting to main silently skips checks while a dependency stack is open.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
