@@ -687,7 +687,9 @@ class ServerInstance:
         if props_ok:
             try:
                 from .properties import validate_file
-                issues = validate_file(p / "server.properties")
+                issues = validate_file(
+                    p / "server.properties", minecraft_version=self.minecraft_version
+                )
             except Exception:
                 issues = []
             errs = [i for i in issues if i.is_error]

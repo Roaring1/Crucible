@@ -30,9 +30,10 @@ from ..data import properties as P
 class PropertiesFixDialog(QDialog):
     """Lists server.properties issues with per-issue replacement menus."""
 
-    def __init__(self, properties_path, parent=None) -> None:
+    def __init__(self, properties_path, parent=None, *, minecraft_version: str | None = None) -> None:
         super().__init__(parent)
         self._path = Path(properties_path)
+        self._minecraft_version = minecraft_version
         self._rows: list[tuple[P.PropIssue, QComboBox]] = []
         self.applied = False
         self.setWindowTitle("Check server settings")
@@ -46,7 +47,9 @@ class PropertiesFixDialog(QDialog):
         outer.setContentsMargins(18, 16, 18, 16)
         outer.setSpacing(12)
 
-        issues = P.validate_file(self._path)
+        issues = P.validate_file(
+            self._path, minecraft_version=self._minecraft_version
+        )
         errors = [i for i in issues if i.is_error]
 
         title = QLabel("Server settings check")
