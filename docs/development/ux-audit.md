@@ -103,8 +103,7 @@ passed validation and the user has reviewed the file list and privacy warnings.
 
 The phased design, safety requirements, and acceptance checks are in the
 [client-pack sharing roadmap](client-pack-sharing-roadmap.md) and
-[Crucible issue #5](https://github.com/Roaring1/Crucible/issues/5). A code review
-also found a current exporter mismatch: `defaultconfigs/` was included even
-though the checkbox named only `config/` and `kubejs/`. The immediate fix is
-to exclude `defaultconfigs/` from player exports and warn when that directory
-exists; no hosted upload is implemented by that fix.
+[Crucible issue #5](https://github.com/Roaring1/Crucible/issues/5). This branch
+fixes the current exporter mismatch: `defaultconfigs/` is now excluded from
+player exports, and the export result warns when that directory exists. No
+hosted upload is implemented by this safety fix.
