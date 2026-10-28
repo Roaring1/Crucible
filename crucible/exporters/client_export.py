@@ -443,9 +443,12 @@ def _seal_archive(
             })
 
     if scan_incomplete:
+        examples = ", ".join(scan_incomplete[:10])
+        more = len(scan_incomplete) - min(len(scan_incomplete), 10)
+        suffix = f" (and {more} more)" if more else ""
         privacy_warnings.append(
-            f"Privacy scan incomplete for {len(scan_incomplete)} included config file(s) "
-            "because bounded size limits were reached; review these files manually before sharing."
+            f"Privacy scan incomplete for {len(scan_incomplete)} included config file(s): "
+            f"{examples}{suffix}. Bounded size limits were reached; review these files manually before sharing."
         )
     if privacy_findings_truncated:
         privacy_warnings.append(
