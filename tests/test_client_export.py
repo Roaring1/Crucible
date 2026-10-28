@@ -267,5 +267,47 @@ class ClientExportTests(unittest.TestCase):
             self.assertEqual(jar_paths, ["TestPack/.minecraft/mods/shared-server-name.jar"])
 
 
+    def test_shared_source_mod_missing_from_server_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server_mods = root / "server" / "mods"
+            server_mods.mkdir(parents=True)
+            source_mods = root / "client" / ".minecraft" / "mods"
+            source_mods.mkdir(parents=True)
+            (root / "client" / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.fabricmc.fabric-loader", "version": "0.16.10"},
+                ],
+            }), encoding="utf-8")
+
+            with zipfile.ZipFile(server_mods / "shared.jar", "w") as archive:
+                archive.writestr("fabric.mod.json", json.dumps({
+                    "schemaVersion": 1, "id": "shared", "version": "1.0.0", "environment": "*"
+                }))
+            with zipfile.ZipFile(source_mods / "shared-renamed.jar", "w") as archive:
+                archive.writestr("fabric.mod.json", json.dumps({
+                    "schemaVersion": 1, "id": "shared", "version": "2.0.0", "environment": "*"
+                }))
+
+            instance = SimpleNamespace(
+                path=str(root / "server"), name="TestPack",
+                minecraft_version="1.21.1", loader="fabric", loader_version="0.16.10",
+            )
+            output = root / "out.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", client_source=str(root / "client"), include_config=False
+            )
+            self.assertTrue(result.ok, result.error)
+            with zipfile.ZipFile(output) as archive:
+                jar_paths = [n for n in archive.namelist() if n.endswith(".jar")]
+            self.assertEqual(jar_paths, ["TestPack/.minecraft/mods/shared.jar"])
+            self.assertTrue(any(
+                "shared-renamed.jar" in warning and "not added" in warning
+                for warning in result.warnings
+            ), result.warnings)
+
+
 if __name__ == "__main__":
     unittest.main()
