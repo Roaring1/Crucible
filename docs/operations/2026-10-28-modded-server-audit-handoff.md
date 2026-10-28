@@ -2,18 +2,19 @@
 
 ## Latest resumed-session update — 2026-10-28
 
-The newer fresh-world preflight is the current reference for this audit:
+The current fresh-world preflight is the reference for this audit:
 [docs/operations/2026-10-28-fresh-world-preflight.md](https://github.com/Roaring1/Crucible/blob/main/docs/operations/2026-10-28-fresh-world-preflight.md).
 
-Important superseding findings:
+Important findings:
 
-- Supervisor has recovered (service 1.5.0, OAuth enabled). The Minecraft server is currently stopped; the latest log shows a successful `Done (3.209s)!` at 14:50:29 and a normal-looking stop at 14:54:05. The user may have stopped it manually; no crash is established.
-- The installed ATi Structures 1.4.7 JAR SHA-512 was verified and exactly matches the published artifact hash. The `ati_structures:terrain` pool is still absent from that JAR, but the current latest log does not reproduce the previously reported missing-pool error and the JAR scan found no active external reference. Do not replace or patch the verified release before a targeted fresh-world test.
-- A complete installed-JAR scan found 14 empty recipe JSON placeholders in `mekanism_tfmg_compat-0.4-1.21.1.jar` shadowing valid resources from Create, Mekanism, and TFMG. The installed Recipe Integration JAR has 216 `neoforge:mod_laoded` typos across 108 recipe resources. An inactive preflight datapack restoring those 14 recipes and correcting the 108 condition files was staged and JSON/ZIP-validated; it has not been activated or runtime-tested.
-- The installed Mekanism Elements JAR identifies author `Infernos`, version 3.0.18. Do not treat the similarly named `fixdol/Mekanism-Elements` repository as its source. The specific unresolved recipes and version-candidate note are in the newer preflight.
-- A fresh-world rollback archive was created without modifying the source world: `username-admin-server-world-factor8-before-fresh-20261028-161756.tar.gz`, SHA-256 `f9191b54c77e0a87438df9cbc65bb9e819546ff5f074aada6af1cdf46dc3653c`.
+- Supervisor is connected (service 1.5.0, OAuth enabled). Minecraft remains stopped; the last log reached `Done (3.209s)!` at 14:50:29 and recorded `Stopping the server` at 14:54:05. The user may have stopped it manually; no crash is established.
+- The installed ATi Structures 1.4.7 JAR SHA-512 exactly matches the published artifact hash. The missing `ati_structures:terrain` pool is absent from that JAR, but the current latest log does not reproduce the older error and installed-JAR JSON scanning found no active reference beyond `terrain_large`/`terrain_small`. Do not patch/replace ATi without a fresh-world regression.
+- A scan of 187 installed JARs found 14 empty recipe JSON placeholders in `mekanism_tfmg_compat-0.4-1.21.1.jar` shadowing valid Create, Mekanism, and TFMG resources. Recipe Integration 0.4.0 contains 216 `neoforge:mod_laoded` typos in 108 resource files.
+- A staged data pack outside every world's datapack folder now contains 131 JSON resources: 14 restored recipes, 108 corrected optional-mod conditions, two Mekanism Elements painting schema fixes, the methane oxidizing schema fix, three Create Factory optional-condition key fixes, and three Fishers Haven Aquaculture guards. Current ZIP SHA-256: `59081630d0d7465642ecd6d268db8c7c9b104d7da13feba01bbeb1c3886af3a2`. ZIP integrity and JSON parsing passed; it remains staged only and has not been activated or runtime-tested.
+- The installed Mekanism Elements JAR identifies author `Infernos`, version 3.0.18. Do not use the similarly named `fixdol/Mekanism-Elements` repository as its source. Recipes referring to unregistered zirconium/aqua-dye/dark-red-dye IDs remain intentionally unresolved until registrations or authoritative upstream resources can be verified.
+- A verified rollback archive of the current world exists: `username-admin-server-world-factor8-before-fresh-20261028-161756.tar.gz`, SHA-256 `f9191b54c77e0a87438df9cbc65bb9e819546ff5f074aada6af1cdf46dc3653c`.
 
-The intended eventual launch should use a new level name such as `world_fresh_20261028`, leaving `world` and prior copies intact. No server properties, mods, active configs, or world files were changed during the resumed preflight. Keep the new prepared datapack outside world datapack folders until a launch is approved.
+The eventual launch should use a unique new level name such as `world_fresh_20261028`, leaving `world` and all older copies in place. No server properties, mods, active configs, or world data have been changed. The only host writes are the new rollback archive and inactive preparation files under `prepared-datapacks`.
 
 ## Status and confidence
 
