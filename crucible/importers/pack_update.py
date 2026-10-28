@@ -569,7 +569,7 @@ def _configured_level_name(root: Path) -> str | None:
         s = line.lstrip()
         if not s or s.startswith(("#", "!")):
             continue
-        match = re.match(r"^level-name(?:\\s*[:=]\\s*|\\s+)(.*)$", s)
+        match = re.match(r"^level-name(?:\s*[:=]\s*|\s+)(.*)$", s)
         if match:
             found = True
             candidate = match.group(1)
