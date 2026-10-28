@@ -2,6 +2,7 @@
 
 ## v0.8.0 — Server-manager refinement
 
+- Legacy loader detection: infer a missing loader from exact server launcher artifacts (including old Forge universal JARs) for read-only features such as TPS polling, while explicit registry metadata remains authoritative. Normalize human-labelled Minecraft version metadata too.
 - Port reporting: `server_port()` now honors Java's last-property-value rule for duplicate `server-port` entries, and the connection-address buttons refuse to copy an invalid port instead of fabricating an `IP:port` string.
 - Startup safety: check live local IPv4 TCP listeners before launching a server and explain a port collision before creating a tmux session; ignore transient TIME_WAIT sockets and fail open if procfs cannot be inspected.
 - Property repair safety: don't offer or apply misleading fuzzy renames for legacy `server-id`/`server-name` fields where the nearest standard Java properties (`server-ip`/`level-name`) mean something different. Other clear typo suggestions remain available.

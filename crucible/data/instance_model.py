@@ -279,10 +279,17 @@ class ServerInstance:
         """
         explicit = (self.minecraft_version or "").strip()
         if explicit:
-            return explicit
+            # Importers should store a bare version, but tolerate human-labelled
+            # metadata from older registry records without misreading pack versions.
+            match = re.fullmatch(
+                r"\s*(?:Minecraft\s+|MC\s+)?[vV]?(\d+\.\d+(?:\.\d+)?)\s*",
+                explicit,
+                re.IGNORECASE,
+            )
+            return match.group(1) if match else explicit
 
         labelled = re.search(
-            r"\bMC\s+(\d+\.\d+(?:\.\d+)?)\b",
+            r"\b(?:MC|Minecraft)\s+([vV]?\d+\.\d+(?:\.\d+)?)\b",
             self.version or "",
             re.IGNORECASE,
         )
@@ -305,6 +312,33 @@ class ServerInstance:
             match = re.match(r"^forge-(\d+\.\d+(?:\.\d+)?)-", jar.name)
             if match and jar.is_file():
                 return match.group(1)
+        return None
+
+    def effective_loader(self) -> str | None:
+        """Return explicit loader metadata or infer it from an exact launcher artifact.
+
+        Do not guess from a modpack version/name. A Forge universal JAR or known
+        loader launcher is concrete on-disk evidence and is useful for legacy
+        instances imported before Crucible recorded the loader field.
+        """
+        explicit = (self.loader or "").strip().lower()
+        if explicit:
+            return explicit
+
+        root = self.path_obj
+        if not root.is_dir():
+            return None
+
+        # These are specific server-loader artifact names, not arbitrary mods.
+        if any(path.is_file() for path in root.glob("forge-*-universal.jar")):
+            return "forge"
+        if (root / "fabric-server-launch.jar").is_file():
+            return "fabric"
+        if (root / "quilt-server-launch.jar").is_file():
+            return "quilt"
+        if any(path.is_file() for path in root.glob("paper*.jar")):
+            return "paper"
+
         return None
 
     def get_startscript(self) -> Path | None:
@@ -644,7 +678,7 @@ class ServerInstance:
 
         Returning None means "this server has no TPS command — don't poll it".
         """
-        loader = (self.loader or "").strip().lower()
+        loader = (self.effective_loader() or "").strip().lower()
         mc = self._mc_version_tuple()
 
         # Paper-family keeps /tps across versions and lacks the vanilla /tick cmd.

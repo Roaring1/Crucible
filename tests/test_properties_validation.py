@@ -128,6 +128,34 @@ class EffectiveMinecraftVersionTests(unittest.TestCase):
             self.assertIsNone(pack.effective_minecraft_version())
             self.assertEqual(pack._mc_version_tuple(), ())
 
+    def test_explicit_human_labelled_minecraft_version_is_normalized(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inst = ServerInstance(path=tmp, name="labelled", minecraft_version="Minecraft 1.21.1")
+            self.assertEqual(inst.effective_minecraft_version(), "1.21.1")
+            self.assertEqual(inst._mc_version_tuple(), (1, 21, 1))
+
+    def test_gtnh_forge_jar_supplies_loader_and_tps_command_when_registry_loader_is_blank(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "forge-1.7.10-10.13.4.1614-1.7.10-universal.jar").touch()
+            inst = ServerInstance(path=tmp, name="GTNH", version="2.8.4")
+            self.assertEqual(inst.effective_loader(), "forge")
+            self.assertEqual(inst.effective_minecraft_version(), "1.7.10")
+            self.assertEqual(inst.tps_command(), "forge tps")
+
+    def test_explicit_loader_is_not_overridden_by_artifact_inference(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "forge-1.7.10-10.13.4.1614-1.7.10-universal.jar").touch()
+            inst = ServerInstance(path=tmp, name="Override", loader="neoforge")
+            self.assertEqual(inst.effective_loader(), "neoforge")
+
 
 class ModdedWorldTypeValidationTests(unittest.TestCase):
     def _level_type_issues(self, value: str):
