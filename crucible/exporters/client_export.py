@@ -643,17 +643,14 @@ def export(instance, out_path, fmt: str = "mrpack", *,
             if entry.side in {"client", "unknown", "both"}:
                 # The owner explicitly selected this installed Prism profile as
                 # the working client. Profile-exclusive JARs must not vanish
-                # just because metadata omits an execution side. This is not
-                # redistribution permission; exact JAR review still applies.
+                # just because metadata omits an execution side. Common-side
+                # JARs with a server-side ID collision were handled above.
+                # This is not redistribution permission; exact JAR review still applies.
                 ship.append(j)
                 names.add(j.name)
                 hashes.add(digest)
                 if entry.side == "unknown":
                     client_unknown_included.append(j.name)
-            elif entry.side == "both":
-                # A shared mod that isn't byte-identical to a server JAR may be
-                # a stale/mismatched version. Keep the server copy and warn.
-                source_conflicts.append(j.name)
     else:
         client_unknown_included = []
         client_server_only = []

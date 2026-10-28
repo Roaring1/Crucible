@@ -329,6 +329,40 @@ class ClientExportTests(unittest.TestCase):
 
 
 
+    def test_profile_exclusive_common_side_jar_is_included(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source = root / "working-prism"
+            client_mods = source / ".minecraft" / "mods"
+            client_mods.mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.fabricmc.fabric-loader", "version": "0.16.10"},
+                ],
+            }), encoding="utf-8")
+            with zipfile.ZipFile(client_mods / "common-extra.jar", "w") as jar:
+                jar.writestr("fabric.mod.json", json.dumps({
+                    "schemaVersion": 1, "id": "profile_common_extra",
+                    "name": "Profile Common Extra", "version": "1.0.0", "environment": "*",
+                }))
+
+            instance = SimpleNamespace(
+                path=str(server), name="TestPack",
+                minecraft_version="1.21.1", loader="fabric", loader_version="0.16.10",
+            )
+            output = root / "out.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", client_source=str(source), include_config=False
+            )
+            self.assertTrue(result.ok, result.error)
+            with zipfile.ZipFile(output) as archive:
+                self.assertIn("TestPack/.minecraft/mods/common-extra.jar", archive.namelist())
+
+
     def test_only_client_relevant_kubejs_folders_are_shared(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
