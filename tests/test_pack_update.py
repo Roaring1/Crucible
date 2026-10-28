@@ -516,6 +516,10 @@ class ApplyUpdateTests(TempDirCase):
     def _apply(self, **kw):
         kw.setdefault("archive", self.pack)
         kw.setdefault("backup_cb", self._backup)
+        # These tests use a synthetic instance; inject the stopped/free result
+        # so they never depend on a host tmux session or live server port.
+        kw.setdefault("running_check", lambda: False)
+        kw.setdefault("port_check", lambda _instance: None)
         return apply_update(self._inst(), kw.pop("plan", None) or self._plan(), **kw)
 
     def _assert_live_untouched(self):
@@ -524,6 +528,41 @@ class ApplyUpdateTests(TempDirCase):
                          "world-data")
         self.assertEqual((self.live / "config" / "gt.cfg").read_text(encoding="utf-8"),
                          "old-config")
+
+    def test_apply_refuses_if_server_started_since_preview_before_backup(self):
+        res = self._apply(running_check=lambda: True)
+        self.assertFalse(res.ok)
+        self.assertIn("server is running", res.failed_reason.lower())
+        self.assertEqual(self.backups, [], "must refuse before making even the world backup")
+        self._assert_live_untouched()
+
+    def test_apply_fails_closed_when_running_state_is_unknown(self):
+        res = self._apply(running_check=lambda: None)
+        self.assertFalse(res.ok)
+        self.assertIn("could not verify whether the server is running", res.failed_reason.lower())
+        self.assertEqual(self.backups, [])
+        self._assert_live_untouched()
+
+    def test_apply_rechecks_running_state_before_live_swap(self):
+        states = iter((False, True))
+        res = self._apply(running_check=lambda: next(states))
+        self.assertFalse(res.ok)
+        self.assertIn("server is running", res.failed_reason.lower())
+        self.assertEqual(self.backups, ["called"])
+        self.assertIn("live install was not swapped", res.failed_reason.lower())
+        self._assert_live_untouched()
+        self.assertFalse(list(self.tmp.glob("live.crucible-staging-*")))
+        self.assertFalse(list(self.tmp.glob("live.pre-update-*")))
+
+    def test_apply_rechecks_port_before_live_swap_for_manual_server(self):
+        conflicts = iter((None, "Port 25565 became occupied during staging."))
+        res = self._apply(port_check=lambda _instance: next(conflicts))
+        self.assertFalse(res.ok)
+        self.assertIn("became occupied during staging", res.failed_reason)
+        self.assertEqual(self.backups, ["called"])
+        self._assert_live_untouched()
+        self.assertFalse(list(self.tmp.glob("live.crucible-staging-*")))
+        self.assertFalse(list(self.tmp.glob("live.pre-update-*")))
 
     def test_successful_stage_and_swap(self):
         res = self._apply()
@@ -594,7 +633,10 @@ class ApplyUpdateTests(TempDirCase):
         def boom():
             raise OSError("no space left on device")
 
-        res = apply_update(self._inst(), self._plan(), backup_cb=boom, archive=self.pack)
+        res = apply_update(
+            self._inst(), self._plan(), backup_cb=boom, archive=self.pack,
+            running_check=lambda: False, port_check=lambda _instance: None,
+        )
         self.assertFalse(res.ok)
         self.assertIn("no space left", res.failed_reason)
         self._assert_live_untouched()
@@ -645,7 +687,10 @@ class ApplyUpdateTests(TempDirCase):
         self.assertIn("cancelled", res.summary())
 
     def test_no_backup_callback_is_recorded_in_messages(self):
-        res = apply_update(self._inst(), self._plan(), backup_cb=None, archive=self.pack)
+        res = apply_update(
+            self._inst(), self._plan(), backup_cb=None, archive=self.pack,
+            running_check=lambda: False, port_check=lambda _instance: None,
+        )
         self.assertTrue(res.ok, res.failed_reason)
         self.assertTrue(any("no world backup" in m for m in res.messages))
 

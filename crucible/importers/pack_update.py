@@ -930,6 +930,59 @@ def _write_receipt(server_path: Path, *, provider: str, version: str, variant: s
         pass
 
 
+def _update_safety_blocker(
+    instance,
+    *,
+    running_check: Callable[[], bool | None] | None = None,
+    port_check: Callable[[object], str | None] | None = None,
+) -> str | None:
+    """Fail closed unless the server is stopped and its configured port is free.
+
+    The preview check can be stale by the time the owner confirms the update.
+    Re-probe both Crucible's tmux session and the configured IPv4 listening port
+    at the start of apply and immediately before the live directory rename.
+    Callbacks are injectable so tests can exercise race windows without touching
+    the machine's actual tmux sessions or ports.
+    """
+    manager = None
+    if running_check is None or port_check is None:
+        try:
+            from ..process.tmux_manager import TmuxManager
+            manager = TmuxManager()
+        except Exception:
+            return (
+                "Crucible could not initialize the server/port safety checks. "
+                "Refusing to apply the update."
+            )
+
+    try:
+        running = running_check() if running_check is not None else manager.probe_running(instance)
+    except Exception:
+        running = None
+    if running is None:
+        return (
+            "Crucible could not verify whether the server is running. "
+            "Refusing to update until the status check succeeds."
+        )
+    if running:
+        return "The server is running. Stop it before applying the pack update."
+
+    try:
+        conflict = (
+            port_check(instance)
+            if port_check is not None
+            else manager._port_conflict_message(instance)
+        )
+    except Exception:
+        return (
+            "Crucible could not verify whether the configured server port is free. "
+            "Refusing to apply the update."
+        )
+    if conflict:
+        return str(conflict)
+    return None
+
+
 def apply_update(
     instance,
     plan: UpdatePlan,
@@ -940,6 +993,8 @@ def apply_update(
     progress_cb: ProgressCb | None = None,
     cancel: threading.Event | None = None,
     keep_previous: bool = True,
+    running_check: Callable[[], bool | None] | None = None,
+    port_check: Callable[[object], str | None] | None = None,
 ) -> UpdateResult:
     """Execute a plan as a stage-and-swap. Never raises.
 
@@ -949,7 +1004,11 @@ def apply_update(
     for a server with no world yet.
 
     `archive` lets a caller reuse an already-downloaded zip (or a local file)
-    instead of re-downloading.
+    instead of re-downloading. The server-running and port checks are repeated
+    immediately before backup/staging and again before the live rename, because
+    the preview may have gone stale while the user was reading it. Optional
+    check callbacks exist for deterministic tests; production callers use
+    fresh TmuxManager and configured-port probes by default.
     """
     from .prism import _extract_archive  # local import: avoids a cycle
 
@@ -971,6 +1030,15 @@ def apply_update(
     try:
         if cancel is not None and cancel.is_set():
             res.cancelled = True
+            return res
+
+        # The review can sit open for minutes. Recheck before taking a backup
+        # or doing any update work rather than trusting the preview's old state.
+        blocker = _update_safety_blocker(
+            instance, running_check=running_check, port_check=port_check
+        )
+        if blocker:
+            res.failed_reason = blocker
             return res
 
         # 1. Mandatory backup FIRST -- before a single byte is downloaded.
@@ -1057,6 +1125,20 @@ def apply_update(
 
         if cancel is not None and cancel.is_set():
             res.cancelled = True
+            return res
+
+        # A server may have been started manually while download/staging ran.
+        # Recheck immediately before the destructive rename. In particular,
+        # port occupancy catches a JVM that isn't in Crucible's tmux session.
+        blocker = _update_safety_blocker(
+            instance, running_check=running_check, port_check=port_check
+        )
+        if blocker:
+            res.failed_reason = (
+                f"{blocker} The live install was not swapped; staged content was discarded."
+            )
+            if res.backup_path:
+                res.messages.append(f"Pre-update backup retained at {res.backup_path}.")
             return res
 
         # 5. Swap. Two same-filesystem renames -- metadata only, no copying.
