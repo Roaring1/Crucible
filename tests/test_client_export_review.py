@@ -288,17 +288,28 @@ class ClientExportReviewTests(unittest.TestCase):
             with self.subTest(fmt=fmt), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 instance, jar = self._catalog_test_jar(root)
+                # The source starts as an explicitly permitted artifact, but the
+                # changed bytes below are a separately catalogued prohibited JAR.
+                prohibited_bytes = b"synthetic prohibited artifact bytes"
+                prohibited_digest = hashlib.sha256(prohibited_bytes).hexdigest()
+                permitted_record = self._distribution_record(jar, decision="permitted")
+                prohibited_record = self._distribution_record(
+                    jar,
+                    decision="prohibited",
+                    alternative="https://downloads.example.org/prohibited",
+                )
+                prohibited_record["sha256"] = prohibited_digest
                 catalog_path = root / "catalog.json"
                 catalog_path.write_text(json.dumps({
                     "schemaVersion": 1,
                     "catalogVersion": f"test-race-{fmt}",
-                    "records": [self._distribution_record(jar, decision="permitted")],
+                    "records": [permitted_record, prohibited_record],
                 }), encoding="utf-8")
                 output = root / f"{fmt}.zip"
                 original_builder = getattr(client_export, builder_name)
 
                 def replace_jar_before_packaging(*args, **kwargs):
-                    jar.write_bytes(b"replacement bytes not covered by the reviewed digest")
+                    jar.write_bytes(prohibited_bytes)
                     return original_builder(*args, **kwargs)
 
                 with self._with_catalog(catalog_path), patch.object(
