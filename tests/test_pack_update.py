@@ -336,6 +336,29 @@ class WorldNameTests(TempDirCase):
                 self.assertIsNotNone(_world_name_issue(d))
                 self.assertEqual((outside / "marker.txt").read_text(encoding="utf-8"), "must survive")
 
+    def test_escaped_java_property_keys_cannot_hide_unsafe_world_names(self):
+        d = self.tmp / "escaped-key"
+        d.mkdir()
+        (d / "world").mkdir()
+        outside = self.tmp / "outside-escaped"
+        outside.mkdir()
+        (outside / "marker.txt").write_text("must survive", encoding="utf-8")
+
+        property_texts = (
+            r"level\-name=../../outside-escaped" + "\n",
+            r"level\u002dname=../../outside-escaped" + "\n",
+            "level-" + chr(92) + "\n    name=../../outside-escaped\n",
+        )
+        for contents in property_texts:
+            with self.subTest(contents=contents):
+                (d / "server.properties").write_text(contents, encoding="utf-8")
+                self.assertEqual(_world_names(FakeInstance(path=str(d))), [])
+                self.assertIsNotNone(_world_name_issue(d))
+                self.assertEqual(
+                    (outside / "marker.txt").read_text(encoding="utf-8"),
+                    "must survive",
+                )
+
     def test_unsafe_level_name_paths_never_become_preserve_paths(self):
         d = self.tmp / "unsafe"
         d.mkdir()
