@@ -29,6 +29,7 @@ from crucible.importers.pack_update import (
     PackUpdateError,
     _copy_preserved,
     _staged_root,
+    _world_name_issue,
     _world_names,
     apply_update,
     channel_of,
