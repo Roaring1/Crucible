@@ -67,6 +67,11 @@ _RESOURCE_LOCATION_RE = re.compile(r"^[a-z0-9_.-]+:[a-z0-9/._-]+$")
 # schemas available for older server versions, but do not suppress unknown-key
 # warnings on 1.21.2+ (or when the Minecraft version is unknown).
 _VERSIONED_PROPERTY_SPECS: dict[str, tuple[str, PropSpec]] = {
+    "announce-player-achievements": (
+        "1.12.0", PropSpec("announce-player-achievements", _BOOL, "true")
+    ),
+    "max-build-height": ("1.17.0", PropSpec("max-build-height", _INT, "256")),
+    "snooper-enabled": ("1.18.0", PropSpec("snooper-enabled", _BOOL, "true")),
     "spawn-animals": ("1.21.2", PropSpec("spawn-animals", _BOOL, "true")),
     "spawn-npcs": ("1.21.2", PropSpec("spawn-npcs", _BOOL, "true")),
 }
@@ -325,7 +330,11 @@ class PropertiesDoc:
                 versioned = _VERSIONED_PROPERTY_SPECS.get(key)
                 if versioned is not None:
                     if _is_property_available(key, minecraft_version):
-                        issues.extend(self._check_value(versioned[1], value))
+                        issues.extend(
+                            self._check_value(
+                                versioned[1], value, minecraft_version=minecraft_version
+                            )
+                        )
                         continue
                     version_tuple = _version_tuple(minecraft_version)
                     removed_in = _version_tuple(versioned[0])
@@ -363,7 +372,7 @@ class PropertiesDoc:
                 ))
                 continue
 
-            issues.extend(self._check_value(spec, value))
+            issues.extend(self._check_value(spec, value, minecraft_version=minecraft_version))
 
         for key, count in seen.items():
             if count > 1:
@@ -373,7 +382,9 @@ class PropertiesDoc:
                 ))
         return issues
 
-    def _check_value(self, spec: PropSpec, value: str) -> list[PropIssue]:
+    def _check_value(
+        self, spec: PropSpec, value: str, *, minecraft_version: str | None = None
+    ) -> list[PropIssue]:
         v = value.strip()
         if spec.type == _INT:
             if v == "":
@@ -431,23 +442,39 @@ class PropertiesDoc:
             )]
 
         if spec.type == _ENUM:
+            if spec.key == "level-type":
+                # Java-properties files may spell resource identifiers with an
+                # escaped colon. Compare the normalized value to canonical IDs
+                # first, or a valid `minecraft\:normal` is falsely warned.
+                v = v.replace("\\:", ":")
             if v in spec.options:
                 return []
-            # Modded world-generator presets use namespaced resource IDs, e.g.
-            # WorldWeaver's ``wover:normal``. ``server.properties`` may contain
-            # the Java-properties escaped form ``wover\:normal``; a colon in
-            # a value is legal either way. Unknown namespaced presets cannot be
-            # checked against vanilla's fixed enum list, so don't recommend
-            # replacing them with minecraft:normal. Keep validating the
-            # minecraft namespace strictly so typos in vanilla IDs aren't hidden.
+            # Custom world type names in old Forge/Minecraft releases were often
+            # plain identifiers (`rwg`, `DEFAULT`, etc.). Since 1.19 the value is
+            # a world-preset resource location, so only accept a plain legacy ID
+            # when we have evidence that this server is old enough.
             if spec.key == "level-type":
-                resource_id = v.replace("\\:", ":")
+                version = _version_tuple(minecraft_version)
                 if (
-                    _RESOURCE_LOCATION_RE.fullmatch(resource_id)
-                    and not resource_id.startswith("minecraft:")
+                    version is not None
+                    and version < (1, 19, 0)
+                    and re.fullmatch(r"[A-Za-z0-9_.-]+", v)
                 ):
                     return []
-            # legacy numeric (gamemode=1) or alternate spelling (level-type=default)
+                # Modded world-generator presets use namespaced resource IDs,
+                # e.g. WorldWeaver's `wover:normal`. Unknown external namespaces
+                # cannot be checked against vanilla's fixed enum list, so don't
+                # recommend replacing them with minecraft:normal. Keep the
+                # minecraft namespace strict so vanilla typos still warn.
+                if (
+                    _RESOURCE_LOCATION_RE.fullmatch(v)
+                    and not v.startswith("minecraft:")
+                ):
+                    return []
+            # Numeric difficulty/gamemode values remain valid legacy spellings.
+            # Also accept the listed historical aliases for other enum settings.
+            if v in _LEGACY_NUMERIC_ENUM.get(spec.key, {}):
+                return []
             legacy = _LEGACY_NUMERIC_ENUM.get(spec.key, {}).get(v)
             if not legacy:
                 legacy = _LEGACY_ENUM_VALUES.get(spec.key, {}).get(v.lower())

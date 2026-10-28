@@ -998,11 +998,11 @@ class InstancePanel(QWidget):
             from ..data import properties as _props
             props_path = inst.path_obj / "server.properties"
             if not _props.has_blocking_errors(
-                props_path, minecraft_version=inst.minecraft_version
+                props_path, minecraft_version=inst.effective_minecraft_version()
             ):
                 return
             res = _props.autorepair_file(
-                props_path, only_errors=True, minecraft_version=inst.minecraft_version
+                props_path, only_errors=True, minecraft_version=inst.effective_minecraft_version()
             )
             if res.changed:
                 QMessageBox.information(

@@ -2,6 +2,7 @@
 
 ## v0.8.0 — Server-manager refinement
 
+- Legacy server compatibility: resolve Minecraft versions from explicit metadata or exact server/Forge jar names, recognize pre-removal `server.properties` keys, accept numeric legacy difficulty/gamemode and old modded world-type names, and normalize escaped enum colons. Bare pack versions are no longer mistaken for Minecraft versions.
 - Version-aware property validation: `spawn-animals` and `spawn-npcs` are recognized on Minecraft versions before 1.21.2, while newer/unknown versions still report them as unsupported.
 - Property validation: accept syntactically valid namespaced custom `level-type` presets (including Java-properties escaped colons) so modded generators such as WorldWeaver are not incorrectly advised to switch to vanilla terrain.
 - Registry concurrency: the GUI now reconciles CLI lifecycle writes that change only `last_started`, while preserving the safety warning for real config edits, additions/removals, malformed files, and concurrent rewrites.

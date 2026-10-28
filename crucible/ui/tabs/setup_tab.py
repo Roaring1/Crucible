@@ -689,7 +689,7 @@ class SetupTab(QWidget):
             dlg = PropertiesFixDialog(
                 inst.path_obj / "server.properties",
                 parent=self,
-                minecraft_version=inst.minecraft_version,
+                minecraft_version=inst.effective_minecraft_version(),
             )
             dlg.exec()
         except Exception as exc:

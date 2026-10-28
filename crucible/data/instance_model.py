@@ -269,6 +269,44 @@ class ServerInstance:
     def path_obj(self) -> Path:
         return Path(self.path)
 
+    def effective_minecraft_version(self) -> str | None:
+        """Return an explicit or artifact-verified Minecraft version.
+
+        ``version`` often stores a modpack release (e.g. GTNH 2.8.4), not a
+        Minecraft version. Never parse that bare value as Minecraft semver.
+        Prefer the dedicated field, then an explicitly labelled ``MC ...``
+        version string, then exact server/Forge jar filename evidence.
+        """
+        explicit = (self.minecraft_version or "").strip()
+        if explicit:
+            return explicit
+
+        labelled = re.search(
+            r"\bMC\s+(\d+\.\d+(?:\.\d+)?)\b",
+            self.version or "",
+            re.IGNORECASE,
+        )
+        if labelled:
+            return labelled.group(1)
+
+        root = self.path_obj
+        if not root.is_dir():
+            return None
+
+        for jar in sorted(root.glob("minecraft_server.*.jar")):
+            match = re.fullmatch(
+                r"minecraft_server\.(\d+\.\d+(?:\.\d+)?)\.jar",
+                jar.name,
+            )
+            if match and jar.is_file():
+                return match.group(1)
+
+        for jar in sorted(root.glob("forge-*-universal.jar")):
+            match = re.match(r"^forge-(\d+\.\d+(?:\.\d+)?)-", jar.name)
+            if match and jar.is_file():
+                return match.group(1)
+        return None
+
     def get_startscript(self) -> Path | None:
         """
         Find the server start script, trying all known GTNH naming variants
@@ -569,13 +607,14 @@ class ServerInstance:
     def _mc_version_tuple(self) -> tuple[int, ...]:
         """Best-effort parse of the Minecraft version into a comparable tuple.
 
-        Pulls the first dotted numeric run out of the version string, so
-        "1.21.1", "MC 1.21.1" and "1.20" all work. Returns an empty tuple when
-        the version is unknown/unparseable (so comparisons stay False-safe).
+        Uses the effective Minecraft version only, never a bare modpack release
+        such as GTNH 2.8.4. Returns an empty tuple when the version is
+        unknown/unparseable so comparisons stay False-safe.
         """
-        import re as _re
-        raw = (self.minecraft_version or "") or (self.version or "")
-        m = _re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", raw)
+        raw = self.effective_minecraft_version()
+        if not raw:
+            return ()
+        m = re.fullmatch(r"\s*(\d+)\.(\d+)(?:\.(\d+))?\s*", raw)
         if not m:
             return ()
         return tuple(int(g) for g in m.groups() if g is not None)
@@ -688,7 +727,7 @@ class ServerInstance:
             try:
                 from .properties import validate_file
                 issues = validate_file(
-                    p / "server.properties", minecraft_version=self.minecraft_version
+                    p / "server.properties", minecraft_version=self.effective_minecraft_version()
                 )
             except Exception:
                 issues = []
