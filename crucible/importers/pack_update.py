@@ -1691,6 +1691,8 @@ def rollback_update(
     running: bool | None = False,
     keep_current_world: bool = False,
     log_cb: LogCb | None = None,
+    running_check: Callable[[], bool | None] | None = None,
+    port_check: Callable[[object], str | None] | None = None,
 ) -> UpdateResult:
     """Put a kept pre-update tree back in place.
 
@@ -1701,6 +1703,11 @@ def rollback_update(
     the restored one, trading "exactly as it was" for "keep recent play". Off
     by default: if the new pack damaged the world, carrying it back is the one
     thing you do not want.
+
+    The caller's `running` value is a preliminary guard. The current running
+    state and configured port are independently re-probed immediately before
+    any live-directory rename, so a stale dialog snapshot cannot authorize a
+    rollback into a live JVM.
     """
     log = log_cb or (lambda _m: None)
     res = UpdateResult()
@@ -1749,6 +1756,13 @@ def rollback_update(
     aside = live.parent / f"{live.name}{_ROLLED_MARKER}{stamp}"
     moved_live = False
     try:
+        blocker = _update_safety_blocker(
+            instance, running_check=running_check, port_check=port_check
+        )
+        if blocker:
+            res.failed_reason = f"{blocker} Rollback was not started; the live install remains in place."
+            return res
+
         if live.exists():
             log(f"Moving the current install aside to {aside.name}...")
             live.rename(aside)
