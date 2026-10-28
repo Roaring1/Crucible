@@ -351,11 +351,12 @@ class SharePlayersDialogTests(unittest.TestCase):
                 ],
             }), encoding="utf-8")
             history_tmp = tempfile.TemporaryDirectory()
+            self.addCleanup(history_tmp.cleanup)
             dialog = SharePlayersDialog(
                 SimpleNamespace(name="Demo Server", path="/not-used", prism_source=str(source)),
                 history_store=ShareHistoryStore(Path(history_tmp.name) / "history" / "events.json"),
             )
-            dialog._test_history_tmp = history_tmp
+            self.addCleanup(dialog.close)
             dialog._source.setText(str(source))
             with patch.object(
                 QStandardPaths, "writableLocation", return_value=str(app_data)
