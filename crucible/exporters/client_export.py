@@ -727,6 +727,24 @@ def export(instance, out_path, fmt: str = "mrpack", *,
                 distribution_review=distribution_review,
                 required_downloads=required_downloads,
             )
+            # Distribution decisions apply to the exact JAR bytes that were
+            # reviewed. A source JAR can change between the catalog lookup above
+            # and the builder reading it (notably for MRPACK/CurseForge, which do
+            # not use the Prism input fingerprint). Compare the sealed ZIP payload
+            # against each bundled JAR's reviewed digest before finalizing.
+            sealed_hashes = {
+                row["path"]: row["sha256"] for row in manifest["files"]
+            }
+            for review_row in distribution_review:
+                if not review_row.get("bundled"):
+                    continue
+                reviewed_path = review_row["path"]
+                if sealed_hashes.get(reviewed_path) != review_row["sha256"]:
+                    raise OSError(
+                        "Bundled JAR changed after its distribution review "
+                        f"({review_row['filename']}); no ZIP was written. "
+                        "Restore the reviewed file and retry."
+                    )
             # Reading each archive member through _seal_archive also validates its
             # CRC. Keep memory use bounded for large player packs.
             with zipfile.ZipFile(partial, "r") as check:

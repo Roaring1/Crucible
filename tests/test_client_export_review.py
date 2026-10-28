@@ -277,6 +277,40 @@ class ClientExportReviewTests(unittest.TestCase):
             self.assertEqual(review["sha256"], client_export._sha256_file(jar))
             self.assertEqual(manifest["distributionCatalog"]["revision"], distribution_catalog.load_catalog(catalog_path).revision)
 
+    def test_non_prism_export_rejects_jar_changed_after_distribution_review(self):
+        # MRPACK and CurseForge local exports do not use the Prism input
+        # fingerprint, so the sealed archive must independently prove that the
+        # bytes bundled still match the digest used for the catalog decision.
+        for fmt, builder_name in (
+            ("mrpack", "_build_mrpack"),
+            ("curseforge", "_build_curseforge"),
+        ):
+            with self.subTest(fmt=fmt), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                instance, jar = self._catalog_test_jar(root)
+                catalog_path = root / "catalog.json"
+                catalog_path.write_text(json.dumps({
+                    "schemaVersion": 1,
+                    "catalogVersion": f"test-race-{fmt}",
+                    "records": [self._distribution_record(jar, decision="permitted")],
+                }), encoding="utf-8")
+                output = root / f"{fmt}.zip"
+                original_builder = getattr(client_export, builder_name)
+
+                def replace_jar_before_packaging(*args, **kwargs):
+                    jar.write_bytes(b"replacement bytes not covered by the reviewed digest")
+                    return original_builder(*args, **kwargs)
+
+                with self._with_catalog(catalog_path), patch.object(
+                    client_export, builder_name, side_effect=replace_jar_before_packaging
+                ):
+                    result = client_export.export(instance, output, fmt=fmt)
+
+                self.assertFalse(result.ok, result.error)
+                self.assertIn("changed after its distribution review", result.error.lower())
+                self.assertFalse(output.exists())
+                self.assertFalse(output.with_suffix(output.suffix + ".partial").exists())
+
     def test_config_paths_reject_backslash_based_traversal(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
