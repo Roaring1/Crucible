@@ -1,35 +1,58 @@
-# Crucible v0.8.0 — Server-manager refinement
+# Crucible v0.8.0 — server-manager and player-sharing refinement
 
-## What changed
+Crucible is a Linux desktop manager for local Minecraft dedicated servers. This release consolidates the v0.8 refinement work: safer server/property diagnostics, more reliable lifecycle handling, mod-management safeguards, and a review-first Prism player-pack workflow.
 
-- Live console suggestions above the command box. Tab/Shift+Tab cycle, arrows choose suggestions, Escape dismisses, and history remains available when suggestions are hidden. Gamerules and boolean values, known players, loader commands and caret-aware replacement are supported.
-- Compatible mod release selection, including downgrades. Untracked JARs can be identified by exact Modrinth SHA-1; similar names are never silently treated as the same project.
-- Official CurseForge search/version/dependency adapter. The app accepts a session-only API key or CURSEFORGE_API_KEY. A user-owned mode-600 ~/.config/crucible/curseforge-api-key file is also loaded automatically by both browsing and pack imports. Author-restricted download URLs are not guessed or bypassed. An already-downloaded matching file can establish its provider identity.
-- Staged, SHA-1-verified mod/dependency installs and version changes. Previous files and identity records are retained under .crucible/mod-history with recovery receipts. Normal publication errors roll back; conflicting pinned dependencies, unexpected original-file changes and stopped-status changes are rejected.
-- Explicit execution-side badges from Fabric, Quilt and Forge metadata. Dependency-side declarations are not mistaken for whole-mod compatibility. Unknown is explicitly unverified.
-- Rename selected/F2 updates the existing row and header without moving files, changing sessions or reloading dirty tabs. Imports respect the chosen name. Server-folder/archive drops route across child views without interfering with JAR drops or sidebar reorder.
-- Resizable Online now player list. The header works at the 900×600 minimum. Import fields have real minimum heights and a scroll fallback.
-- CPU is shown as a 0–100% share of all logical CPUs, with a one-core tooltip. Memory is resident RAM, distinct from the Java heap limit. Resource information appears first in Info.
-- Loading diagnostics open their actual source log and recognize Java-version errors, occupied ports, out-of-memory, full disks and corrupt launch JARs. No safe repair means no silent file changes.
-- Client exports use explicit side metadata, exclude declared server-only mods and can supplement declared client-only extras from a matching installed Prism instance. Exact Minecraft/loader checks, compatibility warnings and redistribution reminders replace a promise of automatic playability.
-- Importing the same local JAR twice no longer creates a suffixed duplicate that Minecraft would load twice.
+## Highlights
 
-- Both mod downloads and pack imports authenticate official CurseForge CDN hosts. Credentials never appear in URLs or cross-host redirects. Pack imports no longer guess CDN paths or fall back to website redirect endpoints; missing keys and author-restricted files become explicit per-file failures.
+### Server lifecycle and diagnostics
+
+- Check the configured IPv4 TCP port before starting a server. A known collision is reported before Crucible creates the tmux session; if procfs cannot be read, the result is unknown and startup fails closed rather than assuming the port is free.
+- Use Java's last-value-wins behavior for duplicate `server-port` entries. Address-copy controls reject blank, malformed, or out-of-range ports instead of generating a misleading address.
+- Infer legacy loader metadata only from specific on-disk launcher artifacts when the registry has no explicit loader. Explicit registry metadata remains authoritative. Normalize human-labelled Minecraft version metadata without mistaking a modpack version such as `2.8.4` for a Minecraft version.
+- Validate `server.properties` against the registered/detected Minecraft version. Historical keys such as `spawn-animals` and `spawn-npcs` are accepted for versions before 1.21.2 and reported as removed on newer/unknown versions.
+- Accept syntactically valid namespaced modded world presets such as `wover:normal`, including Java-properties escaped colons, rather than recommending vanilla terrain for custom world generators.
+- Avoid unsafe typo repairs such as renaming `server-id` to `server-ip` or `server-name` to `level-name`; those settings do not mean the same thing. Preserve protection against actual registry edits and concurrent writes while reconciling expected CLI-only lifecycle changes to `last_started`.
+
+### Mod management and desktop workflows
+
+- Browse compatible mod releases and upgrade or downgrade through staged, hash-verified downloads. Keep previous JARs, identity snapshots, and recovery receipts; ordinary publication errors roll back, and unsafe conflicts are rejected.
+- Identify matching online mod files by exact identity/hash rather than by similar filenames. Explicit Fabric, Quilt and Forge environment metadata is shown as evidence, not a guarantee that a whole modpack is compatible.
+- Add mod search/version/dependency support for the official CurseForge API, with session-only or user-owned private credentials. Credential-bearing requests are host-scoped, redirects cannot leak credentials to other hosts, and author-restricted downloads are not guessed or bypassed.
+- Improve console suggestions, player controls, resizable layouts, CPU/memory descriptions, source-log diagnostics, server rename/import workflows, and lazy loading of expensive tabs.
+
+### Review-first player-pack sharing
+
+- Build a Prism/MultiMC ZIP from a selected installed client profile with exact Minecraft and loader-version checks. The source profile supplies client content; server files remain authoritative for conflicting paths and mod identities.
+- Reconcile mods by content hash and explicit metadata. Exclude declared server-only JARs, warn about unknown-side JARs, and refuse to create a ZIP when multiple enabled JARs declare the same mod ID. A saved ZIP is not treated as an installed Prism profile.
+- Exclude worlds, screenshots, logs, account data, shaderpacks, server scripts, and unrelated files by default. Resource packs are opt-in. Include a per-file size/SHA-256 manifest and local archive checksum.
+- Require an owner review of the exact file set, compatibility findings, privacy-scan limits, and distribution rights before public upload. The text scanner is bounded and heuristic; it scans eligible text beneath included `config/` and KubeJS paths only. It does not inspect mod JARs or resource packs for secrets, and binary, unknown-format, or oversized config files require manual review.
+- Maintain an exact-JAR-SHA-256 distribution catalog with explicit `permitted`, `conditional`, or `prohibited` decisions and HTTPS evidence. Unknown artifacts remain unverified, and prohibited artifacts are not bundled.
+- Stream approved uploads to Gofile without loading the full archive into memory. Verify the local SHA-256 and streamed bytes; verify provider size/MD5 fields when supplied. Show transfer progress, average speed and approximate ETA, support cancellation/manual retry, and retain a private local ZIP and bounded local history.
 
 ## Validation
 
-- Full offline regression suite: **417 passed, 31 subtests passed**.
-- Added 85 behavior cases; the real Qt subprocess also covers keyboard completion, cursor preservation, player resizing, sorted mod results, chained network-worker retirement, provider choice, rename persistence/header refresh, external drops and import-field height.
-- Live public Modrinth test: Fabric API compatible releases, verified download, exact-file lookup, downgrade from 0.116.17+1.21.1 to 0.102.0+1.21.1 and retained-original receipt. All in a temporary directory.
-- Repeated the real-Qt interaction/teardown sequence 15 times after fixing an intermittent Python 3.14/SIP finalization crash; all passed.
-- Rendered and inspected the changed desktop workflows with an isolated synthetic server and registry, including 1200×760 and 900×600 layouts.
-- Existing uncommitted on-disk work was preserved, included and regression-tested. No user worlds or installed server mod sets were changed during testing.
+- Full local test suite on Python 3.14.4: **583 passed, 61 subtests passed**.
+- GitHub Actions passed the full suite on Python 3.11 and Python 3.13 for the v0.8.0 release candidate commit.
+- A generated synthetic Prism ZIP was imported into an isolated Prism Launcher 11.1.1 profile, and manifest/file hashes were checked.
+- A small owner-approved synthetic Gofile upload previously passed local checksum and provider size/MD5 checks and the public share-page check. This did not establish end-to-end anonymous download of the ZIP bytes.
+- Read-only validation of the live Minecraft 1.21.1 server and the stopped Create+ 2 instance reported no `server.properties` problems. No live world or mod set was changed during this release validation.
 
-## Limits and recovery
+## Known limits and owner actions
 
-- CurseForge approval, desktop credential distribution and API-derived record-retention permissions remain open. Authenticated API/CDN requests, exact-host credential isolation, redirect denial, missing/rejected keys, rate limits and restricted pack files have mocked coverage, but no approved key was available for live validation. No key is bundled.
-- Suggestions use a local vocabulary, not the live server's Brigadier tree. Modded arguments and Minecraft-version-specific commands are not exhaustively discoverable.
-- Arbitrary third-party mod combinations, in-game performance and exported client gameplay were not validated. Client-only metadata can be absent, especially in old Forge mods; unknown remains unknown.
-- JAR changes do not migrate worlds. Make a world backup before changing content mods.
-- Ordinary I/O failures roll back. A power loss/process kill during publication can require manual recovery from .crucible/mod-history/<operation>/receipt.json and its retained original files. A stale mod-change.lock intentionally blocks another change until custody is reviewed.
-- This is a tested refinement, not a guarantee that Minecraft, upstream providers or every modpack will never require maintenance.
+- **No real-mod redistribution permissions are pre-approved in the shipped catalog.** The catalog is deliberately empty until individual artifact hashes have reviewed evidence. Do not treat an unknown hash, a mod name, or an exportable ZIP as permission to redistribute a mod.
+- The actual Create+ pack still has duplicate mod IDs that must be resolved before a complete player ZIP can be generated. The current pack's unverified JAR rights and binary/cache config files also require owner review. No real modpack was uploaded as part of this validation.
+- Anonymous download of actual ZIP bytes from Gofile and a large-file cancellation/retry soak test remain open. Gofile guest/free link retention may be ephemeral; do not promise permanent storage or automatic revocation.
+- CurseForge approval for Crucible's open-source desktop use, applicable credential/retention permissions, and live access using an approved key remain unverified. No shared API key is bundled.
+- The test suite and synthetic Prism import do not prove that every arbitrary mod combination launches or plays correctly. Mod changes do not migrate worlds; back up a world before changing content mods.
+- Ordinary file-operation errors roll back. Sudden power loss or process termination during a mod publication can require manual recovery from the retained original files and the operation's receipt.
+
+## Install
+
+The verified one-line installer downloads the latest GitHub Release's exact source ZIP and SHA-256 manifest, checks the digest and archive paths/links/size limits, and runs the staged atomic installer. Requirements: Linux, Python 3.11+, PyQt6 6.5+, tmux, and a suitable Java runtime.
+
+```bash
+bash <(curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/Roaring1/Crucible/main/get-crucible.sh)
+```
+
+See `README.md`, `CURSEFORGE.md`, and `docs/development/client-pack-sharing-roadmap.md` for operational detail and remaining work.
