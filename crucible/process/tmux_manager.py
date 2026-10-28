@@ -16,10 +16,12 @@ tmux command reference (matching the user's current manual workflow):
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
 import time
@@ -29,6 +31,43 @@ from typing import Literal
 
 from ..data.instance_model import ServerInstance
 from . import netfix
+
+
+def _listening_ipv4_addresses(
+    port: int, proc_net_tcp: Path = Path("/proc/net/tcp")
+) -> list[str] | None:
+    """Read IPv4 TCP LISTEN sockets from procfs, excluding transient TIME_WAIT.
+
+    Crucible is a Linux/tmux application. Procfs provides a dependency-free,
+    read-only check and avoids mistaking TIME_WAIT sockets for an active port
+    collision after an intentional restart. Failure to inspect procfs is treated
+    as unknown, not as proof that the port is free.
+    """
+    if not 1 <= port <= 65535:
+        return []
+    try:
+        lines = proc_net_tcp.read_text(
+            encoding="ascii", errors="replace"
+        ).splitlines()[1:]
+    except OSError:
+        # None is intentionally distinct from an empty list. The caller must
+        # not treat an inaccessible procfs file as evidence that the port is free.
+        return None
+
+    addresses: set[str] = set()
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 4 or fields[3] != "0A":  # TCP_LISTEN
+            continue
+        try:
+            address_hex, port_hex = fields[1].split(":", 1)
+            if int(port_hex, 16) != port:
+                continue
+            address = socket.inet_ntoa(bytes.fromhex(address_hex)[::-1])
+        except (ValueError, OSError):
+            continue
+        addresses.add(address)
+    return sorted(addresses)
 
 
 class TmuxManager:
@@ -252,6 +291,75 @@ class TmuxManager:
 
     # Lifecycle
 
+    @staticmethod
+    def _read_server_property(instance: ServerInstance, key: str) -> str | None:
+        """Read the last exact key from server.properties (Java uses last value)."""
+        path = instance.path_obj / "server.properties"
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        value: str | None = None
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith(("#", "!")) or "=" not in line:
+                continue
+            raw_key, _, raw_value = line.partition("=")
+            if raw_key.strip() == key:
+                value = raw_value.strip()
+        return value
+
+    def _port_conflict_message(self, instance: ServerInstance) -> str | None:
+        """Return a safe, actionable warning if a local listener overlaps this bind."""
+        raw_port = self._read_server_property(instance, "server-port")
+        if raw_port is None:
+            port = 25565  # vanilla default when the key is absent
+        else:
+            # Invalid/blank ports are handled by the properties preflight; don't
+            # guess at the intended binding here.
+            try:
+                port = int(raw_port)
+            except (TypeError, ValueError):
+                return None
+        if not 1 <= port <= 65535:
+            return None
+
+        raw_ip = self._read_server_property(instance, "server-ip") or ""
+        bind_ip = raw_ip.strip() or "0.0.0.0"
+        try:
+            parsed_ip = ipaddress.ip_address(bind_ip)
+        except ValueError:
+            # Hostnames or unusual bind strings aren't interpreted here; the
+            # server's own bind error remains the authoritative diagnostic.
+            return None
+        if not isinstance(parsed_ip, ipaddress.IPv4Address):
+            # Crucible's server launch path intentionally forces IPv4.
+            return None
+
+        listeners = _listening_ipv4_addresses(port)
+        if listeners is None:
+            return (
+                f"Crucible could not verify whether port {port} for '{instance.name}' "
+                "is already in use because /proc/net/tcp could not be read. "
+                "Crucible did not start this server to avoid a possible port collision. "
+                "Check local process/socket visibility and retry."
+            )
+        if not listeners:
+            return None
+        if bind_ip == "0.0.0.0":
+            conflicts = listeners
+        else:
+            conflicts = [address for address in listeners if address in ("0.0.0.0", bind_ip)]
+        if not conflicts:
+            return None
+
+        endpoints = ", ".join(f"{address}:{port}" for address in conflicts)
+        return (
+            f"Port {port} for '{instance.name}' is already being listened on locally "
+            f"({endpoints}). Crucible did not start this server. Stop the process "
+            "using that port or choose a different server-port in Config."
+        )
+
     def start(self, instance: ServerInstance, fml_query_result: str | None = None) -> tuple[bool, str]:
         """
         Start the server in a new detached tmux session.
@@ -276,6 +384,10 @@ class TmuxManager:
                 f"No start script found in {instance.path}.\n"
                 f"  Expected one of: ServerStart.sh, startserver.sh, …",
             )
+
+        port_conflict = self._port_conflict_message(instance)
+        if port_conflict:
+            return False, port_conflict
 
         session = self.session_name(instance)
         # A previous failed start must not shadow the next attempt's diagnostics.

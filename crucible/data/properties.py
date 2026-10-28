@@ -31,6 +31,7 @@ Design goals
 from __future__ import annotations
 
 import difflib
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,6 +59,50 @@ _INT = "int"
 _BOOL = "bool"
 _ENUM = "enum"
 _STR = "str"
+
+# Custom generator presets in server.properties use Minecraft resource IDs.
+_RESOURCE_LOCATION_RE = re.compile(r"^[a-z0-9_.-]+:[a-z0-9/._-]+$")
+
+# These vanilla properties were removed in Minecraft 1.21.2. Keep their
+# schemas available for older server versions, but do not suppress unknown-key
+# warnings on 1.21.2+ (or when the Minecraft version is unknown).
+_VERSIONED_PROPERTY_SPECS: dict[str, tuple[str, PropSpec]] = {
+    "announce-player-achievements": (
+        "1.12.0", PropSpec("announce-player-achievements", _BOOL, "true")
+    ),
+    "max-build-height": ("1.17.0", PropSpec("max-build-height", _INT, "256")),
+    "snooper-enabled": ("1.18.0", PropSpec("snooper-enabled", _BOOL, "true")),
+    "spawn-animals": ("1.21.2", PropSpec("spawn-animals", _BOOL, "true")),
+    "spawn-npcs": ("1.21.2", PropSpec("spawn-npcs", _BOOL, "true")),
+}
+_MINECRAFT_VERSION_RE = re.compile(r"^\s*(?:Minecraft\s+)?[vV]?(\d+)\.(\d+)(?:\.(\d+))?")
+
+# A fuzzy match is not always a safe migration. These keys appear in some
+# older/modded server.properties files, but the superficially similar current
+# Java keys have different meanings. Leave the keys untouched and avoid
+# presenting the guesses as fixes (including in explicit --all repair mode).
+_NO_AUTO_SUGGEST_UNKNOWN_KEYS = frozenset({"server-id", "server-name"})
+
+
+def _version_tuple(version: str | None) -> tuple[int, int, int] | None:
+    """Parse a leading Minecraft semver, or None when version is unknown."""
+    if not version:
+        return None
+    match = _MINECRAFT_VERSION_RE.match(version)
+    if not match:
+        return None
+    return tuple(int(part or 0) for part in match.groups())
+
+
+def _is_property_available(key: str, minecraft_version: str | None) -> bool:
+    """Whether a versioned property is available in the declared MC version."""
+    entry = _VERSIONED_PROPERTY_SPECS.get(key)
+    if entry is None:
+        return False
+    version = _version_tuple(minecraft_version)
+    removed_in = _version_tuple(entry[0])
+    return version is not None and removed_in is not None and version < removed_in
+
 
 _SPECS: dict[str, PropSpec] = {s.key: s for s in [
     # ---- numeric (THE crash-causing group) ----
@@ -277,7 +322,7 @@ class PropertiesDoc:
 
     # ---- validation ----
 
-    def validate(self) -> list[PropIssue]:
+    def validate(self, *, minecraft_version: str | None = None) -> list[PropIssue]:
         issues: list[PropIssue] = []
         seen: dict[str, int] = {}
 
@@ -285,18 +330,64 @@ class PropertiesDoc:
             seen[key] = seen.get(key, 0) + 1
             spec = _SPECS.get(key)
             if spec is None:
-                # Unknown key. Minecraft ignores it (no crash) — but it's often a
-                # typo, so suggest the closest real key.
-                match = difflib.get_close_matches(key, _SPECS.keys(), n=3, cutoff=0.7)
+                # A few properties are valid only in earlier Minecraft releases.
+                # Check them against the registered server version before labeling
+                # them unknown; if the version is unavailable, stay conservative.
+                versioned = _VERSIONED_PROPERTY_SPECS.get(key)
+                if versioned is not None:
+                    if _is_property_available(key, minecraft_version):
+                        issues.extend(
+                            self._check_value(
+                                versioned[1], value, minecraft_version=minecraft_version
+                            )
+                        )
+                        continue
+                    version_tuple = _version_tuple(minecraft_version)
+                    removed_in = _version_tuple(versioned[0])
+                    if version_tuple is not None and removed_in is not None and version_tuple >= removed_in:
+                        issues.append(PropIssue(
+                            key=key,
+                            kind="unsupported_version",
+                            current=value,
+                            severity="warning",
+                            message=(f"“{key}” was removed in Minecraft {versioned[0]} "
+                                     "and has no effect on this version"),
+                        ))
+                    else:
+                        # With no authoritative Minecraft version, do not guess
+                        # whether this legacy key is valid and do not suggest
+                        # renaming it to a superficially similar, different setting.
+                        issues.append(PropIssue(
+                            key=key,
+                            kind="unknown_key",
+                            current=value,
+                            severity="warning",
+                            message=(f"“{key}” is a version-specific legacy setting; "
+                                     f"Minecraft version {minecraft_version or 'unknown'} "
+                                     "is needed to confirm support"),
+                        ))
+                    continue
+                # Unknown keys may be typoed standard properties or intentional
+                # mod/pack-specific fields. Offer fuzzy guesses only where they
+                # are not known to risk changing the setting's meaning.
+                match = (
+                    [] if key in _NO_AUTO_SUGGEST_UNKNOWN_KEYS else
+                    difflib.get_close_matches(key, _SPECS.keys(), n=3, cutoff=0.7)
+                )
+                note = " isn't in Crucible's known Java server.properties settings"
+                if key == "server-id":
+                    note += "; the similar “server-ip” setting controls the bind address, not an ID"
+                elif key == "server-name":
+                    note += "; the similar “level-name” setting selects the world folder, not a display name"
                 issues.append(PropIssue(
                     key=key, kind="unknown_key", current=value, severity="warning",
-                    message=(f"“{key}” isn't a recognized server setting"
+                    message=(f"“{key}”{note}"
                              + (f" — did you mean “{match[0]}”?" if match else "")),
                     suggestion=(match[0] if match else None), options=match,
                 ))
                 continue
 
-            issues.extend(self._check_value(spec, value))
+            issues.extend(self._check_value(spec, value, minecraft_version=minecraft_version))
 
         for key, count in seen.items():
             if count > 1:
@@ -306,7 +397,9 @@ class PropertiesDoc:
                 ))
         return issues
 
-    def _check_value(self, spec: PropSpec, value: str) -> list[PropIssue]:
+    def _check_value(
+        self, spec: PropSpec, value: str, *, minecraft_version: str | None = None
+    ) -> list[PropIssue]:
         v = value.strip()
         if spec.type == _INT:
             if v == "":
@@ -364,9 +457,39 @@ class PropertiesDoc:
             )]
 
         if spec.type == _ENUM:
+            if spec.key == "level-type":
+                # Java-properties files may spell resource identifiers with an
+                # escaped colon. Compare the normalized value to canonical IDs
+                # first, or a valid `minecraft\:normal` is falsely warned.
+                v = v.replace("\\:", ":")
             if v in spec.options:
                 return []
-            # legacy numeric (gamemode=1) or alternate spelling (level-type=default)
+            # Custom world type names in old Forge/Minecraft releases were often
+            # plain identifiers (`rwg`, `DEFAULT`, etc.). Since 1.19 the value is
+            # a world-preset resource location, so only accept a plain legacy ID
+            # when we have evidence that this server is old enough.
+            if spec.key == "level-type":
+                version = _version_tuple(minecraft_version)
+                if (
+                    version is not None
+                    and version < (1, 19, 0)
+                    and re.fullmatch(r"[A-Za-z0-9_.-]+", v)
+                ):
+                    return []
+                # Modded world-generator presets use namespaced resource IDs,
+                # e.g. WorldWeaver's `wover:normal`. Unknown external namespaces
+                # cannot be checked against vanilla's fixed enum list, so don't
+                # recommend replacing them with minecraft:normal. Keep the
+                # minecraft namespace strict so vanilla typos still warn.
+                if (
+                    _RESOURCE_LOCATION_RE.fullmatch(v)
+                    and not v.startswith("minecraft:")
+                ):
+                    return []
+            # Numeric difficulty/gamemode values remain valid legacy spellings.
+            # Also accept the listed historical aliases for other enum settings.
+            if v in _LEGACY_NUMERIC_ENUM.get(spec.key, {}):
+                return []
             legacy = _LEGACY_NUMERIC_ENUM.get(spec.key, {}).get(v)
             if not legacy:
                 legacy = _LEGACY_ENUM_VALUES.get(spec.key, {}).get(v.lower())
@@ -392,14 +515,15 @@ class PropertiesDoc:
     # ---- repair ----
 
     def autofix(self, *, only_errors: bool = False,
-                fix_unknown_keys: bool = False) -> list[tuple[str, str, str]]:
+                fix_unknown_keys: bool = False,
+                minecraft_version: str | None = None) -> list[tuple[str, str, str]]:
         """Apply each issue's best suggestion in place.
 
         only_errors=True restricts to start-blocking problems (the safe default
         for an automatic pre-start repair).  Returns a list of (key, old, new).
         """
         changed: list[tuple[str, str, str]] = []
-        for issue in self.validate():
+        for issue in self.validate(minecraft_version=minecraft_version):
             if only_errors and not issue.is_error:
                 continue
             if issue.kind == "duplicate_key":
@@ -453,23 +577,30 @@ def _bool_guess(s: str) -> Optional[str]:
 # Public convenience API (used by CLI + GUI)
 # --------------------------------------------------------------------------- #
 
-def validate_file(path) -> list[PropIssue]:
-    """Return all issues for a server.properties file (missing file -> [])."""
+def validate_file(path, *, minecraft_version: str | None = None) -> list[PropIssue]:
+    """Return property issues, using the MC version for versioned legacy keys.
+
+    If the version is unknown, version-specific keys remain advisory unknown-key
+    warnings rather than being assumed valid or removed.
+    """
     p = Path(path)
     if not p.exists():
         return []
     try:
-        return PropertiesDoc.load(p).validate()
+        return PropertiesDoc.load(p).validate(minecraft_version=minecraft_version)
     except Exception:
         return []
 
 
-def has_blocking_errors(path) -> bool:
-    return any(i.is_error for i in validate_file(path))
+def has_blocking_errors(path, *, minecraft_version: str | None = None) -> bool:
+    return any(
+        i.is_error for i in validate_file(path, minecraft_version=minecraft_version)
+    )
 
 
 def autorepair_file(path, *, only_errors: bool = True, fix_unknown_keys: bool = False,
-                    backup: bool = True) -> RepairResult:
+                    backup: bool = True,
+                    minecraft_version: str | None = None) -> RepairResult:
     """Validate, apply safe fixes, and write the file back atomically.
 
     Never raises; failures are reported in ``RepairResult.error``.
@@ -481,7 +612,11 @@ def autorepair_file(path, *, only_errors: bool = True, fix_unknown_keys: bool = 
         return result
     try:
         doc = PropertiesDoc.load(p)
-        changed = doc.autofix(only_errors=only_errors, fix_unknown_keys=fix_unknown_keys)
+        changed = doc.autofix(
+            only_errors=only_errors,
+            fix_unknown_keys=fix_unknown_keys,
+            minecraft_version=minecraft_version,
+        )
         if changed:
             if backup:
                 try:
@@ -492,7 +627,7 @@ def autorepair_file(path, *, only_errors: bool = True, fix_unknown_keys: bool = 
                     pass
             doc.save(p)
         result.changed = changed
-        result.remaining = doc.validate()
+        result.remaining = doc.validate(minecraft_version=minecraft_version)
         return result
     except Exception as exc:  # pragma: no cover - defensive
         result.error = f"{type(exc).__name__}: {exc}"

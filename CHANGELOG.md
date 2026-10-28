@@ -2,6 +2,15 @@
 
 ## v0.8.0 — Server-manager refinement
 
+- Port-preflight safety: if Crucible cannot read `/proc/net/tcp` to check a configured port, it now reports the check as unknown and refuses to assume the port is free.
+- Legacy loader detection: infer a missing loader from exact server launcher artifacts (including old Forge universal JARs) for read-only features such as TPS polling, while explicit registry metadata remains authoritative. Normalize human-labelled Minecraft version metadata too.
+- Port reporting: `server_port()` now honors Java's last-property-value rule for duplicate `server-port` entries, and the connection-address buttons refuse to copy an invalid port instead of fabricating an `IP:port` string.
+- Startup safety: check live local IPv4 TCP listeners before launching a server and explain a port collision before creating a tmux session; ignore transient TIME_WAIT sockets and fail open if procfs cannot be inspected.
+- Property repair safety: don't offer or apply misleading fuzzy renames for legacy `server-id`/`server-name` fields where the nearest standard Java properties (`server-ip`/`level-name`) mean something different. Other clear typo suggestions remain available.
+- Legacy server compatibility: resolve Minecraft versions from explicit metadata or exact server/Forge jar names, recognize pre-removal `server.properties` keys, accept numeric legacy difficulty/gamemode and old modded world-type names, and normalize escaped enum colons. Bare pack versions are no longer mistaken for Minecraft versions.
+- Version-aware property validation: `spawn-animals` and `spawn-npcs` are recognized on Minecraft versions before 1.21.2, while newer/unknown versions still report them as unsupported.
+- Property validation: accept syntactically valid namespaced custom `level-type` presets (including Java-properties escaped colons) so modded generators such as WorldWeaver are not incorrectly advised to switch to vanilla terrain.
+- Registry concurrency: the GUI now reconciles CLI lifecycle writes that change only `last_started`, while preserving the safety warning for real config edits, additions/removals, malformed files, and concurrent rewrites.
 - Live Minecraft-style command suggestions above the console, including gamerules, values, player names, caret-aware Tab completion and keyboard selection.
 - Compatible mod release lists for upgrades and downgrades; exact online identity by SHA-1; official CurseForge provider with session-only API-key entry and author-restriction handling.
 - Verified staged mod/dependency changes, retained originals and recovery receipts, ordinary I/O rollback, conflict checks and stopped-server guards. Failed downloads never retire the original.

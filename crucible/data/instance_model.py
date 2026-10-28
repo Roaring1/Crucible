@@ -269,6 +269,78 @@ class ServerInstance:
     def path_obj(self) -> Path:
         return Path(self.path)
 
+    def effective_minecraft_version(self) -> str | None:
+        """Return an explicit or artifact-verified Minecraft version.
+
+        ``version`` often stores a modpack release (e.g. GTNH 2.8.4), not a
+        Minecraft version. Never parse that bare value as Minecraft semver.
+        Prefer the dedicated field, then an explicitly labelled ``MC ...``
+        version string, then exact server/Forge jar filename evidence.
+        """
+        explicit = (self.minecraft_version or "").strip()
+        if explicit:
+            # Importers should store a bare version, but tolerate human-labelled
+            # metadata from older registry records without misreading pack versions.
+            match = re.fullmatch(
+                r"\s*(?:Minecraft\s+|MC\s+)?[vV]?(\d+\.\d+(?:\.\d+)?)\s*",
+                explicit,
+                re.IGNORECASE,
+            )
+            return match.group(1) if match else explicit
+
+        labelled = re.search(
+            r"\b(?:MC|Minecraft)\s+([vV]?\d+\.\d+(?:\.\d+)?)\b",
+            self.version or "",
+            re.IGNORECASE,
+        )
+        if labelled:
+            return labelled.group(1)
+
+        root = self.path_obj
+        if not root.is_dir():
+            return None
+
+        for jar in sorted(root.glob("minecraft_server.*.jar")):
+            match = re.fullmatch(
+                r"minecraft_server\.(\d+\.\d+(?:\.\d+)?)\.jar",
+                jar.name,
+            )
+            if match and jar.is_file():
+                return match.group(1)
+
+        for jar in sorted(root.glob("forge-*-universal.jar")):
+            match = re.match(r"^forge-(\d+\.\d+(?:\.\d+)?)-", jar.name)
+            if match and jar.is_file():
+                return match.group(1)
+        return None
+
+    def effective_loader(self) -> str | None:
+        """Return explicit loader metadata or infer it from an exact launcher artifact.
+
+        Do not guess from a modpack version/name. A Forge universal JAR or known
+        loader launcher is concrete on-disk evidence and is useful for legacy
+        instances imported before Crucible recorded the loader field.
+        """
+        explicit = (self.loader or "").strip().lower()
+        if explicit:
+            return explicit
+
+        root = self.path_obj
+        if not root.is_dir():
+            return None
+
+        # These are specific server-loader artifact names, not arbitrary mods.
+        if any(path.is_file() for path in root.glob("forge-*-universal.jar")):
+            return "forge"
+        if (root / "fabric-server-launch.jar").is_file():
+            return "fabric"
+        if (root / "quilt-server-launch.jar").is_file():
+            return "quilt"
+        if any(path.is_file() for path in root.glob("paper*.jar")):
+            return "paper"
+
+        return None
+
     def get_startscript(self) -> Path | None:
         """
         Find the server start script, trying all known GTNH naming variants
@@ -502,14 +574,24 @@ class ServerInstance:
         return False
 
     def server_port(self) -> str:
+        """Return the effective server-port value using Java's last-key-wins rule.
+
+        A missing key uses the vanilla default 25565. A present but blank key
+        stays blank so callers don't mistake an invalid port for that default.
+        """
         props = self.path_obj / "server.properties"
         if props.exists():
             try:
+                value: str | None = None
                 for line in props.read_text(encoding="utf-8", errors="replace").splitlines():
-                    if line.strip().startswith("server-port="):
-                        port = line.split("=", 1)[1].strip()
-                        if port:
-                            return port
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith(("#", "!")) or "=" not in line:
+                        continue
+                    key, _, raw_value = line.partition("=")
+                    if key.strip() == "server-port":
+                        value = raw_value.strip()
+                if value is not None:
+                    return value
             except OSError:
                 pass
         return "25565"
@@ -569,13 +651,14 @@ class ServerInstance:
     def _mc_version_tuple(self) -> tuple[int, ...]:
         """Best-effort parse of the Minecraft version into a comparable tuple.
 
-        Pulls the first dotted numeric run out of the version string, so
-        "1.21.1", "MC 1.21.1" and "1.20" all work. Returns an empty tuple when
-        the version is unknown/unparseable (so comparisons stay False-safe).
+        Uses the effective Minecraft version only, never a bare modpack release
+        such as GTNH 2.8.4. Returns an empty tuple when the version is
+        unknown/unparseable so comparisons stay False-safe.
         """
-        import re as _re
-        raw = (self.minecraft_version or "") or (self.version or "")
-        m = _re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", raw)
+        raw = self.effective_minecraft_version()
+        if not raw:
+            return ()
+        m = re.fullmatch(r"\s*(\d+)\.(\d+)(?:\.(\d+))?\s*", raw)
         if not m:
             return ()
         return tuple(int(g) for g in m.groups() if g is not None)
@@ -595,7 +678,7 @@ class ServerInstance:
 
         Returning None means "this server has no TPS command — don't poll it".
         """
-        loader = (self.loader or "").strip().lower()
+        loader = (self.effective_loader() or "").strip().lower()
         mc = self._mc_version_tuple()
 
         # Paper-family keeps /tps across versions and lacks the vanilla /tick cmd.
@@ -687,7 +770,9 @@ class ServerInstance:
         if props_ok:
             try:
                 from .properties import validate_file
-                issues = validate_file(p / "server.properties")
+                issues = validate_file(
+                    p / "server.properties", minecraft_version=self.effective_minecraft_version()
+                )
             except Exception:
                 issues = []
             errs = [i for i in issues if i.is_error]

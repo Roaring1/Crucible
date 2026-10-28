@@ -232,9 +232,14 @@ class MainWindow(QMainWindow):
         self._health_check()
 
     def _health_check(self) -> None:
-        # Never silently accept an externally edited/deleted registry while the
-        # GUI has live objects and worker threads referring to its old rows.
-        if self._manager.registry_changed_externally():
+        # The CLI and GUI share this registry. Its intentional last_started-only
+        # lifecycle writes are safe to reconcile in place; real config changes,
+        # additions/removals, malformed files and races still require a restart.
+        registry_changed = self._manager.registry_changed_externally()
+        if (
+            registry_changed
+            and not self._manager.reconcile_external_last_started()
+        ):
             if not self._external_registry_warning_shown:
                 self._external_registry_warning_shown = True
                 QMessageBox.warning(

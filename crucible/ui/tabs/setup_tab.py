@@ -686,7 +686,11 @@ class SetupTab(QWidget):
             return
         try:
             from ..properties_dialog import PropertiesFixDialog
-            dlg = PropertiesFixDialog(inst.path_obj / "server.properties", parent=self)
+            dlg = PropertiesFixDialog(
+                inst.path_obj / "server.properties",
+                parent=self,
+                minecraft_version=inst.effective_minecraft_version(),
+            )
             dlg.exec()
         except Exception as exc:
             QMessageBox.warning(self, "Server settings", f"Could not open settings check:\n{exc}")
@@ -812,8 +816,18 @@ class SetupTab(QWidget):
         instance_id = inst.id
         try:
             port = inst.server_port()
+            port_number = int(port)
+            if not 1 <= port_number <= 65535:
+                raise ValueError("server-port is outside the valid TCP range")
         except Exception:
-            port = "25565"
+            QMessageBox.warning(
+                self,
+                "Invalid server port",
+                "Crucible cannot make a reliable connection address because "
+                "server.properties has a blank or invalid server-port. Correct "
+                "the port in Config before copying the connection address.",
+            )
+            return
         self._ip_btn.setEnabled(False)
         self._ip_btn.setText("…")
 
