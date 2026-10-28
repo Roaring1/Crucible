@@ -481,8 +481,14 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         source = Path(client_source).expanduser()
         if source.is_symlink():
             return ExportResult(error="The selected Prism source is a symbolic link. Choose the real instance folder.")
+        if source.is_file() and zipfile.is_zipfile(source):
+            return ExportResult(error=(
+                "The saved Prism source is a ZIP archive, not an installed Prism instance folder. "
+                "Import that ZIP into Prism, wait for the instance to finish installing, then select the installed instance folder. "
+                "No client archive was written."
+            ))
         if not source.is_dir():
-            return ExportResult(error="The selected Prism source folder does not exist.")
+            return ExportResult(error="The selected Prism source folder does not exist. Choose the installed instance folder.")
         # Never trust a metadata file that resolves outside the selected profile.
         pack_file = source / "mmc-pack.json"
         if pack_file.is_symlink():

@@ -183,6 +183,15 @@ class ClientExportTests(unittest.TestCase):
             # A valid JAR without explicit environment metadata is intentionally unknown.
             with zipfile.ZipFile(mods / "mystery.jar", "w") as jar_zip:
                 jar_zip.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
+            for filename, mod_id, side in (
+                ("common-extra.jar", "common_extra", "*"),
+                ("server-only.jar", "server_only", "server"),
+            ):
+                with zipfile.ZipFile(mods / filename, "w") as jar_zip:
+                    jar_zip.writestr("fabric.mod.json", json.dumps({
+                        "schemaVersion": 1, "id": mod_id, "name": mod_id,
+                        "version": "1.0", "environment": side,
+                    }))
             instance = SimpleNamespace(
                 path=str(server), name="TestPack",
                 minecraft_version="1.21.1", loader="neoforge", loader_version="21.1.1",
@@ -192,11 +201,19 @@ class ClientExportTests(unittest.TestCase):
                 instance, output, fmt="prism", client_source=str(source), include_config=False
             )
             self.assertTrue(result.ok, result.error)
-            self.assertEqual(result.mod_count, 1)
+            self.assertEqual(result.mod_count, 2)
             with zipfile.ZipFile(output) as archive:
-                self.assertIn("TestPack/.minecraft/mods/mystery.jar", archive.namelist())
+                names = set(archive.namelist())
+                self.assertIn("TestPack/.minecraft/mods/mystery.jar", names)
+                self.assertIn("TestPack/.minecraft/mods/common-extra.jar", names)
+                self.assertNotIn("TestPack/.minecraft/mods/server-only.jar", names)
             self.assertTrue(
                 any("mystery.jar" in warning and "included from the selected working Prism profile" in warning
+                    for warning in result.warnings),
+                result.warnings,
+            )
+            self.assertTrue(
+                any("server-only.jar" in warning and "Explicit server-only JAR(s)" in warning
                     for warning in result.warnings),
                 result.warnings,
             )
@@ -679,6 +696,33 @@ class ClientExportTests(unittest.TestCase):
             self.assertIn("balm-old.jar (21.0.58)", result.error)
             self.assertIn("balm-new.jar (21.0.66)", result.error)
             self.assertIn("No client ZIP was written", result.error)
+            self.assertFalse(output.exists())
+
+    def test_prism_source_zip_reports_that_an_installed_profile_is_required(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source_zip = root / "saved-prism-source.zip"
+            with zipfile.ZipFile(source_zip, "w") as archive:
+                archive.writestr("mmc-pack.json", json.dumps({
+                    "formatVersion": 1,
+                    "components": [
+                        {"uid": "net.minecraft", "version": "1.21.1"},
+                        {"uid": "net.neoforged", "version": "21.1.1"},
+                    ],
+                }))
+            instance = SimpleNamespace(
+                path=str(server), name="TestPack", minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.1",
+            )
+            output = root / "out.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", client_source=str(source_zip)
+            )
+            self.assertFalse(result.ok)
+            self.assertIn("ZIP archive, not an installed Prism instance folder", result.error)
+            self.assertIn("Import that ZIP into Prism", result.error)
             self.assertFalse(output.exists())
 
     def test_prism_client_loader_version_mismatch_reports_both_exact_versions(self):
