@@ -183,7 +183,7 @@ def test_forge_dependency_side_does_not_classify_whole_mod(tmp_path):
 
 
 def test_client_export_has_correct_environment_and_no_world(tmp_path):
-    server=tmp_path/'server';jar(server/'mods/shared.jar','*');jar(server/'mods/server.jar','server');jar(server/'mods/client.jar','client')
+    server=tmp_path/'server';jar(server/'mods/shared.jar','*',name='shared');jar(server/'mods/server.jar','server',name='server');jar(server/'mods/client.jar','client',name='client')
     (server/'world').mkdir();(server/'world/secret.dat').write_text('not for client')
     inst=SimpleNamespace(path=str(server),name='Example',minecraft_version='1.21.1',loader='fabric',loader_version='0.16.10')
     for fmt,suffix in [('prism','zip'),('mrpack','mrpack'),('curseforge','zip')]:
@@ -195,8 +195,8 @@ def test_client_export_has_correct_environment_and_no_world(tmp_path):
 
 
 def test_client_source_adds_only_declared_client_extras(tmp_path):
-    server=tmp_path/'server';jar(server/'mods/shared.jar')
-    source=tmp_path/'prism';jar(source/'.minecraft/mods/client.jar','client');jar(source/'.minecraft/mods/old-shared.jar','*')
+    server=tmp_path/'server';jar(server/'mods/shared.jar','*',name='shared')
+    source=tmp_path/'prism';jar(source/'.minecraft/mods/client.jar','client',name='client');jar(source/'.minecraft/mods/old-shared.jar','*',name='shared')
     (source/'mmc-pack.json').write_text(json.dumps({'components':[{'uid':'net.minecraft','version':'1.21.1'},{'uid':'net.fabricmc.fabric-loader','version':'0.16.10'}]}))
     inst=SimpleNamespace(path=str(server),name='Example',minecraft_version='1.21.1',loader='fabric',loader_version='0.16.10')
     result=client_export.export(inst,tmp_path/'client.zip','prism',client_source=str(source))

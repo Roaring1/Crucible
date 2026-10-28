@@ -464,11 +464,14 @@ def export(instance, out_path, fmt: str = "mrpack", *,
     from ..mods.mod_manager import ModManager, ModEntry
     inspector = ModManager(instance)
     ship, skipped, unknown = [], [], []
+    server_mod_ids = set()
     for j in _enabled_mods(server):
         if j.is_symlink():
             return ExportResult(error="Symlinked mods are not exported: " + j.name)
         entry = ModEntry(j.name, j, True, j.stat().st_size)
         inspector.inspect_jar(entry)
+        if entry.mod_id:
+            server_mod_ids.add(entry.mod_id)
         if entry.side == "server":
             skipped.append(j)
         else:
@@ -597,7 +600,8 @@ def export(instance, out_path, fmt: str = "mrpack", *,
 
         names = {j.name for j in ship}
         hashes = {_sha256_file(j) for j in ship}
-        client_unknown = []
+        client_unknown_included = []
+        client_server_only = []
         source_conflicts = []
         for j in sorted(client_mods.glob("*.jar")):
             if j.is_symlink():
@@ -607,28 +611,62 @@ def export(instance, out_path, fmt: str = "mrpack", *,
                 continue
             entry = ModEntry(j.name, j, True, j.stat().st_size)
             inspector.inspect_jar(entry)
-            # Shared server JARs are authoritative. Do not silently collide with a
-            # different client-only JAR that has the same archive path.
+            if entry.side == "server":
+                client_server_only.append(j.name)
+                continue
+            # Shared server JARs are authoritative. Never introduce a second
+            # artifact of the same name or mod ID with different bytes.
             if j.name in names:
                 if entry.side == "client":
                     return ExportResult(error=(
                         f"Client-only mod '{j.name}' conflicts with a different server JAR of the same name. "
-                        "Resolve the conflict before exporting."))
+                        "Resolve the conflict before exporting."
+                    ))
                 source_conflicts.append(j.name)
                 continue
-            if entry.side == "client":
+            if entry.mod_id and entry.mod_id in server_mod_ids:
+                source_conflicts.append(j.name)
+                continue
+            if entry.side in {"client", "unknown", "both"}:
+                # The owner explicitly selected this installed Prism profile as
+                # the working client. Profile-exclusive JARs must not vanish
+                # just because metadata omits an execution side. This is not
+                # redistribution permission; exact JAR review still applies.
                 ship.append(j)
                 names.add(j.name)
                 hashes.add(digest)
-            elif entry.side == "unknown":
-                client_unknown.append(j.name)
+                if entry.side == "unknown":
+                    client_unknown_included.append(j.name)
             elif entry.side == "both":
                 # A shared mod that isn't byte-identical to a server JAR may be
-                # a stale or mismatched version. Do not silently drop it.
+                # a stale/mismatched version. Keep the server copy and warn.
                 source_conflicts.append(j.name)
     else:
-        client_unknown = []
+        client_unknown_included = []
+        client_server_only = []
         source_conflicts = []
+
+    # Multiple enabled JARs with one mod ID usually means an obsolete version
+    # remains in mods/. Fail closed instead of presenting a potentially broken
+    # archive as ready to share.
+    bundled_by_id = {}
+    for jar in ship:
+        entry = ModEntry(jar.name, jar, True, jar.stat().st_size)
+        inspector.inspect_jar(entry)
+        if entry.mod_id:
+            bundled_by_id.setdefault(entry.mod_id, []).append((jar.name, entry.version))
+    duplicate_ids = {mod_id: rows for mod_id, rows in bundled_by_id.items() if len(rows) > 1}
+    if duplicate_ids:
+        lines = ["Multiple enabled JARs declare the same mod ID; remove/disable obsolete duplicates before exporting:"]
+        for mod_id, rows in sorted(duplicate_ids.items())[:12]:
+            details = ", ".join(f"{filename} ({version or 'version unknown'})" for filename, version in rows[:4])
+            if len(rows) > 4:
+                details += f", and {len(rows) - 4} more"
+            lines.append(f"- {mod_id}: {details}")
+        if len(duplicate_ids) > 12:
+            lines.append(f"- and {len(duplicate_ids) - 12} additional duplicate mod ID(s)")
+        lines.append("No client ZIP was written. Fix the server/client mod set, then rebuild and review.")
+        return ExportResult(error="\n".join(lines))
 
     excluded_defaultconfigs = include_config and (server / "defaultconfigs").is_dir()
 
@@ -814,13 +852,19 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         warnings.append(
             "Shaderpacks from the selected Prism profile were excluded; Crucible does not bundle shaderpacks in player shares."
         )
-    if client_unknown:
-        shown = ", ".join(client_unknown[:8])
-        if len(client_unknown) > 8:
-            shown += f", and {len(client_unknown) - 8} more"
+    if client_unknown_included:
+        shown = ", ".join(client_unknown_included[:8])
+        if len(client_unknown_included) > 8:
+            shown += f", and {len(client_unknown_included) - 8} more"
         warnings.append(
-            "Client-source mods with unknown client compatibility were not added: " + shown
+            "Profile-exclusive JAR(s) with unknown side metadata were included from the selected working Prism profile: "
+            + shown + ". Review the list; this is not distribution permission."
         )
+    if client_server_only:
+        shown = ", ".join(client_server_only[:8])
+        if len(client_server_only) > 8:
+            shown += f", and {len(client_server_only) - 8} more"
+        warnings.append("Explicit server-only JAR(s) found in the selected client profile were excluded: " + shown)
     if source_conflicts:
         unique_conflicts = sorted(set(source_conflicts))
         shown = ", ".join(unique_conflicts[:8])

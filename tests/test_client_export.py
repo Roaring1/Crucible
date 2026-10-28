@@ -192,9 +192,11 @@ class ClientExportTests(unittest.TestCase):
                 instance, output, fmt="prism", client_source=str(source), include_config=False
             )
             self.assertTrue(result.ok, result.error)
-            self.assertEqual(result.mod_count, 0)
+            self.assertEqual(result.mod_count, 1)
+            with zipfile.ZipFile(output) as archive:
+                self.assertIn("TestPack/.minecraft/mods/mystery.jar", archive.namelist())
             self.assertTrue(
-                any("mystery.jar" in warning and "unknown client compatibility" in warning
+                any("mystery.jar" in warning and "included from the selected working Prism profile" in warning
                     for warning in result.warnings),
                 result.warnings,
             )
@@ -626,6 +628,58 @@ class ClientExportTests(unittest.TestCase):
             with zipfile.ZipFile(output) as archive:
                 self.assertFalse(any("/config/" in name for name in archive.namelist()))
 
+
+
+    def test_profile_exclusive_unknown_side_jar_is_included_from_selected_working_client(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            (server / "mods").mkdir(parents=True)
+            source = root / "working-prism"
+            client_mods = source / "minecraft" / "mods"
+            client_mods.mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.1"},
+                ],
+            }), encoding="utf-8")
+            metadata = 'modLoader="javafml"\nloaderVersion="[1,)"\nlicense="Test"\n[[mods]]\nmodId="profile_extra"\nversion="1.0.0"\ndisplayName="Profile Extra"\n'
+            with zipfile.ZipFile(client_mods / "profile-extra.jar", "w") as jar:
+                jar.writestr("META-INF/neoforge.mods.toml", metadata)
+            instance = SimpleNamespace(
+                path=str(server), name="TestPack", minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.1",
+            )
+            output = root / "out.zip"
+            result = client_export.export(instance, output, fmt="prism", client_source=str(source), include_config=False)
+            self.assertTrue(result.ok, result.error)
+            with zipfile.ZipFile(output) as archive:
+                self.assertIn("TestPack/.minecraft/mods/profile-extra.jar", archive.namelist())
+            self.assertTrue(any("profile-extra.jar" in warning and "included from the selected working Prism profile" in warning for warning in result.warnings))
+
+    def test_export_refuses_duplicate_enabled_mod_ids_with_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server_mods = root / "server" / "mods"
+            server_mods.mkdir(parents=True)
+            for filename, version in (("balm-old.jar", "21.0.58"), ("balm-new.jar", "21.0.66")):
+                metadata = f'modLoader="javafml"\nloaderVersion="[1,)"\nlicense="Test"\n[[mods]]\nmodId="balm"\nversion="{version}"\ndisplayName="Balm"\n'
+                with zipfile.ZipFile(server_mods / filename, "w") as jar:
+                    jar.writestr("META-INF/neoforge.mods.toml", metadata)
+            instance = SimpleNamespace(
+                path=str(root / "server"), name="DuplicateTest", minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.1",
+            )
+            output = root / "duplicate.zip"
+            result = client_export.export(instance, output, fmt="prism")
+            self.assertFalse(result.ok)
+            self.assertIn("Multiple enabled JARs declare the same mod ID", result.error)
+            self.assertIn("balm-old.jar (21.0.58)", result.error)
+            self.assertIn("balm-new.jar (21.0.66)", result.error)
+            self.assertIn("No client ZIP was written", result.error)
+            self.assertFalse(output.exists())
 
     def test_prism_client_loader_version_mismatch_reports_both_exact_versions(self):
         with tempfile.TemporaryDirectory() as tmp:
