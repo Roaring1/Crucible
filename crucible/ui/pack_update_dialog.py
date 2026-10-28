@@ -561,18 +561,18 @@ class RollbackDialog(_JobDialog):
             return
 
         instance = self._instance
-        running = self._running
         path = entry.path
         self._log.appendPlainText("")
         self._log.appendPlainText(f"Rolling back to {entry.label()}\u2026")
 
         def job(log):
             from ..importers import pack_update as pu
-            resolved = running
-            if resolved is None:
-                resolved = model.resolve_running(instance)
             return pu.rollback_update(
-                instance, path, running=resolved,
+                instance, path,
+                # Treat the dialog's opening state as display-only. The
+                # importer re-probes immediately before the actual rename.
+                running=False,
+                running_check=lambda: model.resolve_running(instance),
                 keep_current_world=keep_world, log_cb=log)
 
         self._start_job(job, self._on_rollback_finished)
