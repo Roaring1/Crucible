@@ -312,7 +312,7 @@ class WorldNameTests(TempDirCase):
         for candidate in ("..", "../outside", "../../outside", r"..\\outside", "C:\\outside"):
             with self.subTest(candidate=candidate):
                 (d / "server.properties").write_text(
-                    f"level-name={candidate}\\n", encoding="utf-8"
+                    f"level-name={candidate}\n", encoding="utf-8"
                 )
                 self.assertEqual(_world_names(FakeInstance(path=str(d))), [])
                 self.assertIsNotNone(_world_name_issue(d))
@@ -324,7 +324,7 @@ class WorldNameTests(TempDirCase):
         outside = self.tmp / "outside-world"
         outside.mkdir()
         (outside / "level.dat").write_text("outside-world", encoding="utf-8")
-        (d / "server.properties").write_text("level-name=world\\n", encoding="utf-8")
+        (d / "server.properties").write_text("level-name=world\n", encoding="utf-8")
         try:
             (d / "world").symlink_to(outside, target_is_directory=True)
         except OSError as exc:
@@ -401,7 +401,7 @@ class PlanTests(TempDirCase):
 
     def test_unsafe_level_name_blocks_update_before_any_work(self):
         (self.d / "server.properties").write_text(
-            "level-name=../../outside\\n", encoding="utf-8"
+            "level-name=../../outside\n", encoding="utf-8"
         )
         plan = self._plan("2.9.0-beta-3")
         self.assertFalse(plan.ok)
@@ -543,12 +543,12 @@ class RollbackSafetyTests(TempDirCase):
         self.live = self.tmp / "server"
         (self.live / "mods").mkdir(parents=True)
         (self.live / "mods" / "current.jar").write_text("current", encoding="utf-8")
-        (self.live / "server.properties").write_text("level-name=world\\n", encoding="utf-8")
+        (self.live / "server.properties").write_text("level-name=world\n", encoding="utf-8")
 
         self.previous = self.tmp / "server.pre-update-20261027_120000"
         (self.previous / "mods").mkdir(parents=True)
         (self.previous / "mods" / "old.jar").write_text("previous", encoding="utf-8")
-        (self.previous / "server.properties").write_text("level-name=world\\n", encoding="utf-8")
+        (self.previous / "server.properties").write_text("level-name=world\n", encoding="utf-8")
 
     def _rollback(self, **kwargs):
         kwargs.setdefault("running", False)
