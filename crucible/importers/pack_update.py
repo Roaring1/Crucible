@@ -945,6 +945,35 @@ def _staged_root(extracted: Path) -> Path:
     return extracted
 
 
+def _validate_preserved_tree(root: Path, name: str) -> None:
+    """Fail closed on nested symlinks/special files instead of copying outside data."""
+    pending = [root]
+    try:
+        while pending:
+            directory = pending.pop()
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    # nofollow checks prevent a symlinked directory from being
+                    # traversed by the safety walk. copytree also preserves links
+                    # during copying, and a second walk below catches late changes.
+                    if entry.is_symlink():
+                        relative = Path(entry.path).relative_to(root)
+                        raise PackUpdateError(
+                            f"Refusing to preserve symlink inside {name!r}: {relative}."
+                        )
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(Path(entry.path))
+                    elif not entry.is_file(follow_symlinks=False):
+                        relative = Path(entry.path).relative_to(root)
+                        raise PackUpdateError(
+                            f"Refusing to preserve special file inside {name!r}: {relative}."
+                        )
+    except OSError as exc:
+        raise PackUpdateError(
+            f"Could not safely inspect preserved directory {name!r}: {exc}."
+        ) from exc
+
+
 def _copy_preserved(live: Path, staging: Path, names: list, log_cb: LogCb | None) -> int:
     copied = 0
     live_root = live.resolve()
@@ -972,14 +1001,20 @@ def _copy_preserved(live: Path, staging: Path, names: list, log_cb: LogCb | None
                 )
             if not src.exists():
                 continue
+            is_directory = src.is_dir()
+            if is_directory:
+                _validate_preserved_tree(src, name)
             if dst.is_symlink():
                 raise PackUpdateError(
                     f"Refusing to replace a symlink in the staged pack: {name!r}."
                 )
-            if src.is_dir():
+            if is_directory:
                 if dst.exists():
                     shutil.rmtree(dst)
-                shutil.copytree(src, dst, symlinks=False, ignore_dangling_symlinks=True)
+                # Never dereference symlinks during copy. A final nofollow walk
+                # detects links/special files introduced after the preflight.
+                shutil.copytree(src, dst, symlinks=True, ignore_dangling_symlinks=True)
+                _validate_preserved_tree(dst, name)
             else:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
