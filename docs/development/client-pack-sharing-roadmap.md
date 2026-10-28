@@ -1,6 +1,6 @@
 # One-click Share with players: implementation roadmap
 
-**Status:** P0, P1's clean Prism-import validation, and the P2 Gofile adapter/review-first sharing UI are merged to `main`. The release candidate's CI passed on Python 3.11 and 3.13; local regression tests cover provider/UI behavior. On 2026-10-27, an owner-approved small synthetic Gofile upload passed local SHA-256 plus remote size/MD5 checks; the public share page returned HTTP 200, and that test's remote folder and local ZIP were removed. A second 348-byte synthetic-only upload was attempted on 2026-10-28: upload integrity checks passed, but the separate guest's contents listing returned `error-notPremium` (HTTP 401), a retry hit `error-rateLimit`, and cleanup of this second upload has not been confirmed. No real pack/world/config data was uploaded; the end-to-end anonymous download remains unverified, and the test's private recovery state is retained on the test machine. Do not repeat live API retries until the rate limit clears. The large-file cancellation/retry soak test also remains open.
+**Status:** P0, P1's clean Prism-import validation, and the P2 Gofile adapter/review-first sharing UI are merged to `main`. The release candidate's CI passed on Python 3.11 and 3.13; local regression tests cover provider/UI behavior. On 2026-10-27, an owner-approved small synthetic Gofile upload passed local SHA-256 plus remote size/MD5 checks; the public share page returned HTTP 200, and that test's remote folder and local ZIP were removed. A second 348-byte synthetic-only upload was attempted on 2026-10-28: upload integrity checks passed, but the separate guest's contents listing returned `error-notPremium` (HTTP 401), a retry hit `error-rateLimit`, and cleanup of this second upload has not been confirmed. No real pack/world/config data was uploaded in those synthetic tests. The owner has since reported successful real-world use of a separate `username admin server` player pack: created through Crucible, imported into Prism, uploaded to Gofile, and downloaded by recipients. Local share history does not link the provided Gofile code to an exact ZIP fingerprint, so this is an owner-reported pass for that specific link, not proof that every retained revision is identical. Cleanup of the second synthetic upload remains unconfirmed; its private recovery state is retained on the test machine. Do not repeat live API retries until the rate limit clears. The large-file cancellation/retry soak test also remains open.
 **Tracking issue:** [Crucible #5](https://github.com/Roaring1/Crucible/issues/5).
 
 ## Product outcome
@@ -185,15 +185,13 @@ working modded client before promising every pack can launch successfully.
   SHA-256 and Gofile-reported size/MD5; confirm the public share page responds;
   delete the synthetic remote folder and local test ZIP. This does not prove an
   anonymous recipient can download the actual ZIP bytes.
-- [ ] Verify anonymous ZIP download end-to-end and run a large-file cancellation/
-  retry soak test. No real modpack has been uploaded.
+- [x] Record owner-reported real-world pack validation: the `username admin server` pack was created through Crucible, imported into Prism, uploaded to Gofile, and downloaded successfully by recipients. The owner provided the tested public link, but local share history does not associate it with an exact retained ZIP SHA-256, so this result is not tied to v1–v6 or a reproducible manifest fingerprint.
+- [ ] Run a large-file cancellation/retry soak test. The separate synthetic upload attempted on 2026-10-28 still has unconfirmed remote cleanup; do not create another test upload until that incident is reconciled.
 
 **Exit criterion:** mocked-provider tests validate streaming request
 construction, hash/size/MD5 checks, cancellation, safe-link parsing and error
 recovery. The small live synthetic upload also passed SHA-256, remote size/MD5,
-share-page HTTP response and cleanup checks. End-to-end anonymous file-byte
-download and the large upload/cancel/retry soak test remain open; no real pack
-has been uploaded during implementation.
+share-page HTTP response and cleanup checks. The owner has since reported that recipients successfully downloaded a real player pack after it was created through Crucible, imported into Prism, and uploaded to Gofile. This is an owner-reported end-to-end pass for that link; Crucible's local history does not identify the exact ZIP fingerprint behind it. The large upload/cancel/retry soak test remains open. A separate 2026-10-28 synthetic upload's remote cleanup remains unconfirmed, so no further synthetic live uploads should be attempted until it is reconciled.
 
 ### P3 — Caching, expiry and recovery
 
@@ -270,9 +268,13 @@ has been uploaded during implementation.
   available.
 - **Live verification:** a small synthetic upload was tested live on 2026-10-27.
   Gofile returned matching size and MD5, the public page responded with HTTP 200,
-  and cleanup succeeded. Page reachability is not proof of anonymous file-byte
-  download. Link expiry/retention behavior and a large-file cancellation/retry
-  soak test still need validation; no real pack was uploaded.
+  and cleanup succeeded. Separately, the owner reports recipients downloaded an
+  actual `username admin server` pack created through Crucible, imported into Prism,
+  and uploaded to Gofile. Local share history does not bind that public link to a
+  particular archive SHA-256, so we record this as an owner-reported end-to-end pass
+  for that link. Link expiry/retention and large-file cancellation/retry remain open.
+  A second synthetic upload on 2026-10-28 has unconfirmed remote cleanup; no further
+  synthetic upload attempts should be made until that incident is reconciled.
 
 ## References
 
