@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+import threading
 import unittest
 import zipfile
 from pathlib import Path
@@ -14,7 +15,7 @@ from PyQt6.QtWidgets import QApplication
 
 from crucible.exporters.client_export import ExportResult
 from crucible.sharing.gofile import GofileUploadResult
-from crucible.ui.share_players_dialog import SharePlayersDialog, _PrepareWorker, _next_pack_path
+from crucible.ui.share_players_dialog import SharePlayersDialog, _PrepareWorker, _UploadWorker, _next_pack_path
 
 
 class SharePlayersDialogTests(unittest.TestCase):
@@ -263,6 +264,29 @@ class SharePlayersDialogTests(unittest.TestCase):
         self.assertIn("copied to the clipboard", dialog._status.text())
         dialog.close()
 
+    def test_malformed_manifest_fails_closed_without_crashing_review(self):
+        dialog = self._dialog()
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "pack.zip"
+            result = self._result_archive(archive_path)
+
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                entries = [(item.filename, archive.read(item.filename)) for item in archive.infolist()]
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                for name, payload in entries:
+                    if name == result.manifest_path:
+                        payload = b"[]"
+                    archive.writestr(name, payload)
+
+            dialog._on_pack_ready(result)
+
+            self.assertEqual(dialog._phase, "error")
+            self.assertIsNone(dialog._result)
+            self.assertIn("manifest root is not a JSON object", dialog._status.text())
+            self.assertFalse(dialog._upload_btn.isEnabled())
+
+        dialog.close()
+
     def test_retry_after_failure_requires_existing_approved_local_zip(self):
         dialog = self._dialog()
         dialog._phase = "upload-error"
@@ -281,6 +305,34 @@ class SharePlayersDialogTests(unittest.TestCase):
             self.assertTrue(dialog._upload_btn.isEnabled())
 
         dialog.close()
+
+
+    def test_unexpected_provider_exception_does_not_echo_sensitive_details(self):
+        secret = "private-owner-token-value"
+
+        class BrokenProvider:
+            name = "Broken test provider"
+
+            def upload_file(
+                self, path, *, expected_sha256, progress_cb=None, cancel_event=None
+            ):
+                raise RuntimeError(f"request failed with Authorization: Bearer {secret}")
+
+        worker = _UploadWorker(
+            BrokenProvider(),
+            Path("synthetic-pack.zip"),
+            "a" * 64,
+            threading.Event(),
+        )
+        outcomes = []
+        worker.done.connect(outcomes.append)
+        worker.run()
+
+        self.assertEqual(len(outcomes), 1)
+        self.assertFalse(outcomes[0]["cancelled"])
+        self.assertIsNone(outcomes[0]["result"])
+        self.assertNotIn(secret, outcomes[0]["error"])
+        self.assertIn("sensitive details were suppressed", outcomes[0]["error"].lower())
 
 
 if __name__ == "__main__":

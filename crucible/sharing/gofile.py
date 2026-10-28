@@ -123,9 +123,9 @@ def _decode_response(raw: bytes, status_code: int, expected_size: int,
         ) from exc
 
     if not isinstance(payload, dict) or payload.get("status") != "ok":
-        status = payload.get("status", "unknown") if isinstance(payload, dict) else "unreadable"
-        safe_status = str(status)[:80]
-        raise GofileUploadError(f"Gofile did not confirm the upload (status: {safe_status}).")
+        # Treat response fields as untrusted. Do not echo arbitrary provider text
+        # into the UI, where it could include reflected request credentials.
+        raise GofileUploadError("Gofile did not confirm the upload (response status was not 'ok').")
 
     data = payload.get("data")
     if not isinstance(data, dict):
@@ -139,19 +139,31 @@ def _decode_response(raw: bytes, status_code: int, expected_size: int,
     if not isinstance(file_name, str) or not file_name or len(file_name) > 255:
         raise GofileUploadError("Gofile did not return a valid file name.")
 
-    remote_size = data.get("size")
-    size_verified = isinstance(remote_size, int) and not isinstance(remote_size, bool)
-    if size_verified and remote_size != expected_size:
-        raise GofileUploadError(
-            "Gofile's reported file size differs from the local ZIP. The uploaded link was not accepted as verified."
-        )
+    # Only a missing key means the provider omitted optional metadata. An
+    # explicit null (or any other malformed present value) is a bad response,
+    # not permission to downgrade verification silently.
+    size_verified = "size" in data
+    remote_size = data["size"] if size_verified else None
+    if size_verified:
+        if isinstance(remote_size, bool) or not isinstance(remote_size, int) or remote_size < 0:
+            raise GofileUploadError("Gofile returned an invalid file-size value.")
+        if remote_size != expected_size:
+            raise GofileUploadError(
+                "Gofile's reported file size differs from the local ZIP. The uploaded link was not accepted as verified."
+            )
 
-    remote_md5 = data.get("md5") or ""
-    md5_verified = isinstance(remote_md5, str) and bool(remote_md5)
-    if md5_verified and remote_md5.lower() != local_md5.lower():
-        raise GofileUploadError(
-            "Gofile's reported MD5 differs from the locally uploaded file. Keep the local ZIP and do not share this link yet."
-        )
+    md5_verified = "md5" in data
+    remote_md5_value = data["md5"] if md5_verified else ""
+    if md5_verified:
+        if not isinstance(remote_md5_value, str) or not re.fullmatch(r"[0-9a-fA-F]{32}", remote_md5_value):
+            raise GofileUploadError("Gofile returned an invalid MD5 value.")
+        remote_md5 = remote_md5_value
+        if remote_md5.lower() != local_md5.lower():
+            raise GofileUploadError(
+                "Gofile's reported MD5 differs from the locally uploaded file. Keep the local ZIP and do not share this link yet."
+            )
+    else:
+        remote_md5 = ""
 
     return GofileUploadResult(
         download_url=download_url,
@@ -159,7 +171,7 @@ def _decode_response(raw: bytes, status_code: int, expected_size: int,
         file_name=file_name,
         file_size=expected_size,
         local_sha256=local_sha256,
-        remote_md5=remote_md5 if isinstance(remote_md5, str) else "",
+        remote_md5=remote_md5,
         size_verified=size_verified,
         md5_verified=md5_verified,
     )

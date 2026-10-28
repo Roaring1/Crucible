@@ -1,6 +1,6 @@
 # One-click Share with players: implementation roadmap
 
-**Status:** P0 and the clean Prism-import portion of P1 are merged. The P2 Gofile adapter and review-first sharing UI are implemented on a follow-up branch and covered by mocked-provider/UI tests; a live public upload and large-file soak test remain intentionally unrun until an owner approves a test upload.
+**Status:** P0, P1's clean Prism-import validation, and the P2 Gofile adapter/review-first sharing UI are merged to `main`. The post-merge CI run passed on Python 3.11 and 3.13; local regression tests cover provider/UI behavior. A live public upload and large-file cancellation/retry soak test remain intentionally unrun until an owner approves a synthetic test upload.
 **Tracking issue:** [Crucible #5](https://github.com/Roaring1/Crucible/issues/5).
 
 ## Product outcome

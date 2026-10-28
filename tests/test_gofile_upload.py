@@ -31,6 +31,7 @@ class _FakeResponse:
 class _FakeHTTPSConnection:
     response_payload = None
     response_status = 200
+    connect_error = None
     latest = None
 
     def __init__(self, host, timeout, context):
@@ -41,12 +42,14 @@ class _FakeHTTPSConnection:
         self.headers = {}
         self.header_pairs = []
         self.body = bytearray()
+        self.send_sizes = []
         self.request_line = None
         self.closed = False
         _FakeHTTPSConnection.latest = self
 
     def connect(self):
-        pass
+        if _FakeHTTPSConnection.connect_error is not None:
+            raise _FakeHTTPSConnection.connect_error
 
     def putrequest(self, method, path):
         self.request_line = (method, path)
@@ -62,6 +65,7 @@ class _FakeHTTPSConnection:
         pass
 
     def send(self, data):
+        self.send_sizes.append(len(data))
         self.body.extend(data)
 
     def getresponse(self):
@@ -74,6 +78,7 @@ class _FakeHTTPSConnection:
 class GofileUploadTests(unittest.TestCase):
     def setUp(self):
         _FakeHTTPSConnection.response_status = 200
+        _FakeHTTPSConnection.connect_error = None
         _FakeHTTPSConnection.latest = None
         self._patcher = patch(
             "crucible.sharing.gofile.http.client.HTTPSConnection",
@@ -298,6 +303,125 @@ class GofileUploadTests(unittest.TestCase):
             _FakeHTTPSConnection.response_payload = {"status": "error", "message": "rate limited"}
             with self.assertRaisesRegex(gofile.GofileUploadError, "rate-limited"):
                 gofile.upload_file(path, expected_sha256=hashlib.sha256(content).hexdigest())
+
+
+    def test_large_upload_is_sent_in_bounded_chunks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "large-synthetic-pack.zip"
+            content = b"z" * (gofile._CHUNK_BYTES * 2 + 19)
+            path.write_bytes(content)
+            _FakeHTTPSConnection.response_payload = self._payload(content)
+
+            result = gofile.upload_file(
+                path,
+                expected_sha256=hashlib.sha256(content).hexdigest(),
+            )
+
+            conn = _FakeHTTPSConnection.latest
+            self.assertIsNotNone(conn)
+            self.assertEqual(int(conn.headers["content-length"]), len(conn.body))
+            self.assertTrue(conn.send_sizes)
+            self.assertLessEqual(max(conn.send_sizes), gofile._CHUNK_BYTES)
+            self.assertEqual(result.file_size, len(content))
+            self.assertTrue(result.md5_verified)
+
+    def test_omitted_optional_integrity_metadata_is_not_claimed_verified(self):
+        content = b"file"
+        payload = self._payload(content)
+        payload["data"].pop("size")
+        payload["data"].pop("md5")
+
+        result = gofile._decode_response(
+            json.dumps(payload).encode(),
+            200,
+            expected_size=len(content),
+            local_md5=hashlib.md5(content).hexdigest(),
+            local_sha256=hashlib.sha256(content).hexdigest(),
+        )
+
+        self.assertFalse(result.size_verified)
+        self.assertFalse(result.md5_verified)
+        self.assertEqual(result.remote_md5, "")
+
+    def test_malformed_present_integrity_metadata_is_rejected(self):
+        content = b"file"
+        invalid_values = (
+            {"size": None},  # present-but-null is malformed, not omitted
+            {"size": ""},
+            {"size": "4"},
+            {"size": True},
+            {"size": -1},
+            {"md5": None},  # present-but-null is malformed, not omitted
+            {"md5": ""},
+            {"md5": 123},
+            {"md5": "not-an-md5"},
+        )
+        for overrides in invalid_values:
+            with self.subTest(overrides=overrides):
+                payload = self._payload(content, overrides=overrides)
+                with self.assertRaises(gofile.GofileUploadError):
+                    gofile._decode_response(
+                        json.dumps(payload).encode(),
+                        200,
+                        expected_size=len(content),
+                        local_md5=hashlib.md5(content).hexdigest(),
+                        local_sha256=hashlib.sha256(content).hexdigest(),
+                    )
+
+    def test_network_timeout_is_wrapped_and_connection_is_closed(self):
+        secret = "private-owner-token-value"
+        _FakeHTTPSConnection.connect_error = TimeoutError(f"timed out with token {secret}")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pack.zip"
+            content = b"synthetic player pack"
+            path.write_bytes(content)
+
+            with self.assertRaisesRegex(gofile.GofileUploadError, "Could not complete") as caught:
+                gofile.upload_file(
+                    path,
+                    expected_sha256=hashlib.sha256(content).hexdigest(),
+                    api_token=secret,
+                )
+
+            self.assertNotIn(secret, str(caught.exception))
+            self.assertIsNotNone(_FakeHTTPSConnection.latest)
+            self.assertTrue(_FakeHTTPSConnection.latest.closed)
+
+    def test_provider_status_text_is_not_echoed_into_errors(self):
+        secret = "owner-token-never-echo-this"
+        payload = self._payload(b"file")
+        payload["status"] = secret
+
+        with self.assertRaises(gofile.GofileUploadError) as caught:
+            gofile._decode_response(
+                json.dumps(payload).encode(),
+                200,
+                expected_size=4,
+                local_md5=hashlib.md5(b"file").hexdigest(),
+                local_sha256=hashlib.sha256(b"file").hexdigest(),
+            )
+
+        self.assertNotIn(secret, str(caught.exception))
+
+    def test_unreadable_json_and_missing_download_link_are_rejected(self):
+        with self.assertRaisesRegex(gofile.GofileUploadError, "unreadable response"):
+            gofile._decode_response(
+                b"not json",
+                200,
+                expected_size=4,
+                local_md5=hashlib.md5(b"file").hexdigest(),
+                local_sha256=hashlib.sha256(b"file").hexdigest(),
+            )
+
+        payload = self._payload(b"file", overrides={"downloadPage": None})
+        with self.assertRaises(gofile.GofileUploadError):
+            gofile._decode_response(
+                json.dumps(payload).encode(),
+                200,
+                expected_size=4,
+                local_md5=hashlib.md5(b"file").hexdigest(),
+                local_sha256=hashlib.sha256(b"file").hexdigest(),
+            )
 
 
 if __name__ == "__main__":
