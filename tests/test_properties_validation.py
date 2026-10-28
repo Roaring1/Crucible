@@ -1,6 +1,7 @@
 import unittest
 
 from crucible.data.properties import PropertiesDoc
+from crucible.data.instance_model import ServerInstance
 
 
 class VersionedPropertiesValidationTests(unittest.TestCase):
@@ -34,6 +35,73 @@ class VersionedPropertiesValidationTests(unittest.TestCase):
         self.assertEqual(issues[0].kind, "invalid_bool")
         self.assertEqual(issues[0].suggestion, "true")
 
+    def test_gtnh_1710_legacy_properties_are_recognized(self):
+        doc = PropertiesDoc.loads(
+            "announce-player-achievements=true\n"
+            "max-build-height=256\n"
+            "snooper-enabled=true\n"
+            "spawn-animals=true\n"
+            "spawn-npcs=true\n"
+            "difficulty=3\n"
+            "gamemode=0\n"
+            "level-type=rwg\n"
+        )
+        self.assertEqual(doc.validate(minecraft_version="1.7.10"), [])
+
+    def test_removed_legacy_properties_are_reported_without_rename_suggestions(self):
+        doc = PropertiesDoc.loads(
+            "announce-player-achievements=true\n"
+            "max-build-height=256\n"
+            "snooper-enabled=true\n"
+        )
+        issues = doc.validate(minecraft_version="1.21.1")
+        self.assertEqual(
+            {i.key for i in issues},
+            {"announce-player-achievements", "max-build-height", "snooper-enabled"},
+        )
+        self.assertTrue(all(i.kind == "unsupported_version" for i in issues))
+        self.assertTrue(all(i.suggestion is None for i in issues))
+
+
+class EffectiveMinecraftVersionTests(unittest.TestCase):
+    def test_registered_minecraft_version_wins_over_jar_evidence(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "minecraft_server.1.7.10.jar").touch()
+            inst = ServerInstance(path=tmp, name="test", minecraft_version="1.21.1")
+            self.assertEqual(inst.effective_minecraft_version(), "1.21.1")
+
+    def test_detects_version_from_exact_minecraft_server_jar_name(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "minecraft_server.1.7.10.jar").touch()
+            inst = ServerInstance(path=tmp, name="GTNH", version="2.8.4")
+            self.assertEqual(inst.effective_minecraft_version(), "1.7.10")
+            self.assertEqual(inst._mc_version_tuple(), (1, 7, 10))
+
+    def test_detects_version_from_forge_universal_jar_name(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "forge-1.20.1-47.2.0-universal.jar").touch()
+            inst = ServerInstance(path=tmp, name="Forge", version="custom pack 4.8")
+            self.assertEqual(inst.effective_minecraft_version(), "1.20.1")
+
+    def test_mc_label_is_used_but_bare_pack_version_is_not(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            labelled = ServerInstance(path=tmp, name="labelled", version="MC 1.21.1 · NeoForge 21.1.265")
+            pack = ServerInstance(path=tmp, name="pack", version="2.8.4")
+            self.assertEqual(labelled.effective_minecraft_version(), "1.21.1")
+            self.assertIsNone(pack.effective_minecraft_version())
+            self.assertEqual(pack._mc_version_tuple(), ())
+
 
 class ModdedWorldTypeValidationTests(unittest.TestCase):
     def _level_type_issues(self, value: str):
@@ -41,6 +109,13 @@ class ModdedWorldTypeValidationTests(unittest.TestCase):
 
     def test_accepts_namespaced_modded_world_type(self):
         self.assertEqual(self._level_type_issues("wover:normal"), [])
+
+    def test_accepts_escaped_colon_for_canonical_vanilla_world_type(self):
+        self.assertEqual(self._level_type_issues(r"minecraft\:normal"), [])
+
+    def test_accepts_legacy_modded_world_type_on_old_minecraft(self):
+        issues = PropertiesDoc.loads("level-type=rwg\n").validate(minecraft_version="1.7.10")
+        self.assertEqual(issues, [])
 
     def test_accepts_java_properties_escaped_colon_in_modded_world_type(self):
         self.assertEqual(self._level_type_issues(r"wover\:normal"), [])
