@@ -172,10 +172,18 @@ has been uploaded during implementation.
 
 ### P3 — Caching, expiry and recovery
 
-- [ ] Fingerprint the pack inputs: Minecraft/loader versions, source instance,
-  hashes of included mods, selected config file hashes and export options.
-- [ ] Reuse a cached local ZIP only if the full fingerprint matches. Verify its
-  ZIP integrity and manifest before using it.
+- [x] Fingerprint Prism-pack inputs using exact Minecraft/loader versions,
+  source-profile and server identity, content hashes and relative names for
+  candidate mod/config/KubeJS files, inclusion options, and resource/shader-pack
+  review-warning state. The manifest stores only the opaque SHA-256 fingerprint,
+  not the local absolute paths. Prism exports compare the inputs again before
+  finalizing and fail if the source changed during the build.
+- [x] Reuse a cached local ZIP only when its complete input fingerprint matches.
+  A private atomic sidecar records cache metadata; before reuse Crucible checks
+  owner-only file permissions, the whole-archive SHA-256, manifest identity,
+  exact archive-member/manifest agreement, every payload size/SHA-256 and ZIP CRC.
+  Damaged/malformed cache entries are ignored and rebuilt; review acknowledgements
+  are still required for every sharing session. Cached artifacts remain local.
 - [ ] Reuse a previously uploaded link only if the provider can confirm it is
   still valid. Otherwise explain that a new upload/link was created.
 - [ ] Keep a bounded export/upload history with fingerprint, local path, size,
