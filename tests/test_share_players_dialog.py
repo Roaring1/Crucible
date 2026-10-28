@@ -468,6 +468,41 @@ class SharePlayersDialogTests(unittest.TestCase):
 
         dialog.close()
 
+    def test_manifest_cannot_claim_permission_for_unknown_jar_hash(self):
+        dialog = self._dialog()
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "pack.zip"
+            result = self._result_archive(archive_path)
+
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                entries = [(item.filename, archive.read(item.filename)) for item in archive.infolist()]
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                for name, payload in entries:
+                    if name == result.manifest_path:
+                        manifest = json.loads(payload)
+                        row = manifest["distributionReview"][0]
+                        row.update({
+                            "decision": "permitted",
+                            "projectUrl": "https://example.org/fake-project",
+                            "evidenceUrl": "https://example.org/fake-permission",
+                            "verifiedOn": "2026-10-01",
+                            "basis": "Fabricated permission claim for a hash not present in the current catalog.",
+                            "license": "Fake-License",
+                            "licenseUrl": "https://example.org/fake-license",
+                        })
+                        payload = json.dumps(manifest).encode("utf-8")
+                    archive.writestr(name, payload)
+            result.archive_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+
+            dialog._on_pack_ready(result)
+
+            self.assertEqual(dialog._phase, "error")
+            self.assertIsNone(dialog._result)
+            self.assertIn("manifest claims a curated distribution decision for an unknown artifact hash", dialog._status.text())
+            self.assertFalse(dialog._upload_btn.isEnabled())
+
+        dialog.close()
+
     def test_manifest_without_distribution_catalog_fails_closed(self):
         dialog = self._dialog()
         with tempfile.TemporaryDirectory() as tmp:

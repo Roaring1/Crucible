@@ -126,6 +126,7 @@ def _validate_review_manifest(manifest):
                 or row_path in review_by_path
                 or not isinstance(filename, str)
                 or not filename
+                or filename != row_path.rsplit("/", 1)[-1]
                 or not isinstance(digest, str)
                 or len(digest) != 64
                 or any(char not in "0123456789abcdef" for char in digest)
@@ -224,6 +225,7 @@ def _validate_review_manifest(manifest):
                 or any(char not in "0123456789abcdef" for char in digest)
                 or not isinstance(filename, str)
                 or not filename
+                or filename != row_path.rsplit("/", 1)[-1]
             ):
                 raise ValueError("manifest required-download metadata is malformed")
             review = review_by_path.get(row_path)
