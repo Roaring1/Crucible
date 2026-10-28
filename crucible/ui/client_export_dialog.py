@@ -44,9 +44,10 @@ class _ExportWorker(QObject):
 
 
 class ClientExportDialog(QDialog):
-    def __init__(self, instance, parent=None):
+    def __init__(self, instance, parent=None, manager=None):
         super().__init__(parent)
         self._instance = instance
+        self._instance_manager = manager
         self._thread = None
         self._worker = None
         self._busy = False
@@ -90,6 +91,18 @@ class ClientExportDialog(QDialog):
         pick.clicked.connect(self._pick_source)
         source_row.addWidget(pick)
         lay.addLayout(source_row)
+
+        self._remember_source = QCheckBox("Remember this Prism source for future exports")
+        self._remember_source.setChecked(True)
+        self._remember_source.setToolTip(
+            "After a successful export, save this matching instance path in Crucible's server registry."
+        )
+        if self._instance_manager is None:
+            self._remember_source.setEnabled(False)
+            self._remember_source.setToolTip(
+                "Open the exporter from Crucible's server manager to save a source path."
+            )
+        lay.addWidget(self._remember_source)
         caution = QLabel("Client-only extras are added only from a matching Prism instance. Unknown compatibility is reported, never guessed. Test in Prism before sharing; respect mod licenses.")
         caution.setWordWrap(True)
         lay.addWidget(caution)
@@ -139,13 +152,53 @@ class ClientExportDialog(QDialog):
         connect_thread_cleanup(self._thread, self._thread_finished)
         self._thread.start()
 
+    def _remember_client_source_after_success(self) -> str:
+        """Persist a successfully validated source profile through the registry manager."""
+        if not self._remember_source.isChecked() or self._instance_manager is None:
+            return ""
+        raw = self._source.text().strip()
+        if not raw:
+            return ""
+        source = Path(raw).expanduser()
+        pack_file = source / "mmc-pack.json"
+        if source.is_symlink() or not source.is_dir() or pack_file.is_symlink() or not pack_file.is_file():
+            return (
+                "The export succeeded, but this Prism source was not saved. "
+                "Choose a real, fully installed Prism instance containing mmc-pack.json."
+            )
+        try:
+            canonical = str(source.resolve(strict=True))
+        except OSError as exc:
+            return f"The export succeeded, but Crucible could not resolve the Prism source path: {exc}"
+        previous = getattr(self._instance, "prism_source", "") or ""
+        if previous:
+            try:
+                if str(Path(previous).expanduser().resolve()) == canonical:
+                    return ""
+            except OSError:
+                pass
+        try:
+            self._instance.prism_source = canonical
+            self._instance_manager.update_instance(self._instance)
+        except Exception as exc:
+            self._instance.prism_source = previous
+            return f"The export succeeded, but Crucible could not remember this Prism source: {exc}"
+        return "Saved this matching Prism source for future exports."
+
     def _on_done(self, res):
         QApplication.restoreOverrideCursor()
         if res.ok:
+            remember_status = self._remember_client_source_after_success()
             self._status.setText("✓ " + res.summary())
-            QMessageBox.information(self, "Client instance",
-                                    "Done!\n\n" + res.summary() +
-                                    f"\n\nSaved to:\n{res.path}\n\n" + "\n".join(res.warnings))
+            details = "Done!\n\n" + res.summary() + f"\n\nSaved to:\n{res.path}\n"
+            if res.archive_sha256:
+                details += f"\nArchive SHA-256:\n{res.archive_sha256}\n"
+            if res.manifest_path:
+                details += f"\nManifest inside archive:\n{res.manifest_path}\n"
+            details += "\n" + "\n".join(res.warnings)
+            if remember_status:
+                details += "\n\n" + remember_status
+            QMessageBox.information(self, "Client instance", details)
         else:
             self._status.setText("⚠ " + res.summary())
             QMessageBox.warning(self, "Client instance", res.summary())

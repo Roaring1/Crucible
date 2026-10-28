@@ -222,7 +222,7 @@ class ModsTab(QWidget):
         if getattr(self, "_instance", None) is None:
             return
         from ..client_export_dialog import ClientExportDialog
-        ClientExportDialog(self._instance, self).exec()
+        ClientExportDialog(self._instance, self, manager=self._instance_manager).exec()
 
     def load(self, instance: ServerInstance) -> None:
         """Switch to displaying mods for the given instance."""

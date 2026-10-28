@@ -103,7 +103,9 @@ passed validation and the user has reviewed the file list and privacy warnings.
 
 The phased design, safety requirements, and acceptance checks are in the
 [client-pack sharing roadmap](client-pack-sharing-roadmap.md) and
-[Crucible issue #5](https://github.com/Roaring1/Crucible/issues/5). This branch
-fixes the current exporter mismatch: `defaultconfigs/` is now excluded from
-player exports, and the export result warns when that directory exists. No
-hosted upload is implemented by this safety fix.
+[Crucible issue #5](https://github.com/Roaring1/Crucible/issues/5). The current
+exporter excludes `defaultconfigs/`, saves an optional verified Prism source
+after successful export, and includes a bounded privacy scanner and SHA-256
+manifest. A clean Prism 11.1.1 import has been verified in an isolated test root.
+Gofile upload, explicit pre-upload file review, and the one-click sharing UI
+remain open work.
