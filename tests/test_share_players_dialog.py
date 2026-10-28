@@ -548,7 +548,7 @@ class SharePlayersDialogTests(unittest.TestCase):
             self.assertFalse(dialog._review_ack.isChecked())
             self.assertFalse(dialog._license_ack.isChecked())
             self.assertFalse(dialog._public_ack.isChecked())
-            self.assertFalse(dialog._resourcepacks.isEnabled() is False)
+            self.assertTrue(dialog._resourcepacks.isEnabled())
             self.assertIn("Rebuild ZIP", dialog._status.text())
 
         dialog.close()
