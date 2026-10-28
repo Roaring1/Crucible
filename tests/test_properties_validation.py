@@ -3,6 +3,38 @@ import unittest
 from crucible.data.properties import PropertiesDoc
 
 
+class VersionedPropertiesValidationTests(unittest.TestCase):
+    def _issues(self, version):
+        doc = PropertiesDoc.loads("spawn-animals=true\nspawn-npcs=false\n")
+        return doc.validate(minecraft_version=version)
+
+    def test_legacy_spawn_properties_are_valid_in_minecraft_1211(self):
+        self.assertEqual(self._issues("1.21.1"), [])
+
+    def test_legacy_spawn_properties_are_valid_in_older_minecraft(self):
+        self.assertEqual(self._issues("1.20.6"), [])
+
+    def test_legacy_spawn_properties_are_unknown_in_minecraft_1212(self):
+        issues = self._issues("1.21.2")
+        self.assertEqual([issue.key for issue in issues], ["spawn-animals", "spawn-npcs"])
+        self.assertTrue(all(issue.kind == "unsupported_version" for issue in issues))
+        self.assertTrue(all(issue.suggestion is None for issue in issues))
+        self.assertTrue(all("removed in Minecraft 1.21.2" in issue.message for issue in issues))
+
+    def test_unknown_server_version_does_not_assume_legacy_properties_are_valid(self):
+        for version in (None, "", "unknown"):
+            with self.subTest(version=version):
+                issues = self._issues(version)
+                self.assertEqual([issue.key for issue in issues], ["spawn-animals", "spawn-npcs"])
+                self.assertTrue(all(issue.suggestion is None for issue in issues))
+
+    def test_legacy_property_values_are_checked_in_versions_that_support_them(self):
+        issues = PropertiesDoc.loads("spawn-animals=maybe\n").validate(minecraft_version="1.21.1")
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].kind, "invalid_bool")
+        self.assertEqual(issues[0].suggestion, "true")
+
+
 class ModdedWorldTypeValidationTests(unittest.TestCase):
     def _level_type_issues(self, value: str):
         return PropertiesDoc.loads(f"level-type={value}\n").validate()

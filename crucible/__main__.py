@@ -148,9 +148,11 @@ def _preflight_properties(inst) -> None:
     from pathlib import Path
     from .data import properties as props
     path = Path(inst.path) / "server.properties"
-    if not props.has_blocking_errors(path):
+    if not props.has_blocking_errors(path, minecraft_version=inst.minecraft_version):
         return
-    res = props.autorepair_file(path, only_errors=True)
+    res = props.autorepair_file(
+        path, only_errors=True, minecraft_version=inst.minecraft_version
+    )
     if res.changed:
         warn("Fixed server.properties values that would have crashed the server:")
         for k, o, n in res.changed:
@@ -168,7 +170,7 @@ def cmd_fix_properties(manager: InstanceManager, args) -> None:
     if not path.exists():
         warn("This server has no server.properties yet (it is generated on first start).")
         return
-    issues = props.validate_file(path)
+    issues = props.validate_file(path, minecraft_version=inst.minecraft_version)
     if not issues:
         ok("No problems found in server.properties.")
         return
@@ -185,7 +187,12 @@ def cmd_fix_properties(manager: InstanceManager, args) -> None:
         info("Re-run with --apply to fix the crash-causing values automatically.")
         info("Add --all to also apply suggested fixes for the advisory items.")
         return
-    res = props.autorepair_file(path, only_errors=not full, fix_unknown_keys=full)
+    res = props.autorepair_file(
+        path,
+        only_errors=not full,
+        fix_unknown_keys=full,
+        minecraft_version=inst.minecraft_version,
+    )
     ok(res.summary())
     for k, o, n in res.changed:
         dim(f"    {k}: '{o}' -> '{n}'")

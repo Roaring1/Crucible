@@ -686,7 +686,11 @@ class SetupTab(QWidget):
             return
         try:
             from ..properties_dialog import PropertiesFixDialog
-            dlg = PropertiesFixDialog(inst.path_obj / "server.properties", parent=self)
+            dlg = PropertiesFixDialog(
+                inst.path_obj / "server.properties",
+                parent=self,
+                minecraft_version=inst.minecraft_version,
+            )
             dlg.exec()
         except Exception as exc:
             QMessageBox.warning(self, "Server settings", f"Could not open settings check:\n{exc}")
