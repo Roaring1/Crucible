@@ -387,7 +387,10 @@ class RollbackTests(TempDirCase):
         self.assertEqual(found[1].version, "2.8.4")
 
     def test_rollback_restores_the_old_pack_and_its_world(self):
-        res = rollback_update(self.inst, self.prev, running=False)
+        res = rollback_update(
+            self.inst, self.prev, running=False,
+            running_check=lambda: False, port_check=lambda _instance: None,
+        )
         self.assertTrue(res.ok, res.failed_reason)
         self.assertTrue((self.live / "mods" / "old.jar").is_file())
         self.assertFalse((self.live / "mods" / "new.jar").exists())
@@ -395,7 +398,10 @@ class RollbackTests(TempDirCase):
         self.assertEqual(res.to_version, "2.8.4")
 
     def test_rollback_never_deletes_the_install_it_replaces(self):
-        res = rollback_update(self.inst, self.prev, running=False)
+        res = rollback_update(
+            self.inst, self.prev, running=False,
+            running_check=lambda: False, port_check=lambda _instance: None,
+        )
         aside = Path(res.previous_dir)
         self.assertTrue(aside.is_dir())
         self.assertTrue((aside / "mods" / "new.jar").is_file())
@@ -404,8 +410,10 @@ class RollbackTests(TempDirCase):
             "new-world")
 
     def test_rollback_can_carry_the_current_world_back(self):
-        res = rollback_update(self.inst, self.prev, running=False,
-                              keep_current_world=True)
+        res = rollback_update(
+            self.inst, self.prev, running=False, keep_current_world=True,
+            running_check=lambda: False, port_check=lambda _instance: None,
+        )
         self.assertTrue(res.ok, res.failed_reason)
         self.assertTrue((self.live / "mods" / "old.jar").is_file())
         self.assertEqual(self._world(), "new-world")
@@ -438,7 +446,10 @@ class RollbackTests(TempDirCase):
     def test_rollback_with_no_argument_picks_the_newest(self):
         later = self.tmp / "GTNH.pre-update-20260201_090000"
         self._tree(later, "mid")
-        res = rollback_update(self.inst, running=False)
+        res = rollback_update(
+            self.inst, running=False,
+            running_check=lambda: False, port_check=lambda _instance: None,
+        )
         self.assertTrue(res.ok, res.failed_reason)
         self.assertTrue((self.live / "mods" / "mid.jar").is_file())
 

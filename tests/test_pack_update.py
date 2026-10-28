@@ -40,6 +40,7 @@ from crucible.importers.pack_update import (
     parse_pack_version,
     plan_update,
     read_receipt,
+    rollback_update,
 )
 
 _BASE = "https://downloads.gtnewhorizons.com"
@@ -456,6 +457,55 @@ class CarryModTests(TempDirCase):
         self._record_added("OreExcavation-NeoForge-1.21-1.16.14.jar")
         carry, _ = compute_carry_mods(self.inst)
         self.assertEqual(carry, [])
+
+
+class RollbackSafetyTests(TempDirCase):
+    def setUp(self):
+        super().setUp()
+        self.live = self.tmp / "server"
+        (self.live / "mods").mkdir(parents=True)
+        (self.live / "mods" / "current.jar").write_text("current", encoding="utf-8")
+        (self.live / "server.properties").write_text("level-name=world\\n", encoding="utf-8")
+
+        self.previous = self.tmp / "server.pre-update-20261027_120000"
+        (self.previous / "mods").mkdir(parents=True)
+        (self.previous / "mods" / "old.jar").write_text("previous", encoding="utf-8")
+        (self.previous / "server.properties").write_text("level-name=world\\n", encoding="utf-8")
+
+    def _rollback(self, **kwargs):
+        kwargs.setdefault("running", False)
+        kwargs.setdefault("running_check", lambda: False)
+        kwargs.setdefault("port_check", lambda _instance: None)
+        return rollback_update(FakeInstance(path=str(self.live)), self.previous, **kwargs)
+
+    def test_rollback_refuses_if_server_started_after_dialog_open(self):
+        result = self._rollback(running_check=lambda: True)
+        self.assertFalse(result.ok)
+        self.assertIn("server is running", result.failed_reason.lower())
+        self.assertTrue((self.live / "mods" / "current.jar").is_file())
+        self.assertTrue((self.previous / "mods" / "old.jar").is_file())
+
+    def test_rollback_fails_closed_if_running_state_cannot_be_verified(self):
+        result = self._rollback(running_check=lambda: None)
+        self.assertFalse(result.ok)
+        self.assertIn("could not verify whether the server is running", result.failed_reason.lower())
+        self.assertTrue((self.live / "mods" / "current.jar").is_file())
+        self.assertTrue((self.previous / "mods" / "old.jar").is_file())
+
+    def test_rollback_refuses_if_configured_port_is_occupied(self):
+        result = self._rollback(port_check=lambda _instance: "Port 25565 is occupied.")
+        self.assertFalse(result.ok)
+        self.assertIn("Port 25565 is occupied", result.failed_reason)
+        self.assertTrue((self.live / "mods" / "current.jar").is_file())
+        self.assertTrue((self.previous / "mods" / "old.jar").is_file())
+
+    def test_rollback_succeeds_when_current_probes_confirm_stopped_and_free(self):
+        result = self._rollback()
+        self.assertTrue(result.ok, result.failed_reason)
+        self.assertTrue((self.live / "mods" / "old.jar").is_file())
+        self.assertFalse((self.live / "mods" / "current.jar").exists())
+        self.assertTrue(Path(result.previous_dir).is_dir())
+        self.assertTrue((Path(result.previous_dir) / "mods" / "current.jar").is_file())
 
 
 class StagedRootTests(TempDirCase):
