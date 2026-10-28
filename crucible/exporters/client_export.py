@@ -217,6 +217,10 @@ def export(instance, out_path, fmt: str = "mrpack", *,
                 hashes.add(digest)
             elif entry.side == "unknown":
                 client_unknown.append(j.name)
+            elif entry.side == "both":
+                # A shared mod that isn't byte-identical to a server JAR may be
+                # a stale or mismatched version. Do not silently drop it.
+                source_conflicts.append(j.name)
     else:
         client_unknown = []
         source_conflicts = []
@@ -263,7 +267,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         if len(unique_conflicts) > 8:
             shown += f", and {len(unique_conflicts) - 8} more"
         warnings.append(
-            "Different client-source copies of shared mods were ignored; the server versions were kept: " + shown
+            "Shared client-source mods that were not identical to a server JAR were not added; review versions and compatibility: " + shown
         )
     warnings.extend([
         "Server packs may not include required client-side mods. Only explicitly client-only files from the optional matching Prism source were added.",
