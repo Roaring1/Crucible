@@ -60,10 +60,16 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import Callable
 
 from crucible import __version__
+from crucible.data.world_paths import (
+    configured_level_name as _configured_level_name,
+    safe_world_component as _safe_world_component,
+    world_name_issue as _world_name_issue,
+    world_names as _safe_world_names,
+)
 
 LogCb = Callable[[str], None]
 ProgressCb = Callable[[int, int], None]  # (bytes_done, bytes_total)
@@ -529,151 +535,10 @@ class UpdatePlan:
         return f"{head}: {len(self.preserve)} items preserved, {len(self.carry_mods)} added mods carried"
 
 
-def _safe_world_component(value: str) -> bool:
-    """Return whether a level-name is a single portable directory component."""
-    if (
-        not isinstance(value, str)
-        or value != value.strip()
-        or value in {"", ".", ".."}
-    ):
-        return False
-    # '/' and '\\' can escape the server root on either platform. A colon
-    # can introduce a Windows drive or alternate data stream.
-    if any(char in value for char in ("/", "\\", ":", "\x00")):
-        return False
-    native = Path(value)
-    windows = PureWindowsPath(value)
-    return (
-        not native.is_absolute()
-        and len(native.parts) == 1
-        and not windows.is_absolute()
-        and not windows.drive
-        and len(windows.parts) == 1
-    )
-
-
-def _logical_property_lines(text: str) -> list[str]:
-    """Join Java-properties continuation lines and remove their escape slash."""
-    logical: list[str] = []
-    pending: str | None = None
-    for physical in text.splitlines():
-        if pending is None:
-            pending = physical.lstrip()
-        else:
-            pending += physical.lstrip()
-        trailing_slashes = len(pending) - len(pending.rstrip("\\"))
-        if trailing_slashes % 2:
-            pending = pending[:-1]
-            continue
-        logical.append(pending)
-        pending = None
-    if pending is not None:
-        logical.append(pending)
-    return logical
-
-
-def _java_property_key_value(line: str) -> tuple[str, str] | None:
-    """Parse a Java-properties key and raw value, including escaped key chars."""
-    s = line.lstrip()
-    if not s or s.startswith(("#", "!")):
-        return None
-
-    key: list[str] = []
-    i = 0
-    while i < len(s):
-        char = s[i]
-        if char == "\\":
-            i += 1
-            if i >= len(s):
-                break
-            escaped = s[i]
-            if escaped == "u":
-                digits = s[i + 1:i + 5]
-                if len(digits) != 4 or any(ch not in "0123456789abcdefABCDEF" for ch in digits):
-                    raise ValueError("malformed Unicode escape in server.properties key")
-                key.append(chr(int(digits, 16)))
-                i += 5
-                continue
-            key.append({"t": "\t", "n": "\n", "r": "\r", "f": "\f"}.get(escaped, escaped))
-            i += 1
-            continue
-        if char in " \t\f=:":
-            break
-        key.append(char)
-        i += 1
-
-    # Java Properties allows whitespace as a separator, optionally followed
-    # by '=' or ':', then more whitespace.
-    while i < len(s) and s[i] in " \t\f":
-        i += 1
-    if i < len(s) and s[i] in "=:":
-        i += 1
-        while i < len(s) and s[i] in " \t\f":
-            i += 1
-    return "".join(key), s[i:]
-
-
-def _configured_level_name(root: Path) -> str | None:
-    """Read the effective safe level-name; None means an unsafe explicit value."""
-    props = root / "server.properties"
-    try:
-        lines = _logical_property_lines(
-            props.read_text(encoding="utf-8", errors="replace")
-        )
-    except OSError:
-        return "world"
-
-    # java.util.Properties unescapes keys, accepts whitespace or ':' as a
-    # separator, and applies last-value-wins semantics. Mirror that behavior
-    # for this safety decision rather than inspecting a safer spelling/value
-    # than the server actually uses.
-    found = False
-    candidate: str | None = None
-    try:
-        for line in lines:
-            parsed = _java_property_key_value(line)
-            if parsed is not None and parsed[0] == "level-name":
-                found = True
-                candidate = parsed[1]
-    except ValueError:
-        # Invalid Java-property escapes mean we cannot make a safe prediction.
-        return None
-
-    if not found:
-        return "world"
-    if not candidate or not _safe_world_component(candidate):
-        return None
-    return candidate
-
-
-def _world_name_issue(root: Path) -> str | None:
-    """Explain why updating/carrying the configured world cannot be done safely."""
-    level = _configured_level_name(root)
-    if level is None:
-        return (
-            "server.properties has an unsafe level-name path. Use a single folder "
-            "name without path separators, a drive, '.' or '..' before updating."
-        )
-    for name in (level, f"{level}_nether", f"{level}_the_end"):
-        path = root / name
-        if path.is_symlink():
-            return (
-                f"The configured world path {name!r} is a symbolic link. "
-                "Crucible refuses to copy or move a world through a symlink."
-            )
-    return None
-
-
 def _world_names(instance) -> list:
-    """level-name plus its sibling dimension folders, if they exist and are safe."""
+    """level-name plus safe sibling dimension folders for the instance."""
     root = Path(getattr(instance, "path", "") or ".")
-    if _world_name_issue(root):
-        return []
-    level = _configured_level_name(root)
-    if level is None:
-        return []
-    names = [level, f"{level}_nether", f"{level}_the_end"]
-    return [n for n in names if (root / n).is_dir() and not (root / n).is_symlink()]
+    return _safe_world_names(root)
 
 
 def pack_baseline(server_path: str | Path) -> set:
