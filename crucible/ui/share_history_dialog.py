@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QUrl
@@ -31,11 +32,12 @@ _EVENT_LABELS = {
     "upload-succeeded": "Upload succeeded",
     "upload-failed": "Upload failed",
     "upload-cancelled": "Upload cancelled",
+    "local-zip-deleted": "Local ZIP deleted",
 }
 
 
 class ShareHistoryDialog(QDialog):
-    """Show only allowlisted history fields; clearing never deletes ZIPs or remote links."""
+    """Show local share events; cleanup is explicit and never affects remote links."""
 
     def __init__(self, store: ShareHistoryStore, parent=None):
         super().__init__(parent)
@@ -93,6 +95,9 @@ class ShareHistoryDialog(QDialog):
         self._open_zip = QPushButton("Open local ZIP")
         self._open_zip.clicked.connect(self._open_selected_zip)
         actions.addWidget(self._open_zip)
+        self._delete_zip = QPushButton("Delete local ZIP…")
+        self._delete_zip.clicked.connect(self._delete_selected_zip)
+        actions.addWidget(self._delete_zip)
         actions.addStretch()
         self._clear = QPushButton("Clear history")
         self._clear.clicked.connect(self._clear_history)
@@ -175,6 +180,7 @@ class ShareHistoryDialog(QDialog):
         self._copy_link.setEnabled(bool(record and record.get("shareUrl")))
         local_path = self._safe_local_archive(record.get("localPath", "")) if record else None
         self._open_zip.setEnabled(local_path is not None)
+        self._delete_zip.setEnabled(local_path is not None)
 
     def _copy_selected_link(self):
         record = self._selected_record()
@@ -194,6 +200,118 @@ class ShareHistoryDialog(QDialog):
             self._refresh_actions()
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _delete_selected_zip(self):
+        record = self._selected_record()
+        if not record:
+            return
+
+        path = self._safe_local_archive(record.get("localPath", ""))
+        expected_sha256 = record.get("archiveSha256", "")
+        if path is None:
+            self._status.setText(
+                "The selected ZIP is unavailable or outside Crucible's player-packs folder; nothing was deleted."
+            )
+            self._refresh_actions()
+            return
+        if not isinstance(expected_sha256, str) or len(expected_sha256) != 64:
+            self._status.setText("The selected history record has no usable archive checksum; nothing was deleted.")
+            return
+
+        sidecar = path.with_suffix(path.suffix + ".crucible-cache.json")
+        try:
+            if sidecar.is_symlink() or (sidecar.exists() and not sidecar.is_file()):
+                self._status.setText(
+                    "The ZIP's cache sidecar is not a regular file; nothing was deleted. Inspect it manually."
+                )
+                return
+            if path.is_symlink() or not path.is_file():
+                self._status.setText("The selected ZIP is no longer a regular file; nothing was deleted.")
+                self._refresh_actions()
+                return
+            size_bytes = path.stat().st_size
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if digest.hexdigest() != expected_sha256:
+                self._status.setText(
+                    "The ZIP checksum no longer matches this history entry; nothing was deleted."
+                )
+                return
+        except OSError:
+            self._status.setText("Could not verify the selected ZIP safely; nothing was deleted.")
+            return
+
+        choice = QMessageBox.question(
+            self,
+            "Delete this local player ZIP?",
+            f"Delete this local file from Crucible's player-packs folder?\n\n"
+            f"{path.name}\nSize: {size_bytes:,} bytes\nSHA-256: {expected_sha256}\n\n"
+            "This is a manual, irreversible local-file deletion. Make sure you have another copy if you need one. "
+            "It does not delete the Gofile upload, revoke the saved link, or verify whether that link still works.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+
+        # Recheck the safe folder/path and checksum after the modal confirmation.
+        # Do not delete if the target changed while the confirmation was open.
+        if self._safe_local_archive(str(path)) is None:
+            self._status.setText("The ZIP path changed during confirmation; nothing was deleted.")
+            self._refresh_actions()
+            return
+        try:
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if digest.hexdigest() != expected_sha256:
+                self._status.setText("The ZIP changed during confirmation; nothing was deleted.")
+                return
+            if sidecar.exists() or sidecar.is_symlink():
+                if sidecar.is_symlink() or not sidecar.is_file():
+                    self._status.setText("The cache sidecar changed during confirmation; nothing was deleted.")
+                    return
+                sidecar.unlink()
+            path.unlink()
+        except OSError:
+            self._status.setText(
+                "Could not delete the selected ZIP safely. The file may still be present; check the local folder."
+            )
+            self._refresh_actions()
+            return
+
+        history_saved = True
+        try:
+            self._store.append(
+                event="local-zip-deleted",
+                instance_name=record.get("instanceName", "Unknown server"),
+                archive_sha256=expected_sha256,
+                input_fingerprint=record.get("inputFingerprint", ""),
+                local_path=str(path),
+                size_bytes=size_bytes,
+                provider=record.get("provider", ""),
+                share_url=record.get("shareUrl", ""),
+                upload_status=record.get("uploadStatus", "not-attempted"),
+                size_verified=record.get("sizeVerified", False),
+                md5_verified=record.get("md5Verified", False),
+            )
+        except (OSError, ShareHistoryError, TypeError, ValueError):
+            history_saved = False
+
+        self._reload()
+        if history_saved:
+            self._status.setText(
+                "Local ZIP and its cache sidecar were deleted by your request. The history event is saved; "
+                "any remote Gofile file/link is unchanged."
+            )
+        else:
+            self._status.setText(
+                "Local ZIP and its cache sidecar were deleted by your request, but the cleanup event could not be saved. "
+                "Any remote Gofile file/link is unchanged."
+            )
 
     def _clear_history(self):
         choice = QMessageBox.question(
