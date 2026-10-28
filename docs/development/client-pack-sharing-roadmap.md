@@ -12,26 +12,26 @@ if necessary, and ask the owner for the server address. Recipients should not
 need a command line, another modpack manager, loader/version guesswork, or API
 credentials.
 
-Prism documents importing compatible \`.zip\` and \`.mrpack\` files. The default
+Prism documents importing compatible `.zip` and `.mrpack` files. The default
 artifact for this workflow should be a Prism/MultiMC instance ZIP because the
 experience is intended to feel like importing a tested client instance—not
-choosing among export formats. The existing \`.mrpack\` and CurseForge outputs
+choosing among export formats. The existing `.mrpack` and CurseForge outputs
 remain under an advanced export path.
 
 ## What exists today
 
-- \`crucible/exporters/client_export.py\` builds Prism/MultiMC ZIP, Modrinth
-  \`.mrpack\`, and CurseForge-style ZIP archives locally.
-- \`crucible/ui/client_export_dialog.py\` exposes a format selector and a
+- `crucible/exporters/client_export.py` builds Prism/MultiMC ZIP, Modrinth
+  `.mrpack`, and CurseForge-style ZIP archives locally.
+- `crucible/ui/client_export_dialog.py` exposes a format selector and a
   destination-file picker. It does not upload or create a share link.
 - An optional matching Prism source is accepted for adding mods that metadata
   explicitly identifies as client-only. The source is not yet a saved,
   per-server setting.
 - Minecraft and loader compatibility are checked, but ZIP creation is not
   proof that a clean Prism install can import and launch the pack.
-- The exporter previously included \`defaultconfigs/\` while its checkbox named
-  only \`config/\` and \`kubejs/\`. This mismatch is fixed by the accompanying
-  change: \`defaultconfigs/\` is excluded by default and a warning is shown if it
+- The exporter previously included `defaultconfigs/` while its checkbox named
+  only `config/` and `kubejs/`. This mismatch is fixed by the accompanying
+  change: `defaultconfigs/` is excluded by default and a warning is shown if it
   exists. This avoids silently publishing server defaults as ordinary player
   configuration.
 
@@ -40,12 +40,12 @@ remain under an advanced export path.
 ### P0 — Make the client pack trustworthy
 
 - [ ] Persist a known-good Prism/MultiMC source per server; validate that it is
-  a complete instance with \`mmc-pack.json\` and exact Minecraft/loader versions.
+  a complete instance with `mmc-pack.json` and exact Minecraft/loader versions.
 - [ ] Compare source and server mods by hashes and known metadata, not filenames
   alone. Deduplicate identical JARs. Flag version conflicts and mods whose side
   is unknown; never infer a mod's side from its name.
-- [x] Make the config checkbox truthful: only include \`config/\` and \`kubejs/\`
-  by default, exclude \`defaultconfigs/\`, and warn when it was excluded.
+- [x] Make the config checkbox truthful: only include `config/` and `kubejs/`
+  by default, exclude `defaultconfigs/`, and warn when it was excluded.
 - [ ] Add a pre-share privacy scan for likely tokens, webhooks, credentials,
   private addresses and sensitive config. Show the included paths and findings
   before any upload; do not upload silently.
@@ -66,9 +66,9 @@ reproducible manifest.
 ### P1 — Make the default Prism ZIP import for real
 
 - [ ] Make Prism instance ZIP the default artifact for **Share with players**.
-  Keep \`.mrpack\` and CurseForge export options in an advanced menu.
-- [ ] Check the ZIP layout and metadata: instance folder, \`instance.cfg\`,
-  \`mmc-pack.json\`, \`.minecraft/mods/\`, and selected client configuration.
+  Keep `.mrpack` and CurseForge export options in an advanced menu.
+- [ ] Check the ZIP layout and metadata: instance folder, `instance.cfg`,
+  `mmc-pack.json`, `.minecraft/mods/`, and selected client configuration.
   Pin exact Minecraft and loader component versions.
 - [ ] Add structural tests for paths, metadata, component versions, SHA-256
   manifest, missing files, and archive integrity.
@@ -153,7 +153,7 @@ and errors leave a usable local archive.
   test must verify the exact ZIP format Crucible produces.
 - **Upload host:** Gofile first, behind a provider adapter. Do not assume a
   stable monthly allowance, maximum upload size or retention period: the
-  published pages for \`gofile.io\` and \`gofile.is\` currently describe different
+  published pages for `gofile.io` and `gofile.is` currently describe different
   plan limits. Reconfirm the selected host, its documented API and policies at
   implementation time.
 - **Distribution rights:** JAR files are not automatically redistributable just
