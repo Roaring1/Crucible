@@ -632,6 +632,8 @@ class _PrepareWorker(QObject):
                 )
                 if result.ok:
                     _write_cache_metadata(result)
+        except OSError as exc:
+            result = client_export.ExportResult(error=str(exc))
         except Exception as exc:
             result = client_export.ExportResult(error=f"Unexpected pack-build error: {exc}")
         if result.ok and os.name == "posix":

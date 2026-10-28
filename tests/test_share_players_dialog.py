@@ -435,6 +435,35 @@ class SharePlayersDialogTests(unittest.TestCase):
             self.assertIn("excluded by default", dialog._status.text())
         dialog.close()
 
+    def test_prepare_worker_explains_saved_prism_zip_needs_import(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source_zip = root / "saved-source.zip"
+            with zipfile.ZipFile(source_zip, "w") as archive:
+                archive.writestr("mmc-pack.json", json.dumps({
+                    "formatVersion": 1,
+                    "components": [
+                        {"uid": "net.minecraft", "version": "1.21.1"},
+                        {"uid": "net.neoforged", "version": "21.1.1"},
+                    ],
+                }))
+            instance = SimpleNamespace(
+                path=str(server), name="TestPack", minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.1",
+            )
+            output = root / "player-packs" / "out.zip"
+            outcomes = []
+            worker = _PrepareWorker(instance, output, str(source_zip), False)
+            worker.done.connect(outcomes.append)
+            worker.run()
+            self.assertEqual(len(outcomes), 1)
+            self.assertFalse(outcomes[0].ok)
+            self.assertIn("ZIP archive, not an installed Prism instance folder", outcomes[0].error)
+            self.assertIn("Import that ZIP into Prism", outcomes[0].error)
+            self.assertFalse(output.exists())
+
     def test_share_path_refuses_to_build_without_working_client_profile(self):
         dialog = self._dialog()
         dialog._prepare_pack()
