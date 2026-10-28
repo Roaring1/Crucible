@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 import zipfile
@@ -142,6 +143,55 @@ class RegistryTransactionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "writes are disabled"):
             manager.save()
         self.assertIn("missing path", registry.read_text())
+
+    def test_external_last_started_only_change_is_safely_reconciled(self):
+        _, manager, instance = self._manager_with_instance()
+        original_identity = id(manager.instances[0])
+        rows = [row.to_dict() for row in manager.instances]
+        rows[0]["last_started"] = "2026-10-28T03:56:31.179802"
+        manager.registry_file.write_text(json.dumps({"version": 1, "instances": rows}, indent=2))
+
+        self.assertTrue(manager.registry_changed_externally())
+        self.assertTrue(manager.reconcile_external_last_started())
+        self.assertEqual(manager.instances[0].last_started, "2026-10-28T03:56:31.179802")
+        self.assertEqual(id(manager.instances[0]), original_identity)
+        self.assertFalse(manager.registry_changed_externally())
+
+    def test_external_instance_configuration_change_is_not_reconciled(self):
+        _, manager, _ = self._manager_with_instance()
+        rows = [row.to_dict() for row in manager.instances]
+        rows[0]["name"] = "Changed outside Crucible"
+        manager.registry_file.write_text(json.dumps({"version": 1, "instances": rows}, indent=2))
+
+        self.assertFalse(manager.reconcile_external_last_started())
+        self.assertEqual(manager.instances[0].name, "Server")
+        self.assertTrue(manager.registry_changed_externally())
+
+    def test_external_addition_is_not_reconciled(self):
+        root, manager, _ = self._manager_with_instance()
+        other = root / "other"
+        other.mkdir()
+        rows = [row.to_dict() for row in manager.instances]
+        added = ServerInstance(path=str(other), name="Other")
+        rows.append(added.to_dict())
+        manager.registry_file.write_text(json.dumps({"version": 1, "instances": rows}, indent=2))
+
+        self.assertFalse(manager.reconcile_external_last_started())
+        self.assertEqual(len(manager.instances), 1)
+
+    def test_deleted_external_registry_is_not_reconciled(self):
+        _, manager, _ = self._manager_with_instance()
+        manager.registry_file.unlink()
+
+        self.assertFalse(manager.reconcile_external_last_started())
+        self.assertTrue(manager.registry_changed_externally())
+
+    def test_malformed_external_registry_is_not_reconciled(self):
+        _, manager, _ = self._manager_with_instance()
+        manager.registry_file.write_text('{not valid json')
+
+        self.assertFalse(manager.reconcile_external_last_started())
+        self.assertTrue(manager.registry_changed_externally())
 
     def test_external_registry_change_is_detected(self):
         _, manager, _ = self._manager_with_instance()

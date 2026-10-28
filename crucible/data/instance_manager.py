@@ -89,6 +89,85 @@ class InstanceManager:
         """True when the registry changed without going through this manager."""
         return self._registry_signature() != self._known_registry_signature
 
+    def reconcile_external_last_started(self) -> bool:
+        """Accept an external registry rewrite only when *last_started* changed.
+
+        The CLI and GUI intentionally share the registry. Starting a server from
+        the CLI updates only ``last_started``; treating that normal lifecycle
+        write as an unexpected configuration edit causes a needless GUI warning.
+        This method narrowly accepts that one-field change (or a semantically
+        identical rewrite) while preserving the existing guard for all other
+        edits, additions, removals, malformed JSON, and concurrent writes.
+
+        Returns True if the current on-disk snapshot is safe to acknowledge.
+        It mutates only each existing instance's ``last_started`` field and the
+        known file signature; it never reloads/replaces live instance objects.
+        """
+        signature = self._registry_signature()
+        if signature == self._known_registry_signature:
+            return True
+        if self.load_error is not None or signature is None:
+            return False
+
+        try:
+            if self.registry_file.stat().st_size > _MAX_REGISTRY_BYTES:
+                return False
+            data = json.loads(self.registry_file.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return False
+            if (
+                set(data) != {"version", "instances"}
+                or data.get("version") != REGISTRY_VERSION
+            ):
+                return False
+            rows = data.get("instances")
+            if not isinstance(rows, list) or len(rows) != len(self.instances):
+                return False
+
+            candidates: list[ServerInstance] = []
+            seen_ids: set[str] = set()
+            seen_paths: set[str] = set()
+            seen_sessions: set[str] = set()
+            for row in rows:
+                if not isinstance(row, dict):
+                    return False
+                candidate = ServerInstance.from_dict(row)
+                if (
+                    candidate.last_started is not None
+                    and not isinstance(candidate.last_started, str)
+                ):
+                    return False
+                candidate.path = str(Path(candidate.path).expanduser().resolve())
+                if (
+                    candidate.id in seen_ids
+                    or candidate.path in seen_paths
+                    or candidate.tmux_session in seen_sessions
+                ):
+                    return False
+                seen_ids.add(candidate.id)
+                seen_paths.add(candidate.path)
+                seen_sessions.add(candidate.tmux_session)
+                candidates.append(candidate)
+
+            for current, candidate in zip(self.instances, candidates):
+                current_fields = current.to_dict()
+                candidate_fields = candidate.to_dict()
+                current_fields.pop("last_started", None)
+                candidate_fields.pop("last_started", None)
+                if current_fields != candidate_fields:
+                    return False
+
+            # Refuse to acknowledge a snapshot that was replaced during our read.
+            if self._registry_signature() != signature:
+                return False
+
+            for current, candidate in zip(self.instances, candidates):
+                current.last_started = candidate.last_started
+            self._known_registry_signature = signature
+            return True
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return False
+
     def load(self) -> None:
         """Load registry from disk.  Missing file → empty list (not an error)."""
         if not self.registry_file.exists():
