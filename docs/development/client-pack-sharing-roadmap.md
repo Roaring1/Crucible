@@ -29,9 +29,12 @@ remain under an advanced export path.
   workflow. With a saved Prism source it starts building the default Prism ZIP
   when opened; otherwise the owner can choose a client profile and build it.
   It displays the full included-file list and per-file hashes, privacy warnings,
-  scan-coverage status and a separate unverified-distribution warning for every
-  bundled JAR. Upload stays disabled until all review, license and public-link
-  acknowledgements are checked.
+  scan-coverage status and artifact-specific distribution review. Exact SHA-256
+  records may mark a JAR permitted or conditional with evidence; no record means
+  unverified. A known-prohibited JAR is never bundled. With a curated alternative
+  URL it is omitted and the ZIP contains manual-install instructions; without an
+  alternative, export stops. Upload stays disabled until all review, distribution
+  responsibility and public-link acknowledgements are checked.
 - `crucible/sharing/provider.py` defines the hosting interface and
   `crucible/sharing/gofile.py` implements guest uploads by default. If Gofile
   requires account authentication, the owner can enter an optional API token in
@@ -104,11 +107,18 @@ remain under an advanced export path.
 - [x] Produce an embedded manifest containing each included relative path, size
   and SHA-256. Reject unsafe archive paths and special files, reject linked
   source roots, and exclude nested symlinks without following them.
-- [x] Mark every bundled JAR as **distribution permission not verified** in
-  the review and require explicit owner confirmation. Crucible does not pretend
-  it can infer the author's licensing terms from JAR bytes alone.
-- [ ] Add a source-of-truth license/download-permission catalog and explain
-  per-mod exceptions and permitted alternatives where direct download is allowed.
+- [x] Never infer redistribution permission from a mod name or JAR metadata.
+  A versioned exact-artifact SHA-256 catalog records explicit `permitted`,
+  `prohibited`, or `conditional` outcomes with HTTPS project/evidence links and
+  a verification date. Unknown hashes remain unverified and require owner review.
+- [x] Block a curated-prohibited JAR from the ZIP. Where its record supplies a
+  reviewed alternative download page, omit the JAR and include a manual-install
+  guide plus the catalog evidence in the ZIP manifest/review; otherwise fail
+  the export rather than creating a known-incomplete pack without a next step.
+- [ ] Populate and maintain records for the actual mods owners commonly bundle.
+  The shipped catalog currently has **no curated permission entries**, so this
+  mechanism does not claim that any real mod has been cleared. Build further
+  sanctioned download/import flows where a manual alternative is insufficient.
 
 **Exit criterion:** a local-only player ZIP has an explained file list, matching
 versions, known unresolved compatibility warnings, privacy results and a
@@ -157,9 +167,10 @@ working modded client before promising every pack can launch successfully.
   **Open link** after upload. Copy the new link automatically on success; say
   that it has not been independently re-fetched for validity.
 - [x] Show exact included paths, sizes and hashes, privacy findings/scan gaps,
-  compatibility warnings, every bundled JAR's unverified license status and
-  each explicitly included resource pack before upload. Require three explicit
-  acknowledgements; treat the link as public to anyone who obtains it.
+  compatibility warnings, exact-artifact catalog decisions/evidence/conditions,
+  remaining unverified JARs, any required manual mod downloads and each included
+  resource pack before upload. Require three explicit acknowledgements; treat
+  the link as public to anyone who obtains it.
 - [x] Warn that free Gofile storage is ephemeral and do not hard-code a monthly
   traffic/file-size quota or promise permanent retention.
 - [ ] Verify a real owner-approved Gofile upload and a large-file cancel/retry
