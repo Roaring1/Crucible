@@ -178,6 +178,7 @@ class ShareHistoryStore:
             raise ShareHistoryError("share-history directory cannot be secured") from exc
 
     def load(self) -> list[dict]:
+        self._ensure_directory()
         if not self.path.exists():
             if self.path.is_symlink():
                 raise ShareHistoryError("share-history file is a symbolic link")
