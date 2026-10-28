@@ -89,7 +89,7 @@ Recipe Integration JAR SHA-256: \`4e41f8dcf06ba21e0e494ccee30ece2c3c8e7094cf863d
 
 The last \`latest.log\` contains 439 ERROR lines: 155 recipe parse errors and 274 loot-table parse errors. Most loot-table errors involve Railways optional-integration files referencing content from mods that are not installed. These were nonfatal in the last successful startup; do not add a large set of optional mods only to silence log noise.
 
-The staged pack targets 122 of the 155 distinct recipe failures. The remaining failures need their own treatment, including:
+The staged pack now targets 131 recipe resources. Besides the 122 original targeted resources, the latest revision fixes two Mekanism Elements painting recipes and the methane oxidizing recipe using the schema in the installed Mekanism JAR, corrects the optional-mod condition key in three Create Factory caramel recipes, and adds `neoforge:mod_loaded aquaculture` guards to three Fishers Haven recipes whose registry references fail because Aquaculture is absent. This is staged and structurally validated, but not runtime-tested. The remaining failures need their own treatment, including:
 
 - Optional Recipe Integration recipes that use an unknown \`clayworks:config\` condition codec.
 - Create Factory recipes referencing the absent fluid \`create_confectionery:caramel\`.
