@@ -359,8 +359,18 @@ class InstancePanel(QWidget):
         instance_id = inst.id
         try:
             port = inst.server_port()
+            port_number = int(port)
+            if not 1 <= port_number <= 65535:
+                raise ValueError("server-port is outside the valid TCP range")
         except Exception:
-            port = "25565"
+            QMessageBox.warning(
+                self,
+                "Invalid server port",
+                "Crucible cannot make a reliable connection address because "
+                "server.properties has a blank or invalid server-port. Correct "
+                "the port in Config before copying the connection address.",
+            )
+            return
         self._btn_ip.setText("…")
         self._btn_ip.setEnabled(False)
 

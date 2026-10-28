@@ -7,6 +7,30 @@ from crucible.data.instance_model import ServerInstance
 from crucible.process.tmux_manager import TmuxManager, _listening_ipv4_addresses
 
 
+class ServerPortAccessorTests(unittest.TestCase):
+    def test_last_duplicate_port_matches_server_properties_semantics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "server.properties").write_text(
+                "server-port=25565\nserver-port=25566\n", encoding="utf-8"
+            )
+            self.assertEqual(ServerInstance(str(root), "duplicate port").server_port(), "25566")
+
+    def test_blank_last_port_is_not_hidden_by_an_earlier_valid_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "server.properties").write_text(
+                "server-port=25565\nserver-port=\n", encoding="utf-8"
+            )
+            self.assertEqual(ServerInstance(str(root), "blank duplicate").server_port(), "")
+
+    def test_missing_port_key_uses_vanilla_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "server.properties").write_text("motd=Test\n", encoding="utf-8")
+            self.assertEqual(ServerInstance(str(root), "default port").server_port(), "25565")
+
+
 class ListeningSocketParserTests(unittest.TestCase):
     def test_reads_only_listening_ipv4_sockets_for_requested_port(self):
         with tempfile.TemporaryDirectory() as tmp:
