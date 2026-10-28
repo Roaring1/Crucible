@@ -38,9 +38,12 @@ class SharePlayersDialogTests(unittest.TestCase):
     def _dialog(self):
         instance = SimpleNamespace(name="Demo Server", path="/not-used", prism_source="")
         history_tmp = tempfile.TemporaryDirectory()
+        # unittest cleanups run LIFO: close the dialog before removing the
+        # directory its history store uses, even if a test assertion fails.
+        self.addCleanup(history_tmp.cleanup)
         store = ShareHistoryStore(Path(history_tmp.name) / "history" / "events.json")
         dialog = SharePlayersDialog(instance, history_store=store)
-        dialog._test_history_tmp = history_tmp
+        self.addCleanup(dialog.close)
         return dialog
 
     def test_large_upload_progress_shows_average_rate_and_eta(self):
