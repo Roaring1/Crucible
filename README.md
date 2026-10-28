@@ -75,7 +75,7 @@ See [CI and UI evidence](docs/development/ci-and-ui-evidence.md) for details. Sc
 - **Compatibility:** Runs on badges reflect declared loader metadata. Unknown means unverified. Never assume a dependency-side declaration describes the whole mod.
 - **Players:** drag the horizontal divider to resize Online now; right-click/double-click players for actions.
 - **Resources:** CPU is the server’s fraction of all logical CPUs, from 0–100%. Hover to see the one-core value. Memory is resident RAM, not configured Java heap.
-- **Clients:** Make client exports as Prism, mrpack or CurseForge-style archives. An optional matching installed Prism instance contributes declared client-only extras. Test the export in the target launcher before sharing and respect mod licenses. The planned one-click **Share with players** workflow is tracked in [the client-pack sharing roadmap](docs/development/client-pack-sharing-roadmap.md) and [issue #5](https://github.com/Roaring1/Crucible/issues/5).
+- **Clients:** Export client packs as Prism/MultiMC ZIP, mrpack or CurseForge-style archives. An optional matching installed Prism instance contributes declared client-only extras. Test the export in the target launcher before sharing and respect mod licenses. The planned one-click **Share with players** workflow is tracked in [the client-pack sharing roadmap](docs/development/client-pack-sharing-roadmap.md) and [issue #5](https://github.com/Roaring1/Crucible/issues/5).
 
 ### Mod-change safety
 
