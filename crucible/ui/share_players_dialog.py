@@ -770,6 +770,7 @@ class SharePlayersDialog(QDialog):
         self._built_source = ""
         self._built_include_resourcepacks: bool | None = None
         self._upload_result: GofileUploadResult | None = None
+        self._upload_success_status = ""
         self._upload_started_at: float | None = None
         self._started_once = False
         self._phase = "idle"
@@ -1017,6 +1018,7 @@ class SharePlayersDialog(QDialog):
         self._archive_path = None
         self._archive_sha256 = ""
         self._upload_result = None
+        self._upload_success_status = ""
         self._link.clear()
         self._copy_link_btn.setEnabled(False)
         self._copy_instructions_btn.setEnabled(False)
@@ -1414,22 +1416,35 @@ class SharePlayersDialog(QDialog):
                 "ZIP ready, but Crucible could not save the Prism source path. The archive is still available for review."
             )
 
-    def _on_build_inputs_changed(self, *_):
-        """Require a fresh build/review if an input changes after preparation."""
-        if self._phase not in {"review", "upload-error"} or self._result is None:
-            return
-
+    def _build_inputs_match(self) -> bool:
         raw_source = self._source.text().strip()
         try:
             current_source = str(Path(raw_source).expanduser().resolve()) if raw_source else ""
         except OSError:
             current_source = raw_source
-        inputs_match = (
+        return (
             current_source == self._built_source
             and self._built_include_resourcepacks is not None
             and self._resourcepacks.isChecked() == self._built_include_resourcepacks
         )
-        if inputs_match:
+
+    def _on_build_inputs_changed(self, *_):
+        """Keep share state truthful when the selected source/options change."""
+        if self._phase == "done" and self._upload_result is not None:
+            if self._build_inputs_match():
+                if self._upload_success_status:
+                    self._status.setText(self._upload_success_status)
+            else:
+                self._status.setText(
+                    "The existing Gofile link still points to the ZIP you previously reviewed and uploaded. "
+                    "Changing the selected Prism source or resource-pack option does not change that published link. "
+                    "Choose Rebuild ZIP to prepare and review a different pack; the existing link remains unchanged."
+                )
+            return
+
+        if self._phase not in {"review", "upload-error"} or self._result is None:
+            return
+        if self._build_inputs_match():
             return
 
         self._phase = "stale-review"
@@ -1584,13 +1599,14 @@ class SharePlayersDialog(QDialog):
             verification.append("remote MD5 matches")
         else:
             verification.append("remote MD5 not provided")
-        self._status.setText(
+        self._upload_success_status = (
             f"Upload complete: Gofile returned a new share link and it was copied to the clipboard. "
             f"Link validity was not independently re-fetched. Local ZIP retained; "
             f"SHA-256: {result.local_sha256}. "
             + "; ".join(verification)
             + ". Any guest-management token in the response is discarded; the owner API token is not retained. Keep the link and local ZIP; free/guest storage may be ephemeral."
         )
+        self._status.setText(self._upload_success_status)
         self._copy_link_btn.setEnabled(True)
         self._copy_instructions_btn.setEnabled(True)
         self._open_link_btn.setEnabled(True)
