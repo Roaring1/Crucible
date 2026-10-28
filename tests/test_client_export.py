@@ -200,5 +200,72 @@ class ClientExportTests(unittest.TestCase):
             )
 
 
+    def test_export_destination_inside_client_source_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source = root / "client"
+            source_mods = source / ".minecraft" / "mods"
+            source_mods.mkdir(parents=True)
+            metadata = source / "mmc-pack.json"
+            metadata.write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.1"},
+                ],
+            }), encoding="utf-8")
+            output = source / "player-pack.zip"
+            instance = SimpleNamespace(
+                path=str(server), name="TestPack",
+                minecraft_version="1.21.1", loader="neoforge", loader_version="21.1.1",
+            )
+            result = client_export.export(
+                instance, output, fmt="prism", client_source=str(source), include_config=False
+            )
+            self.assertFalse(result.ok)
+            self.assertIn("outside the selected Prism source folder", result.error)
+            self.assertFalse(output.exists())
+            self.assertTrue(metadata.exists())
+
+    def test_client_source_mods_are_deduplicated_by_hash_not_filename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server_mods = server / "mods"
+            server_mods.mkdir(parents=True)
+            source = root / "client"
+            client_mods = source / ".minecraft" / "mods"
+            client_mods.mkdir(parents=True)
+            components = [
+                {"uid": "net.minecraft", "version": "1.21.1"},
+                {"uid": "net.neoforged", "version": "21.1.1"},
+            ]
+            (source / "mmc-pack.json").write_text(
+                json.dumps({"formatVersion": 1, "components": components}), encoding="utf-8"
+            )
+            jar_bytes = None
+            server_jar = server_mods / "shared-server-name.jar"
+            with zipfile.ZipFile(server_jar, "w") as archive:
+                archive.writestr("fabric.mod.json", json.dumps({
+                    "schemaVersion": 1, "id": "shared", "version": "1.0", "environment": "*"
+                }))
+            jar_bytes = server_jar.read_bytes()
+            (client_mods / "renamed-copy.jar").write_bytes(jar_bytes)
+            instance = SimpleNamespace(
+                path=str(server), name="TestPack",
+                minecraft_version="1.21.1", loader="neoforge", loader_version="21.1.1",
+            )
+            output = root / "out.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", client_source=str(source), include_config=False
+            )
+            self.assertTrue(result.ok, result.error)
+            with zipfile.ZipFile(output) as archive:
+                jar_paths = [n for n in archive.namelist() if n.endswith(".jar")]
+            self.assertEqual(jar_paths, ["TestPack/.minecraft/mods/shared-server-name.jar"])
+
+
 if __name__ == "__main__":
     unittest.main()
