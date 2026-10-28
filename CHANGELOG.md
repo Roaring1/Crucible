@@ -2,6 +2,7 @@
 
 ## v0.8.0 — Server-manager refinement
 
+- Property validation: accept syntactically valid namespaced custom `level-type` presets (including Java-properties escaped colons) so modded generators such as WorldWeaver are not incorrectly advised to switch to vanilla terrain.
 - Registry concurrency: the GUI now reconciles CLI lifecycle writes that change only `last_started`, while preserving the safety warning for real config edits, additions/removals, malformed files, and concurrent rewrites.
 - Live Minecraft-style command suggestions above the console, including gamerules, values, player names, caret-aware Tab completion and keyboard selection.
 - Compatible mod release lists for upgrades and downgrades; exact online identity by SHA-1; official CurseForge provider with session-only API-key entry and author-restriction handling.
