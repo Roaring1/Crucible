@@ -77,6 +77,12 @@ _VERSIONED_PROPERTY_SPECS: dict[str, tuple[str, PropSpec]] = {
 }
 _MINECRAFT_VERSION_RE = re.compile(r"^\s*(?:Minecraft\s+)?[vV]?(\d+)\.(\d+)(?:\.(\d+))?")
 
+# A fuzzy match is not always a safe migration. These keys appear in some
+# older/modded server.properties files, but the superficially similar current
+# Java keys have different meanings. Leave the keys untouched and avoid
+# presenting the guesses as fixes (including in explicit --all repair mode).
+_NO_AUTO_SUGGEST_UNKNOWN_KEYS = frozenset({"server-id", "server-name"})
+
 
 def _version_tuple(version: str | None) -> tuple[int, int, int] | None:
     """Parse a leading Minecraft semver, or None when version is unknown."""
@@ -361,12 +367,21 @@ class PropertiesDoc:
                                      "is needed to confirm support"),
                         ))
                     continue
-                # Unknown key. Minecraft ignores it (no crash) — but it's often a
-                # typo, so suggest the closest real key.
-                match = difflib.get_close_matches(key, _SPECS.keys(), n=3, cutoff=0.7)
+                # Unknown keys may be typoed standard properties or intentional
+                # mod/pack-specific fields. Offer fuzzy guesses only where they
+                # are not known to risk changing the setting's meaning.
+                match = (
+                    [] if key in _NO_AUTO_SUGGEST_UNKNOWN_KEYS else
+                    difflib.get_close_matches(key, _SPECS.keys(), n=3, cutoff=0.7)
+                )
+                note = " isn't in Crucible's known Java server.properties settings"
+                if key == "server-id":
+                    note += "; the similar “server-ip” setting controls the bind address, not an ID"
+                elif key == "server-name":
+                    note += "; the similar “level-name” setting selects the world folder, not a display name"
                 issues.append(PropIssue(
                     key=key, kind="unknown_key", current=value, severity="warning",
-                    message=(f"“{key}” isn't a recognized server setting"
+                    message=(f"“{key}”{note}"
                              + (f" — did you mean “{match[0]}”?" if match else "")),
                     suggestion=(match[0] if match else None), options=match,
                 ))
