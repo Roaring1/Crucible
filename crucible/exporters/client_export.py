@@ -257,8 +257,9 @@ def _write_download_requirements(archive_path: Path, fmt: str, instance_name: st
         "This instance may not start until you obtain and install the required mod(s).",
         "",
         "For each item below, use the reviewed alternative download page and choose the",
-        "compatible version. Close Minecraft before copying the downloaded .jar into",
-        ".minecraft/mods/ in this Prism instance, then relaunch the instance.",
+        "compatible version. Import/open the pack in the target launcher first, then",
+        "close that instance before copying the downloaded JAR into its mods folder.",
+        "For Prism this is typically .minecraft/mods/; then relaunch the instance.",
         "Do not copy the original server JAR; only use a source you are allowed to download.",
         "",
     ]
