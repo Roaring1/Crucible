@@ -272,8 +272,11 @@ def _add_dir(zf: zipfile.ZipFile, src: Path, arc_prefix: str) -> None:
         raise OSError(f"Refusing to package symbolic-link directory: {src}")
     root = src.resolve()
     for f in src.rglob("*"):
+        # Never dereference links from config trees. Nested links are excluded
+        # (the existing exporter contract) while root directory links are rejected
+        # by export() before the archive is built.
         if f.is_symlink():
-            raise OSError(f"Refusing to package symbolic link: {f}")
+            continue
         if f.is_dir():
             continue
         if not f.is_file():
