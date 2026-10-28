@@ -2,6 +2,8 @@
 
 ## v0.8.0 — Server-manager refinement
 
+- Pack update/rollback safety: recheck that the server is stopped and its configured IPv4 port is free immediately before swapping directories. Reject unsafe `level-name` paths, symlinked world roots, and nested symlinks or special files in preserved trees rather than following external paths.
+
 - Port-preflight safety: if Crucible cannot read `/proc/net/tcp` to check a configured port, it now reports the check as unknown and refuses to assume the port is free.
 - Legacy loader detection: infer a missing loader from exact server launcher artifacts (including old Forge universal JARs) for read-only features such as TPS polling, while explicit registry metadata remains authoritative. Normalize human-labelled Minecraft version metadata too.
 - Port reporting: `server_port()` now honors Java's last-property-value rule for duplicate `server-port` entries, and the connection-address buttons refuse to copy an invalid port instead of fabricating an `IP:port` string.
