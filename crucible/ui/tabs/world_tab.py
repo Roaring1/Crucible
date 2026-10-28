@@ -307,6 +307,8 @@ class WorldTab(QWidget):
         self._reset_btn.setEnabled(False)
         self._wipe_btn.setEnabled(False)
         self._cleanup_btn.setEnabled(False)
+        for button in self.findChildren(QPushButton, "WorldBackupSwapButton"):
+            button.setEnabled(False)
 
     def _refresh(self) -> None:
         if not self._manager or not self._instance:
@@ -368,6 +370,7 @@ class WorldTab(QWidget):
             actions_layout.setSpacing(4)
 
             swap_btn = QPushButton("Swap to this")
+            swap_btn.setObjectName("WorldBackupSwapButton")
             swap_btn.setAccessibleName(f"Swap to world backup {entry.display_name}")
             swap_btn.setEnabled(self._world_path_safe)
             swap_btn.clicked.connect(lambda _checked=False, e=entry: self._confirm_and_swap(e))
@@ -542,6 +545,9 @@ class WorldTab(QWidget):
             return
         if self._thread and self._thread.isRunning():
             return
+        if not self._guard_world_path("Backup cancelled"):
+            return
+
 
         default_name = f"World backup {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         name, ok = QInputDialog.getText(
@@ -618,6 +624,9 @@ class WorldTab(QWidget):
             return
         if self._thread and self._thread.isRunning():
             return
+        if not self._guard_world_path("Swap cancelled"):
+            return
+
 
         tmux = TmuxManager()
         status = tmux.get_status(self._instance)
@@ -778,6 +787,9 @@ class WorldTab(QWidget):
             return
         if self._thread and self._thread.isRunning():
             return
+        if not self._guard_world_path("Reset cancelled"):
+            return
+
 
         tmux = TmuxManager()
         status = tmux.get_status(self._instance)
@@ -837,6 +849,9 @@ class WorldTab(QWidget):
             return
         if self._thread and self._thread.isRunning():
             return
+        if not self._guard_world_path("Wipe cancelled"):
+            return
+
 
         tmux = TmuxManager()
         status = tmux.get_status(self._instance)
@@ -998,6 +1013,8 @@ class WorldTab(QWidget):
 
     def _cleanup_pre_swap_dirs(self) -> None:
         if not self._manager:
+            return
+        if not self._guard_world_path("Cleanup cancelled"):
             return
         reply = QMessageBox.question(
             self, "Clean up pre-swap folders",
