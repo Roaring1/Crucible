@@ -97,7 +97,7 @@ class ClientExportReviewTests(unittest.TestCase):
             config.mkdir(parents=True)
             outside = root / "outside.toml"
             secret = "sk_live_DO_NOT_PACKAGE_THIS_VALUE"
-            outside.write_text(f"api_key = '{secret}'\\n", encoding="utf-8")
+            outside.write_text(f"api_key = '{secret}'\n", encoding="utf-8")
             (config / "linked.toml").symlink_to(outside)
             output = root / "symlink.zip"
             result = client_export.export(self._instance(server), output, fmt="prism")
@@ -111,7 +111,85 @@ class ClientExportReviewTests(unittest.TestCase):
                 self.assertFalse(any(name.endswith("/linked.toml") for name in archive.namelist()))
                 manifest = json.loads(archive.read("CreatePlus/crucible-manifest.json"))
                 self.assertFalse(any("linked.toml" in row["path"] for row in manifest["files"]))
-            self.assertNotIn(secret, "\\n".join(result.warnings))
+            self.assertNotIn(secret, "\n".join(result.warnings))
+
+
+    def test_symlinked_client_source_root_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source = root / "real-prism"
+            (source / ".minecraft" / "mods").mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(
+                json.dumps({"formatVersion": 1, "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.233"},
+                ]}),
+                encoding="utf-8",
+            )
+            linked = root / "linked-prism"
+            linked.symlink_to(source, target_is_directory=True)
+            output = root / "pack.zip"
+            result = client_export.export(
+                self._instance(server), output, fmt="prism", client_source=str(linked)
+            )
+            self.assertFalse(result.ok)
+            self.assertIn("selected Prism source is a symbolic link", result.error)
+            self.assertFalse(output.exists())
+
+
+    def test_manifest_records_privacy_review_and_warns_on_binary_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            config = server / "config"
+            config.mkdir(parents=True)
+            (config / "odd.toml").write_bytes(b"setting = true\x00\x01binary")
+            output = root / "binary-config.zip"
+            result = client_export.export(self._instance(server), output, fmt="prism")
+            self.assertTrue(result.ok, result.error)
+            with zipfile.ZipFile(output) as archive:
+                manifest = json.loads(archive.read(result.manifest_path))
+            self.assertEqual(manifest["manifestPath"], result.manifest_path)
+            review = manifest["privacyReview"]
+            self.assertFalse(review["coverageComplete"])
+            self.assertIn("heuristic", review["scanner"])
+            self.assertTrue(
+                any("Privacy scan skipped binary-looking config file" in warning
+                    for warning in review["warnings"]),
+                review["warnings"],
+            )
+            self.assertTrue(
+                any("Privacy scan skipped binary-looking config file" in warning
+                    for warning in result.warnings),
+                result.warnings,
+            )
+
+    def test_manifest_warns_and_names_config_files_over_scan_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            config = server / "config"
+            config.mkdir(parents=True)
+            oversized = config / "large.toml"
+            oversized.write_bytes(b"safe_key = true\n" + b"# padding\n" * 120000)
+            output = root / "large-config.zip"
+            result = client_export.export(self._instance(server), output, fmt="prism")
+            self.assertTrue(result.ok, result.error)
+            self.assertTrue(
+                any("Privacy scan incomplete" in warning and "config/large.toml" in warning
+                    for warning in result.warnings),
+                result.warnings,
+            )
+            with zipfile.ZipFile(output) as archive:
+                manifest = json.loads(archive.read(result.manifest_path))
+            self.assertFalse(manifest["privacyReview"]["coverageComplete"])
+            self.assertTrue(
+                any("config/large.toml" in warning
+                    for warning in manifest["privacyReview"]["warnings"]),
+                manifest["privacyReview"],
+            )
 
 
 if __name__ == "__main__":

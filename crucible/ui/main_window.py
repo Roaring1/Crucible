@@ -466,7 +466,7 @@ class MainWindow(QMainWindow):
     def _on_export_requested(self, instance: ServerInstance) -> None:
         """Open the safe client exporter (mods/config only; no worlds/admin files)."""
         from .client_export_dialog import ClientExportDialog
-        ClientExportDialog(instance, self).exec()
+        ClientExportDialog(instance, self, manager=self._manager).exec()
 
     def _on_status_changed(self, instance_id: str, status: str) -> None:
         self._sidebar.update_status(instance_id, status)

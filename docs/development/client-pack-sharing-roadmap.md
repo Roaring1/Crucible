@@ -23,12 +23,22 @@ remain under an advanced export path.
 - `crucible/exporters/client_export.py` builds Prism/MultiMC ZIP, Modrinth
   `.mrpack`, and CurseForge-style ZIP archives locally.
 - `crucible/ui/client_export_dialog.py` exposes a format selector and a
-  destination-file picker. It does not upload or create a share link.
-- An optional matching Prism source is accepted for adding mods that metadata
-  explicitly identifies as client-only. The source is not yet a saved,
-  per-server setting.
-- Minecraft and loader compatibility are checked, but ZIP creation is not
-  proof that a clean Prism install can import and launch the pack.
+  destination-file picker, shows the local archive SHA-256 and manifest path,
+  and has a **Remember this Prism source** option that saves a validated source
+  to the registered server after a successful export. It does not upload or
+  create a share link.
+- A saved matching Prism source contributes only explicitly client-only mods;
+  content-hash deduplication avoids duplicate JARs, and version/source conflicts
+  and unknown side metadata are reported instead of guessed.
+- The exporter embeds a per-file size/SHA-256 manifest and performs bounded
+  heuristic secret scans on included text configuration. The manifest records
+  scanner warnings and whether scan coverage was complete. This helps identify
+  suspicious files but is not proof that a pack contains no secrets.
+- A real Prism Launcher 11.1.1 import has been verified in an isolated fresh
+  data directory using Crucible's produced ZIP. Prism created the instance and
+  preserved the exact Minecraft/NeoForge versions. The test fixture verifies
+  archive/launcher structure and config integrity, not whether a real modded
+  game launches successfully.
 - The exporter previously included `defaultconfigs/` while its checkbox named
   only `config/` and `kubejs/`. This mismatch is fixed by the accompanying
   change: `defaultconfigs/` is excluded by default and a warning is shown if it
@@ -39,22 +49,23 @@ remain under an advanced export path.
 
 ### P0 — Make the client pack trustworthy
 
-- [ ] Persist a known-good Prism/MultiMC source per server; validate that it is
-  a complete instance with `mmc-pack.json` and exact Minecraft/loader versions.
-- [ ] Compare source and server mods by hashes and known metadata, not filenames
-  alone. Deduplicate identical JARs. Flag version conflicts and mods whose side
-  is unknown; never infer a mod's side from its name.
+- [x] Persist a known-good Prism/MultiMC source per server after a successful
+  export; validate `mmc-pack.json` and exact Minecraft/loader versions.
+- [x] Compare source and server mods by content hashes and known metadata,
+  deduplicate identical JARs, and report source/version conflicts and unknown
+  side information rather than guessing.
 - [x] Make the config checkbox truthful: only include `config/` and `kubejs/`
   by default, exclude `defaultconfigs/`, and warn when it was excluded.
-- [ ] Add a pre-share privacy scan for likely tokens, webhooks, credentials,
-  private addresses and sensitive config. Show the included paths and findings
-  before any upload; do not upload silently.
-- [ ] Keep worlds/saves, screenshots, logs, crash reports, personal launcher
-  data, account/auth files, unrelated graphics preferences and unrelated
-  resource/shader packs out by default.
-- [ ] Produce a manifest containing relative path, size and SHA-256 for every
-  included file. Reject unsafe paths, symlinks and special files; never include
-  files by traversing outside the chosen source roots.
+- [x] Scan included text config/KubeJS content for common tokens, webhooks,
+  credentials, private keys and private addresses. Values are never echoed in
+  warnings. The scan has explicit size/finding bounds and records incomplete
+  coverage in the manifest; it is heuristic, not a guarantee of no secrets.
+- [x] Export only mods and the selected `config/` and `kubejs/` paths. Worlds,
+  screenshots, logs, crash reports, personal launcher/account data, unrelated
+  graphics settings, and shader/resource packs are not copied by this exporter.
+- [x] Produce an embedded manifest containing each included relative path, size
+  and SHA-256. Reject unsafe archive paths and special files, reject linked
+  source roots, and exclude nested symlinks without following them.
 - [ ] Keep mod distribution/license status in the review. Do not silently
   promise a fully bundled pack when redistribution is not allowed or a download
   is restricted; explain the exception and the permitted alternative.
@@ -67,22 +78,24 @@ reproducible manifest.
 
 - [ ] Make Prism instance ZIP the default artifact for **Share with players**.
   Keep `.mrpack` and CurseForge export options in an advanced menu.
-- [ ] Check the ZIP layout and metadata: instance folder, `instance.cfg`,
-  `mmc-pack.json`, `.minecraft/mods/`, and selected client configuration.
-  Pin exact Minecraft and loader component versions.
-- [ ] Add structural tests for paths, metadata, component versions, SHA-256
-  manifest, missing files, and archive integrity.
-- [ ] Run an integration test that imports into a clean Prism instance with its
-  supported import path/CLI where available. A successfully written ZIP is not
-  enough; record Prism version and import result.
-- [ ] Keep server address optional and owner-controlled. Never include world
-  saves or any player's Microsoft/Minecraft account material.
-- [ ] Avoid guessing Java requirements or memory settings. Let Prism resolve
-  compatible Java/runtime defaults unless a tested requirement justifies a
-  recommendation.
+- [x] Check the instance folder, `instance.cfg`, `mmc-pack.json`,
+  `.minecraft/mods/` and selected config paths, with exact Minecraft/loader
+  metadata.
+- [x] Add structural tests for path safety, metadata, component versions,
+  manifest hashes, exclusions, config privacy warnings and archive integrity.
+- [x] Import the generated ZIP into a clean Prism Launcher 11.1.1 data root and
+  verify the resulting instance metadata and unchanged payload hashes. This
+  proves import compatibility for the tested fixture, not a real pack's gameplay
+  launch or every third-party mod combination.
+- [x] Do not include a server address or player account material by default.
+- [x] Do not impose Java requirements or memory settings in the export; Prism
+  remains responsible for choosing a compatible runtime when the instance is
+  launched.
 
 **Exit criterion:** a clean Prism instance imports the produced ZIP and has the
-expected mods/configuration without manual version selection.
+expected mods/configuration without manual version selection. The structural
+and clean-import checks pass on the current fixture; validate against a real
+working modded client before promising every pack can launch successfully.
 
 ### P2 — Add Gofile upload and the one-click share experience
 

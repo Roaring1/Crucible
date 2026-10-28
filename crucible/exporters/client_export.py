@@ -153,13 +153,20 @@ def export(instance, out_path, fmt: str = "mrpack", *,
             if entry.side == "unknown": unknown.append(j.name)
     if client_source:
         source = Path(client_source).expanduser()
+        if source.is_symlink():
+            return ExportResult(error="The selected Prism source is a symbolic link. Choose the real instance folder.")
+        if not source.is_dir():
+            return ExportResult(error="The selected Prism source folder does not exist.")
+        # Never trust a metadata file that resolves outside the selected profile.
+        pack_file = source / "mmc-pack.json"
+        if pack_file.is_symlink():
+            return ExportResult(error="The selected Prism source has a symbolic-link mmc-pack.json.")
         # Never overwrite the chosen Prism instance itself, even if the selected
         # destination is a file not otherwise included in the generated archive.
         source_root = source.resolve()
         if (out_absolute == source_root or source_root in out_absolute.parents
                 or out_resolved == source_root or source_root in out_resolved.parents):
             return ExportResult(error="Save the client export outside the selected Prism source folder.")
-        pack_file = source / "mmc-pack.json"
         try:
             pack = json.loads(pack_file.read_text())
             components = {c["uid"]: c.get("version", "") for c in pack["components"]}
@@ -446,25 +453,23 @@ def _privacy_findings(name: str, raw: bytes) -> list[str]:
     text = raw.decode("utf-8", "ignore")
     findings = []
     for category, pattern in _SECRET_PATTERNS:
-        matches = list(pattern.finditer(text))
-        if category == "credential assignment":
-            meaningful = []
-            for match in matches:
-                value = match.group(1).strip().strip("\"'").lower()
+        found = False
+        for match in pattern.finditer(text):
+            if category == "credential assignment":
+                value = match.group(1)[:128].strip().strip("\"'").lower()
                 if value in {"", "false", "null", "none", "changeme", "password", "example"}:
                     continue
                 if value.startswith(_PLACEHOLDER_PREFIXES):
                     continue
-                meaningful.append(match)
-            matches = meaningful
-        if matches:
+            found = True
+            break
+        if found:
             findings.append(
                 f"Privacy review: possible {category} in {name}; inspect this file before sharing (value not shown)."
             )
         if len(findings) >= _MAX_PRIVACY_FINDINGS:
             break
     return findings
-
 
 
 def _seal_archive(
@@ -485,7 +490,9 @@ def _seal_archive(
     privacy_warnings = []
     seen = set()
     scan_bytes = 0
-    scan_incomplete = []
+    scan_incomplete_count = 0
+    scan_incomplete_examples = []
+    binary_config_skipped = 0
     privacy_findings_truncated = False
     with zipfile.ZipFile(archive_path, "r") as zf:
         for info in zf.infolist():
@@ -504,9 +511,13 @@ def _seal_archive(
             sample = bytearray()
             if text_candidate:
                 if info.file_size > _MAX_PRIVACY_FILE_BYTES:
-                    scan_incomplete.append(member_name)
+                    scan_incomplete_count += 1
+                    if len(scan_incomplete_examples) < 10:
+                        scan_incomplete_examples.append(member_name)
                 elif scan_bytes + info.file_size > _MAX_PRIVACY_TOTAL_BYTES:
-                    scan_incomplete.append(member_name)
+                    scan_incomplete_count += 1
+                    if len(scan_incomplete_examples) < 10:
+                        scan_incomplete_examples.append(member_name)
                 else:
                     should_scan = True
 
@@ -522,10 +533,16 @@ def _seal_archive(
 
             if should_scan:
                 scan_bytes += info.file_size
-                if b"\\x00" in sample[:4096]:
-                    privacy_warnings.append(
-                        f"Privacy scan skipped binary-looking config file {member_name}; review it manually before sharing."
+                if b"\x00" in sample[:4096]:
+                    binary_config_skipped += 1
+                    warning = (
+                        f"Privacy scan skipped binary-looking config file {member_name}; "
+                        "review it manually before sharing."
                     )
+                    if len(privacy_warnings) < _MAX_PRIVACY_FINDINGS:
+                        privacy_warnings.append(warning)
+                    else:
+                        privacy_findings_truncated = True
                 else:
                     findings = _privacy_findings(member_name, bytes(sample))
                     remaining_findings = max(0, _MAX_PRIVACY_FINDINGS - len(privacy_warnings))
@@ -539,12 +556,12 @@ def _seal_archive(
                 "sha256": digest.hexdigest(),
             })
 
-    if scan_incomplete:
-        examples = ", ".join(scan_incomplete[:10])
-        more = len(scan_incomplete) - min(len(scan_incomplete), 10)
+    if scan_incomplete_count:
+        examples = ", ".join(scan_incomplete_examples)
+        more = scan_incomplete_count - len(scan_incomplete_examples)
         suffix = f" (and {more} more)" if more else ""
         privacy_warnings.append(
-            f"Privacy scan incomplete for {len(scan_incomplete)} included config file(s): "
+            f"Privacy scan incomplete for {scan_incomplete_count} included config file(s): "
             f"{examples}{suffix}. Bounded size limits were reached; review these files manually before sharing."
         )
     if privacy_findings_truncated:
@@ -558,6 +575,12 @@ def _seal_archive(
         "minecraftVersion": minecraft_version,
         "loader": loader,
         "loaderVersion": loader_version,
+        "manifestPath": manifest_name,
+        "privacyReview": {
+            "scanner": "bounded heuristic pattern scan; this is not a guarantee that a pack contains no secrets",
+            "coverageComplete": not scan_incomplete_count and not binary_config_skipped and not privacy_findings_truncated,
+            "warnings": privacy_warnings,
+        },
         "files": rows,
     }
     payload = (json.dumps(manifest_data, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
