@@ -126,6 +126,13 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         return ExportResult(error="Save the client export outside the server folder so it cannot overwrite server data.")
     if out_path.is_symlink():
         return ExportResult(error="The export destination cannot be a symbolic link.")
+    if (server / "mods").is_symlink():
+        return ExportResult(error="Refusing to export through a symbolic-link mods/ directory.")
+    if include_config:
+        for dirname in ("config", "kubejs"):
+            candidate = server / dirname
+            if candidate.is_symlink():
+                return ExportResult(error=f"Refusing to export symbolic-link directory {dirname}/.")
 
     from ..mods.mod_manager import ModManager, ModEntry
     inspector = ModManager(instance)
@@ -208,11 +215,6 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         client_unknown = []
         source_conflicts = []
 
-    if include_config:
-        for dirname in ("config", "kubejs"):
-            candidate = server / dirname
-            if candidate.is_symlink():
-                return ExportResult(error=f"Refusing to export symbolic-link directory {dirname}/.")
     excluded_defaultconfigs = include_config and (server / "defaultconfigs").is_dir()
     cfg = _config_dirs(server) if include_config else []
 
