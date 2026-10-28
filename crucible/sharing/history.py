@@ -26,6 +26,7 @@ _EVENTS = frozenset({
     "upload-succeeded",
     "upload-failed",
     "upload-cancelled",
+    "local-zip-deleted",
 })
 _ERROR_CODES = frozenset({
     "",

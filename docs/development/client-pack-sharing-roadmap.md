@@ -203,10 +203,14 @@ has been uploaded during implementation.
   persisted. The UI clearly labels saved links as not re-verified.
 - [ ] Reuse a previously uploaded link only if the provider can confirm it is
   still valid. Otherwise explain that a new upload/link was created.
-- [ ] Add visible cleanup/expiry handling for old local ZIP artifacts and expired
-  provider links. Clearing history forgets metadata only; it does not delete ZIPs
-  or claim to revoke remote links. Any future artifact deletion must be visible
-  and must never remove the only valid local copy automatically.
+- [x] Add explicit, user-confirmed cleanup for a selected local ZIP from share
+  history. Deletion is restricted to a regular ZIP in Crucible's player-packs
+  folder and requires its SHA-256 to match the history record; its cache sidecar
+  is removed with it. No ZIP is deleted automatically, clearing history never
+  deletes files, and neither action deletes or revokes remote Gofile content.
+- [ ] Add provider-aware expiry/link-status handling and visible management of
+  expired remote links. Saved links stay labelled as not re-verified until a
+  provider can confirm current validity; local cleanup is not remote deletion.
 - [x] Test bounded retention, no-secret persistence, safe-link validation, history
   clear without ZIP deletion, and local-link/path display. Cache tests also cover
   no-change reuse, changed-config rebuild, stale-fingerprint rejection and a
