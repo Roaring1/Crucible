@@ -1,6 +1,6 @@
 # One-click Share with players: implementation roadmap
 
-**Status:** P0, P1's clean Prism-import validation, and the P2 Gofile adapter/review-first sharing UI are merged to `main`. The post-merge CI run passed on Python 3.11 and 3.13; local regression tests cover provider/UI behavior. On 2026-10-27, an owner-approved small synthetic Gofile upload passed local SHA-256 plus remote size/MD5 checks; the public share page returned HTTP 200, and the synthetic remote folder and local test ZIP were removed. Actual anonymous ZIP download and a large-file cancellation/retry soak test remain open.
+**Status:** P0, P1's clean Prism-import validation, and the P2 Gofile adapter/review-first sharing UI are merged to `main`. The release candidate's CI passed on Python 3.11 and 3.13; local regression tests cover provider/UI behavior. On 2026-10-27, an owner-approved small synthetic Gofile upload passed local SHA-256 plus remote size/MD5 checks; the public share page returned HTTP 200, and that test's remote folder and local ZIP were removed. A second 348-byte synthetic-only upload was attempted on 2026-10-28: upload integrity checks passed, but the separate guest's contents listing returned `error-notPremium` (HTTP 401), a retry hit `error-rateLimit`, and cleanup of this second upload has not been confirmed. No real pack/world/config data was uploaded; the end-to-end anonymous download remains unverified, and the test's private recovery state is retained on the test machine. Do not repeat live API retries until the rate limit clears. The large-file cancellation/retry soak test also remains open.
 **Tracking issue:** [Crucible #5](https://github.com/Roaring1/Crucible/issues/5).
 
 ## Product outcome
@@ -215,8 +215,10 @@ has been uploaded during implementation.
   size/MD5 verification flags. History files/directories are owner-private and
   atomic; only allowlisted fields are stored and raw exceptions/tokens are never
   persisted. The UI clearly labels saved links as not re-verified.
-- [ ] Reuse a previously uploaded link only if the provider can confirm it is
-  still valid. Otherwise explain that a new upload/link was created.
+- [x] Never silently reuse a saved remote link: history marks saved links as
+  "not re-verified", manual copy explicitly says validity was not checked, and
+  upload completion announces that Gofile returned a new link. Provider-aware
+  expiry/link-status confirmation remains open in the next item.
 - [x] Add explicit, user-confirmed cleanup for a selected local ZIP from share
   history. Deletion is restricted to a regular ZIP in Crucible's player-packs
   folder and requires its SHA-256 to match the history record; its cache sidecar
