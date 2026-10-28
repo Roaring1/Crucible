@@ -716,6 +716,7 @@ class SharePlayersDialog(QDialog):
         self._archive_path: Path | None = None
         self._archive_sha256 = ""
         self._built_source = ""
+        self._built_include_resourcepacks: bool | None = None
         self._upload_result: GofileUploadResult | None = None
         self._upload_started_at: float | None = None
         self._started_once = False
@@ -726,6 +727,8 @@ class SharePlayersDialog(QDialog):
         self.resize(880, 760)
         self.setStyleSheet(theme.STYLESHEET)
         self._build_ui()
+        self._source.textChanged.connect(self._on_build_inputs_changed)
+        self._resourcepacks.toggled.connect(self._on_build_inputs_changed)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -972,10 +975,12 @@ class SharePlayersDialog(QDialog):
         # source field becomes editable again after preparation so the owner can
         # rebuild, but the review must keep showing the source used for this ZIP.
         self._built_source = str(source.resolve())
+        self._built_include_resourcepacks = self._resourcepacks.isChecked()
         self._phase = "preparing"
         self._prepare_btn.setEnabled(False)
         self._browse_source.setEnabled(False)
         self._source.setEnabled(False)
+        self._resourcepacks.setEnabled(False)
         self._remember_source.setEnabled(False)
         self._review_ack.setEnabled(False)
         self._license_ack.setEnabled(False)
@@ -1047,6 +1052,7 @@ class SharePlayersDialog(QDialog):
         self._prepare_btn.setEnabled(True)
         self._browse_source.setEnabled(True)
         self._source.setEnabled(True)
+        self._resourcepacks.setEnabled(True)
         self._remember_source.setEnabled(self._instance_manager is not None)
 
     def _prepare_finished(self):
@@ -1134,6 +1140,7 @@ class SharePlayersDialog(QDialog):
             self._prepare_btn.setEnabled(True)
             self._browse_source.setEnabled(True)
             self._source.setEnabled(True)
+            self._resourcepacks.setEnabled(True)
             self._remember_source.setEnabled(self._instance_manager is not None)
             return
 
@@ -1163,6 +1170,7 @@ class SharePlayersDialog(QDialog):
             self._prepare_btn.setEnabled(True)
             self._browse_source.setEnabled(True)
             self._source.setEnabled(True)
+            self._resourcepacks.setEnabled(True)
             return
 
         lines = [
@@ -1321,6 +1329,7 @@ class SharePlayersDialog(QDialog):
         self._prepare_btn.setEnabled(True)
         self._browse_source.setEnabled(True)
         self._source.setEnabled(True)
+        self._resourcepacks.setEnabled(True)
         self._remember_source.setEnabled(self._instance_manager is not None)
 
     def _remember_source_after_success(self):
@@ -1353,6 +1362,38 @@ class SharePlayersDialog(QDialog):
                 "ZIP ready, but Crucible could not save the Prism source path. The archive is still available for review."
             )
 
+    def _on_build_inputs_changed(self, *_):
+        """Require a fresh build/review if an input changes after preparation."""
+        if self._phase not in {"review", "upload-error"} or self._result is None:
+            return
+
+        raw_source = self._source.text().strip()
+        try:
+            current_source = str(Path(raw_source).expanduser().resolve()) if raw_source else ""
+        except OSError:
+            current_source = raw_source
+        inputs_match = (
+            current_source == self._built_source
+            and self._built_include_resourcepacks is not None
+            and self._resourcepacks.isChecked() == self._built_include_resourcepacks
+        )
+        if inputs_match:
+            return
+
+        self._phase = "stale-review"
+        self._review_ack.setChecked(False)
+        self._license_ack.setChecked(False)
+        self._public_ack.setChecked(False)
+        self._review_ack.setEnabled(False)
+        self._license_ack.setEnabled(False)
+        self._public_ack.setEnabled(False)
+        self._upload_btn.setEnabled(False)
+        self._status.setText(
+            "The client source or resource-pack option changed after this ZIP was built. "
+            "The current review still describes the previous ZIP. Select Rebuild ZIP, "
+            "then review and approve the new contents before uploading."
+        )
+
     def _refresh_upload_enabled(self, *_):
         approved = (
             self._result is not None
@@ -1377,6 +1418,7 @@ class SharePlayersDialog(QDialog):
         self._prepare_btn.setEnabled(False)
         self._browse_source.setEnabled(False)
         self._source.setEnabled(False)
+        self._resourcepacks.setEnabled(False)
         self._remember_source.setEnabled(False)
         self._use_api_token.setEnabled(False)
         self._api_token.setEnabled(False)
@@ -1419,6 +1461,7 @@ class SharePlayersDialog(QDialog):
         self._prepare_btn.setEnabled(True)
         self._browse_source.setEnabled(True)
         self._source.setEnabled(True)
+        self._resourcepacks.setEnabled(True)
         self._remember_source.setEnabled(self._instance_manager is not None)
         self._use_api_token.setEnabled(True)
         self._api_token.setEnabled(self._use_api_token.isChecked())
