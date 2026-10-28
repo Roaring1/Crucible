@@ -27,6 +27,7 @@ from crucible.importers.pack_update import (
     VARIANT_JAVA17,
     PackRelease,
     PackUpdateError,
+    _copy_preserved,
     _staged_root,
     _world_names,
     apply_update,
@@ -301,8 +302,76 @@ class WorldNameTests(TempDirCase):
         (d / "world").mkdir(parents=True)
         self.assertEqual(_world_names(FakeInstance(path=str(d))), ["world"])
 
+    def test_unsafe_level_name_paths_never_become_preserve_paths(self):
+        d = self.tmp / "unsafe"
+        d.mkdir()
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        (outside / "marker.txt").write_text("must survive", encoding="utf-8")
+        for candidate in ("..", "../outside", "../../outside", r"..\\outside", "C:\\outside"):
+            with self.subTest(candidate=candidate):
+                (d / "server.properties").write_text(
+                    f"level-name={candidate}\\n", encoding="utf-8"
+                )
+                self.assertEqual(_world_names(FakeInstance(path=str(d))), [])
+                self.assertIsNotNone(_world_name_issue(d))
+                self.assertEqual((outside / "marker.txt").read_text(encoding="utf-8"), "must survive")
 
-class PreserveListTests(unittest.TestCase):
+    def test_symlinked_world_root_is_not_selected(self):
+        d = self.tmp / "symlink-root"
+        d.mkdir()
+        outside = self.tmp / "outside-world"
+        outside.mkdir()
+        (outside / "level.dat").write_text("outside-world", encoding="utf-8")
+        (d / "server.properties").write_text("level-name=world\\n", encoding="utf-8")
+        try:
+            (d / "world").symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"directory symlink unavailable on this host: {exc}")
+        self.assertEqual(_world_names(FakeInstance(path=str(d))), [])
+        self.assertIn("symbolic link", _world_name_issue(d))
+
+
+class PreserveListTests(TempDirCase):
+    def test_copy_preserved_rejects_path_traversal_without_touching_siblings(self):
+        live = self.tmp / "server"
+        staging = self.tmp / "staging"
+        live.mkdir()
+        staging.mkdir()
+        marker = self.tmp / "keep-me.txt"
+        marker.write_text("must survive", encoding="utf-8")
+        with self.assertRaises(PackUpdateError):
+            _copy_preserved(live, staging, [".."], None)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "must survive")
+        self.assertTrue(live.is_dir())
+        self.assertTrue(staging.is_dir())
+
+    def test_copy_preserved_refuses_symlink_source_and_destination(self):
+        live = self.tmp / "server"
+        staging = self.tmp / "staging"
+        live.mkdir()
+        staging.mkdir()
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        marker = outside / "marker.txt"
+        marker.write_text("must survive", encoding="utf-8")
+        try:
+            (live / "world").symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"directory symlink unavailable on this host: {exc}")
+        with self.assertRaises(PackUpdateError):
+            _copy_preserved(live, staging, ["world"], None)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "must survive")
+        (live / "world").unlink()
+        (live / "world").mkdir()
+        try:
+            (staging / "world").symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"directory symlink unavailable on this host: {exc}")
+        with self.assertRaises(PackUpdateError):
+            _copy_preserved(live, staging, ["world"], None)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "must survive")
+
     def test_gtnh_progression_dirs_are_preserved(self):
         for name in ("visualprospecting", "journeymap", "serverutilities", "backups", ".crucible"):
             self.assertIn(name, PRESERVE_DIRS)
@@ -328,6 +397,14 @@ class PlanTests(TempDirCase):
         kw.setdefault("min_free_bytes", 1024)
         kw.setdefault("running", False)
         return plan_update(self.inst, find_release(self.releases, version), **kw)
+
+    def test_unsafe_level_name_blocks_update_before_any_work(self):
+        (self.d / "server.properties").write_text(
+            "level-name=../../outside\\n", encoding="utf-8"
+        )
+        plan = self._plan("2.9.0-beta-3")
+        self.assertFalse(plan.ok)
+        self.assertTrue(any("unsafe level-name" in blocker for blocker in plan.blockers))
 
     def test_happy_path_is_runnable(self):
         plan = self._plan("2.9.0-beta-3")
