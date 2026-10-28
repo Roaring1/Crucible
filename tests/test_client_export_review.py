@@ -454,5 +454,18 @@ class ClientExportReviewTests(unittest.TestCase):
             )
 
 
+    def test_privacy_scan_recognizes_common_config_text_and_backup_extensions(self):
+        for path in (
+            "Pack/.minecraft/config/structure_layout_optimizer.jsonc",
+            "Pack/.minecraft/config/ftbultimine-client.snbt",
+            "Pack/.minecraft/config/create-client-1.toml.bak",
+            "Pack/.minecraft/config/emi.css",
+            "Pack/.minecraft/config/konkrete/locals/en_us.local",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(client_export._is_text_config_entry(path))
+        self.assertFalse(client_export._is_text_config_entry("Pack/.minecraft/config/example.png"))
+        self.assertFalse(client_export._is_text_config_entry("Pack/.minecraft/config/stack-cache.emic"))
+
 if __name__ == "__main__":
     unittest.main()

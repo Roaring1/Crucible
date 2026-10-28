@@ -627,5 +627,34 @@ class ClientExportTests(unittest.TestCase):
                 self.assertFalse(any("/config/" in name for name in archive.namelist()))
 
 
+    def test_prism_client_loader_version_mismatch_reports_both_exact_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source = root / "working-prism"
+            (source / "minecraft" / "mods").mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.265"},
+                ],
+            }), encoding="utf-8")
+            instance = SimpleNamespace(
+                path=str(server), name="CreatePlus", minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.233",
+            )
+            output = root / "mismatched-loader.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", client_source=str(source)
+            )
+            self.assertFalse(result.ok)
+            self.assertIn("server expects NeoForge 21.1.233", result.error)
+            self.assertIn("selected Prism profile uses NeoForge 21.1.265", result.error)
+            self.assertIn("no archive was written", result.error)
+            self.assertFalse(output.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
