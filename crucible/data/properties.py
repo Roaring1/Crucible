@@ -31,6 +31,7 @@ Design goals
 from __future__ import annotations
 
 import difflib
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,6 +59,9 @@ _INT = "int"
 _BOOL = "bool"
 _ENUM = "enum"
 _STR = "str"
+
+# Custom generator presets in server.properties use Minecraft resource IDs.
+_RESOURCE_LOCATION_RE = re.compile(r"^[a-z0-9_.-]+:[a-z0-9/._-]+$")
 
 _SPECS: dict[str, PropSpec] = {s.key: s for s in [
     # ---- numeric (THE crash-causing group) ----
@@ -366,6 +370,16 @@ class PropertiesDoc:
         if spec.type == _ENUM:
             if v in spec.options:
                 return []
+            # Modded world-generator presets use namespaced resource IDs, e.g.
+            # WorldWeaver's ``wover:normal``. ``server.properties`` may contain
+            # the Java-properties escaped form ``wover\:normal``; a colon in
+            # a value is legal either way. Unknown namespaced presets cannot be
+            # checked against vanilla's fixed enum list, so don't recommend
+            # replacing them with minecraft:normal.
+            if spec.key == "level-type":
+                resource_id = v.replace("\\:", ":")
+                if _RESOURCE_LOCATION_RE.fullmatch(resource_id):
+                    return []
             # legacy numeric (gamemode=1) or alternate spelling (level-type=default)
             legacy = _LEGACY_NUMERIC_ENUM.get(spec.key, {}).get(v)
             if not legacy:
