@@ -81,5 +81,124 @@ class ClientExportTests(unittest.TestCase):
             self.assertFalse(any("defaultconfigs/ was excluded" in warning for warning in result.warnings))
 
 
+    def test_vanilla_server_rejects_modded_client_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source = root / "client"
+            (source / ".minecraft" / "mods").mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.fabricmc.fabric-loader", "version": "0.16.10"},
+                ],
+            }), encoding="utf-8")
+            instance = SimpleNamespace(
+                path=str(server), name="VanillaServer",
+                minecraft_version="1.21.1", loader="vanilla", loader_version="",
+            )
+            output = root / "client.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", client_source=str(source)
+            )
+            self.assertFalse(result.ok)
+            self.assertIn("server is vanilla", result.error)
+            self.assertFalse(output.exists())
+
+    def test_symlinked_config_root_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            external = root / "external-config"
+            external.mkdir()
+            (external / "private.toml").write_text("token = 'do-not-share'", encoding="utf-8")
+            try:
+                (server / "config").symlink_to(external, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlinks unavailable: {exc}")
+            instance = SimpleNamespace(
+                path=str(server), name="TestPack",
+                minecraft_version="1.21.1", loader="vanilla", loader_version="",
+            )
+            output = root / "client.zip"
+            result = client_export.export(instance, output, fmt="prism")
+            self.assertFalse(result.ok)
+            self.assertIn("symbolic-link directory", result.error)
+            self.assertFalse(output.exists())
+
+    def test_export_destination_inside_server_is_rejected_without_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = Path(tmp) / "server"
+            server.mkdir()
+            protected = server / "server.properties"
+            protected.write_text("level-name=h", encoding="utf-8")
+            instance = SimpleNamespace(
+                path=str(server), name="TestPack",
+                minecraft_version="1.21.1", loader="vanilla", loader_version="",
+            )
+            result = client_export.export(instance, protected, fmt="prism")
+            self.assertFalse(result.ok)
+            self.assertIn("outside the server folder", result.error)
+            self.assertEqual(protected.read_text(encoding="utf-8"), "level-name=h")
+
+    def test_mod_jar_is_stored_without_recompression(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            mods = server / "mods"
+            mods.mkdir(parents=True)
+            jar = mods / "example.jar"
+            with zipfile.ZipFile(jar, "w") as jar_zip:
+                jar_zip.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
+                jar_zip.writestr("payload.dat", "x" * 5000)
+            instance = SimpleNamespace(
+                path=str(server), name="TestPack",
+                minecraft_version="1.21.1", loader="vanilla", loader_version="",
+            )
+            output = root / "client.zip"
+            result = client_export.export(instance, output, fmt="prism", include_config=False)
+            self.assertTrue(result.ok, result.error)
+            with zipfile.ZipFile(output) as archive:
+                member = archive.getinfo("TestPack/.minecraft/mods/example.jar")
+                self.assertEqual(member.compress_type, zipfile.ZIP_STORED)
+
+    def test_unknown_mods_from_client_source_are_reported_not_silently_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source = root / "client"
+            mods = source / ".minecraft" / "mods"
+            mods.mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.1"},
+                ],
+            }), encoding="utf-8")
+            # A valid JAR without explicit environment metadata is intentionally unknown.
+            with zipfile.ZipFile(mods / "mystery.jar", "w") as jar_zip:
+                jar_zip.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
+            instance = SimpleNamespace(
+                path=str(server), name="TestPack",
+                minecraft_version="1.21.1", loader="neoforge", loader_version="21.1.1",
+            )
+            output = root / "client.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", client_source=str(source), include_config=False
+            )
+            self.assertTrue(result.ok, result.error)
+            self.assertEqual(result.mod_count, 0)
+            self.assertTrue(
+                any("mystery.jar" in warning and "unknown client compatibility" in warning
+                    for warning in result.warnings),
+                result.warnings,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
