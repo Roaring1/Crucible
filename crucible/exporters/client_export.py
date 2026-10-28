@@ -155,11 +155,11 @@ def export(instance, out_path, fmt: str = "mrpack", *,
     try:
         partial.unlink(missing_ok=True)
         if fmt == "mrpack":
-            _build_mrpack(partial, name, mc, loader, loader_version, ship, cfg)
+            build_warnings = _build_mrpack(partial, name, mc, loader, loader_version, ship, cfg)
         elif fmt == "prism":
-            _build_prism(partial, name, mc, loader, loader_version, ship, cfg)
+            build_warnings = _build_prism(partial, name, mc, loader, loader_version, ship, cfg)
         else:
-            _build_curseforge(partial, name, mc, loader, loader_version, ship, cfg)
+            build_warnings = _build_curseforge(partial, name, mc, loader, loader_version, ship, cfg)
         manifest = _seal_archive(
             partial, fmt=fmt, name=name, minecraft_version=mc,
             loader=loader, loader_version=loader_version,
@@ -180,6 +180,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
     warnings = ([f"{len(unknown)} mod(s) have unknown client compatibility; test this pack in Prism before sharing."] if unknown else [])
     if excluded_defaultconfigs:
         warnings.append("defaultconfigs/ was excluded from the client pack; review whether any required player config belongs in config/ or kubejs/.")
+    warnings.extend(build_warnings)
     warnings.extend(manifest["privacy_warnings"])
     warnings.extend([
         "A SHA-256 manifest is embedded in the archive. Review privacy warnings before sharing.",
@@ -195,23 +196,29 @@ def export(instance, out_path, fmt: str = "mrpack", *,
     )
 
 
-def _add_dir(zf: zipfile.ZipFile, src: Path, arc_prefix: str) -> None:
+def _add_dir(zf: zipfile.ZipFile, src: Path, arc_prefix: str) -> list[str]:
     if src.is_symlink():
         raise OSError(f"Symlinked config roots are not exported: {src}")
     root = src.resolve(strict=True)
+    warnings = []
     for f in src.rglob("*"):
+        relative = f.relative_to(src)
         if f.is_symlink():
-            raise OSError(f"Symlinks are not exported from client config: {f.relative_to(src)}")
+            # Never follow or package a symlink target. Keep the otherwise valid
+            # export and make the omission explicit for the owner.
+            warnings.append(f"Excluded symlink from client configuration: {relative.as_posix()}.")
+            continue
         if f.is_dir():
             continue
         if not f.is_file():
-            raise OSError(f"Special files are not exported from client config: {f.relative_to(src)}")
+            raise OSError(f"Special files are not exported from client config: {relative.as_posix()}")
         resolved = f.resolve(strict=True)
         try:
             resolved.relative_to(root)
         except ValueError as exc:
-            raise OSError(f"Config file resolves outside its source root: {f.relative_to(src)}") from exc
+            raise OSError(f"Config file resolves outside its source root: {relative.as_posix()}") from exc
         zf.write(resolved, f"{arc_prefix}/{f.relative_to(src.parent).as_posix()}")
+    return warnings
 
 
 def _build_mrpack(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
@@ -225,12 +232,14 @@ def _build_mrpack(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
         "summary": f"Client export of {name} (built by Crucible)",
         "files": [], "dependencies": deps,
     }
+    warnings = []
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("modrinth.index.json", json.dumps(index, indent=2))
         for j in jars:
             zf.write(j, f"overrides/mods/{j.name}")
         for d in cfg_dirs:
-            _add_dir(zf, d, "overrides")
+            warnings.extend(_add_dir(zf, d, "overrides"))
+    return warnings
 
 
 def _build_prism(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
@@ -247,13 +256,15 @@ def _build_prism(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
         f"name={name.replace(chr(10), ' ').replace(chr(13), ' ')}\nInstanceType=OneSix\niconKey=default\n"
     )
     folder = _safe_name(name)
+    warnings = []
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(f"{folder}/instance.cfg", instance_cfg)
         zf.writestr(f"{folder}/mmc-pack.json", json.dumps(mmc_pack, indent=2))
         for j in jars:
             zf.write(j, f"{folder}/.minecraft/mods/{j.name}")
         for d in cfg_dirs:
-            _add_dir(zf, d, f"{folder}/.minecraft")
+            warnings.extend(_add_dir(zf, d, f"{folder}/.minecraft"))
+    return warnings
 
 
 def _build_curseforge(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
@@ -265,14 +276,14 @@ def _build_curseforge(out_path, name, mc, loader, loader_version, jars, cfg_dirs
         "name": name, "author": "Crucible", "files": [],
         "overrides": "overrides",
     }
+    warnings = []
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps(manifest, indent=2))
         for j in jars:
             zf.write(j, f"overrides/mods/{j.name}")
         for d in cfg_dirs:
-            _add_dir(zf, d, "overrides")
-
-
+            warnings.extend(_add_dir(zf, d, "overrides"))
+    return warnings
 
 
 # Keep the per-file scan bounded. Mod JARs are binary and are not scanned for
