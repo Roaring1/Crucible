@@ -196,15 +196,21 @@ def export(instance, out_path, fmt: str = "mrpack", *,
 
 
 def _add_dir(zf: zipfile.ZipFile, src: Path, arc_prefix: str) -> None:
-    root = src.resolve()
+    if src.is_symlink():
+        raise OSError(f"Symlinked config roots are not exported: {src}")
+    root = src.resolve(strict=True)
     for f in src.rglob("*"):
-        if not f.is_file() or f.is_symlink():
+        if f.is_symlink():
+            raise OSError(f"Symlinks are not exported from client config: {f.relative_to(src)}")
+        if f.is_dir():
             continue
-        resolved = f.resolve()
+        if not f.is_file():
+            raise OSError(f"Special files are not exported from client config: {f.relative_to(src)}")
+        resolved = f.resolve(strict=True)
         try:
             resolved.relative_to(root)
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise OSError(f"Config file resolves outside its source root: {f.relative_to(src)}") from exc
         zf.write(resolved, f"{arc_prefix}/{f.relative_to(src.parent).as_posix()}")
 
 
@@ -301,7 +307,7 @@ _PLACEHOLDER_PREFIXES = (
 
 def _validate_archive_member_name(name: str) -> None:
     """Reject names that can escape or be interpreted differently by extractors."""
-    if not name or name.startswith("/") or "\\" in name or "\x00" in name:
+    if not name or name.startswith("/") or "\\" in name or "\x00" in name or re.match(r"^[A-Za-z]:", name):
         raise OSError(f"Unsafe archive path: {name[:160]!r}")
     parts = name.split("/")
     if len(name) > 4096 or any(part in {"", ".", ".."} for part in parts):
@@ -407,10 +413,9 @@ def _seal_archive(
 
             if should_scan:
                 scan_bytes += info.file_size
-                privacy_warnings.extend(_privacy_findings(member_name, bytes(sample)))
-                if len(privacy_warnings) >= _MAX_PRIVACY_FINDINGS:
-                    privacy_warnings = privacy_warnings[:_MAX_PRIVACY_FINDINGS]
-                    break
+                findings = _privacy_findings(member_name, bytes(sample))
+                remaining_findings = max(0, _MAX_PRIVACY_FINDINGS - len(privacy_warnings))
+                privacy_warnings.extend(findings[:remaining_findings])
 
             rows.append({
                 "path": member_name,
