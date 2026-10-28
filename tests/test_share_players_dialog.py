@@ -908,6 +908,39 @@ class SharePlayersDialogTests(unittest.TestCase):
         dialog.close()
 
 
+    def test_stale_input_upload_result_clears_approvals_and_blocks_upload(self):
+        dialog = self._dialog()
+        dialog._phase = "uploading"
+        dialog._review_ack.setEnabled(True)
+        dialog._license_ack.setEnabled(True)
+        dialog._public_ack.setEnabled(True)
+        dialog._review_ack.setChecked(True)
+        dialog._license_ack.setChecked(True)
+        dialog._public_ack.setChecked(True)
+        dialog._source.setEnabled(False)
+        dialog._resourcepacks.setEnabled(False)
+
+        dialog._on_upload_done({
+            "result": None,
+            "error": "The server or Prism client files changed after this ZIP was built.",
+            "cancelled": False,
+            "stale_inputs": True,
+        })
+
+        self.assertEqual(dialog._phase, "stale-review")
+        self.assertFalse(dialog._review_ack.isChecked())
+        self.assertFalse(dialog._license_ack.isChecked())
+        self.assertFalse(dialog._public_ack.isChecked())
+        self.assertFalse(dialog._review_ack.isEnabled())
+        self.assertFalse(dialog._license_ack.isEnabled())
+        self.assertFalse(dialog._public_ack.isEnabled())
+        self.assertFalse(dialog._upload_btn.isEnabled())
+        self.assertTrue(dialog._prepare_btn.isEnabled())
+        self.assertTrue(dialog._source.isEnabled())
+        self.assertTrue(dialog._resourcepacks.isEnabled())
+        self.assertIn("changed after this ZIP was built", dialog._status.text())
+        dialog.close()
+
     def test_upload_worker_blocks_network_when_inputs_changed_after_review(self):
         class RecordingProvider:
             name = "Recording provider"
