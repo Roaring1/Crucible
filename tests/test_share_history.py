@@ -125,6 +125,32 @@ class ShareHistoryStoreTests(unittest.TestCase):
             with self.assertRaises(ShareHistoryError):
                 store.append(event="made-up-event", instance_name="Server")
 
+    def test_symlink_history_directory_is_rejected_before_chmod_or_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target_dir = root / "real-history"
+            target_dir.mkdir()
+            target = target_dir / "events.json"
+            original = '{"schemaVersion":1,"records":[]}'
+            target.write_text(original, encoding="utf-8")
+            if os.name == "posix":
+                target.chmod(0o644)
+            linked_dir = root / "share-history"
+            try:
+                linked_dir.symlink_to(target_dir, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlinks unavailable: {exc}")
+
+            store = ShareHistoryStore(linked_dir / "events.json")
+            with self.assertRaises(ShareHistoryError):
+                store.load()
+
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+            if os.name == "posix":
+                # load() must reject the parent link before chmod(0600) can
+                # alter a file outside the intended history directory.
+                self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+
     def test_symlink_history_file_is_rejected_without_following_it(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
