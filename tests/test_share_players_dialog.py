@@ -908,6 +908,78 @@ class SharePlayersDialogTests(unittest.TestCase):
         dialog.close()
 
 
+    def test_upload_worker_blocks_network_when_inputs_changed_after_review(self):
+        class RecordingProvider:
+            name = "Recording provider"
+
+            def __init__(self):
+                self.called = False
+
+            def upload_file(self, path, *, expected_sha256, progress_cb=None, cancel_event=None):
+                self.called = True
+                return None
+
+        provider = RecordingProvider()
+        worker = _UploadWorker(
+            provider,
+            Path("synthetic-pack.zip"),
+            "a" * 64,
+            threading.Event(),
+            instance=SimpleNamespace(path="/synthetic-server", name="Demo Server"),
+            client_source="/synthetic-prism",
+            include_resourcepacks=False,
+            expected_input_fingerprint="b" * 64,
+        )
+        outcomes = []
+        worker.done.connect(outcomes.append)
+        with patch(
+            "crucible.ui.share_players_dialog.client_export.compute_input_fingerprint",
+            return_value="c" * 64,
+        ) as fingerprint:
+            worker.run()
+
+        fingerprint.assert_called_once_with(
+            worker._instance,
+            client_source="/synthetic-prism",
+            include_config=True,
+            include_resourcepacks=False,
+            fmt="prism",
+        )
+        self.assertFalse(provider.called, "stale source inputs must block any network upload")
+        self.assertEqual(len(outcomes), 1)
+        self.assertTrue(outcomes[0]["stale_inputs"])
+        self.assertIn("changed after this ZIP was built", outcomes[0]["error"])
+
+    def test_upload_worker_fails_closed_when_input_revalidation_fails(self):
+        class RecordingProvider:
+            name = "Recording provider"
+
+            def upload_file(self, path, *, expected_sha256, progress_cb=None, cancel_event=None):
+                self.fail("provider must not be called")
+        
+        worker = _UploadWorker(
+            RecordingProvider(),
+            Path("synthetic-pack.zip"),
+            "a" * 64,
+            threading.Event(),
+            instance=SimpleNamespace(path="/synthetic-server", name="Demo Server"),
+            client_source="/synthetic-prism",
+            include_resourcepacks=False,
+            expected_input_fingerprint="b" * 64,
+        )
+        outcomes = []
+        worker.done.connect(outcomes.append)
+        with patch(
+            "crucible.ui.share_players_dialog.client_export.compute_input_fingerprint",
+            side_effect=OSError("synthetic source disappeared"),
+        ):
+            worker.run()
+
+        self.assertEqual(len(outcomes), 1)
+        self.assertTrue(outcomes[0]["stale_inputs"])
+        self.assertIn("could not revalidate", outcomes[0]["error"])
+        self.assertNotIn("synthetic source disappeared", outcomes[0]["error"])
+
     def test_unexpected_provider_exception_does_not_echo_sensitive_details(self):
         secret = "private-owner-token-value"
 
