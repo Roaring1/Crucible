@@ -4,6 +4,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from datetime import datetime
 
 # backup_manager is intentionally Qt-aware; provide the minimal import surface
 # needed to test its pure filesystem logic in a headless environment (same
@@ -27,7 +28,7 @@ if "PyQt6" not in sys.modules:
     sys.modules["PyQt6.QtCore"] = qtcore
 
 from crucible.data import backup_manager as backup_mod
-from crucible.data.backup_manager import BackupManager, SwapResult
+from crucible.data.backup_manager import BackupEntry, BackupManager, SwapResult
 from crucible.data.instance_model import (
     ServerInstance, dimension_label, is_dimension_dir_name,
 )
@@ -55,6 +56,25 @@ def _manager(tmp_root: Path, server_dir: Path, name: str, backups_subdir: str) -
 
 
 class WorldIdentificationTests(unittest.TestCase):
+    def test_unsafe_world_path_is_rejected_without_affecting_informational_helpers(self):
+        tmp = Path(tempfile.mkdtemp())
+        server_dir = tmp / "server"
+        server_dir.mkdir()
+        outside = tmp / "outside"
+        outside.mkdir()
+        marker = outside / "marker.txt"
+        marker.write_text("must survive")
+        (server_dir / "server.properties").write_text(
+            "level-name=world\\nlevel-name=../outside\\n", encoding="utf-8"
+        )
+        inst = ServerInstance(str(server_dir), "unsafe")
+        with self.assertRaisesRegex(ValueError, "unsafe level-name"):
+            inst.world_root_path()
+        self.assertEqual(inst.world_dimension_dirs(), [])
+        self.assertEqual(inst.world_size_bytes(), 0)
+        self.assertEqual(inst.get_world_names(), [])
+        self.assertEqual(marker.read_text(), "must survive")
+
     def test_is_dimension_dir_name(self):
         self.assertTrue(is_dimension_dir_name("DIM1"))
         self.assertTrue(is_dimension_dir_name("DIM-1"))
@@ -176,6 +196,77 @@ class BackupIntegrityTests(unittest.TestCase):
         self.assertEqual(mgr.list_backups(), [])
         self.assertEqual(list(mgr.backup_dir().glob("*.zip.partial")), [])
 
+
+class DestructiveWorldPathSafetyTests(unittest.TestCase):
+    def test_reset_wipe_and_swap_refuse_traversal_before_touching_outside(self):
+        tmp = Path(tempfile.mkdtemp())
+        server_dir = tmp / "server"
+        server_dir.mkdir()
+        outside = tmp / "outside"
+        outside.mkdir()
+        marker = outside / "must-survive.txt"
+        marker.write_text("untouched", encoding="utf-8")
+        (server_dir / "server.properties").write_text(
+            "level-name=../outside\\nserver-port=25565\\n", encoding="utf-8"
+        )
+        mgr = _manager(tmp, server_dir, "UnsafeServer", "unsafe-world-backups")
+        archive = mgr.backup_dir() / "synthetic.zip"
+        archive.write_bytes(b"not parsed because the world path must fail first")
+        entry = BackupEntry(
+            filename=archive.name,
+            path=archive,
+            size_bytes=archive.stat().st_size,
+            created_at=datetime.now(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "unsafe level-name"):
+            mgr.reset_world()
+        with self.assertRaisesRegex(ValueError, "unsafe level-name"):
+            mgr.wipe_world()
+        with self.assertRaisesRegex(ValueError, "unsafe level-name"):
+            mgr.swap_world(entry)
+
+        self.assertEqual(marker.read_text(encoding="utf-8"), "untouched")
+        self.assertTrue(server_dir.is_dir())
+        self.assertTrue(archive.is_file())
+        self.assertEqual(list(tmp.glob("outside.pre-swap-*")), [])
+
+    def test_wipe_refuses_symlinked_world_root(self):
+        tmp = Path(tempfile.mkdtemp())
+        server_dir = tmp / "server"
+        server_dir.mkdir()
+        outside = tmp / "outside-world"
+        outside.mkdir()
+        marker = outside / "must-survive.txt"
+        marker.write_text("untouched", encoding="utf-8")
+        (server_dir / "server.properties").write_text(
+            "level-name=world\\n", encoding="utf-8"
+        )
+        try:
+            (server_dir / "world").symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"directory symlink unavailable: {exc}")
+        mgr = _manager(tmp, server_dir, "SymlinkServer", "symlink-world-backups")
+
+        with self.assertRaisesRegex(ValueError, "symbolic link"):
+            mgr.wipe_world()
+        self.assertTrue((server_dir / "world").is_symlink())
+        self.assertEqual(marker.read_text(encoding="utf-8"), "untouched")
+
+    def test_backup_finder_returns_no_worlds_for_unsafe_level_name(self):
+        tmp = Path(tempfile.mkdtemp())
+        server_dir = tmp / "server"
+        server_dir.mkdir()
+        outside = tmp / "outside"
+        outside.mkdir()
+        (outside / "level.dat").write_bytes(b"must not be collected")
+        (server_dir / "server.properties").write_text(
+            "level-name=../outside\\n", encoding="utf-8"
+        )
+        mgr = _manager(tmp, server_dir, "UnsafeBackup", "unsafe-backup-dir")
+        self.assertEqual(mgr._find_world_dirs(server_dir), [])
+        with self.assertRaises(FileNotFoundError):
+            mgr.create_backup()
 
 class WorldSwapTests(unittest.TestCase):
     def test_swap_replaces_world_and_creates_safety_backup(self):
