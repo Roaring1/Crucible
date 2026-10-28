@@ -668,15 +668,66 @@ class _UploadWorker(QObject):
         path: Path,
         expected_sha256: str,
         cancel_event: threading.Event,
+        *,
+        instance=None,
+        client_source: str = "",
+        include_resourcepacks: bool = False,
+        expected_input_fingerprint: str = "",
     ):
         super().__init__()
         self._provider = provider
         self._path = path
         self._expected_sha256 = expected_sha256
         self._cancel_event = cancel_event
+        self._instance = instance
+        self._client_source = client_source
+        self._include_resourcepacks = include_resourcepacks
+        self._expected_input_fingerprint = expected_input_fingerprint
 
     def run(self):
         try:
+            if self._cancel_event.is_set():
+                raise UploadCancelled("Upload cancelled before source revalidation.")
+
+            # The reviewed ZIP is immutable, but the server and Prism source may
+            # change while the owner is reading the review. Recheck the same
+            # source fingerprint immediately before any network upload.
+            if self._instance is not None:
+                try:
+                    if not re.fullmatch(r"[0-9a-f]{64}", self._expected_input_fingerprint):
+                        raise ValueError("missing or invalid input fingerprint")
+                    current_fingerprint = client_export.compute_input_fingerprint(
+                        self._instance,
+                        client_source=self._client_source,
+                        include_config=True,
+                        include_resourcepacks=self._include_resourcepacks,
+                        fmt="prism",
+                    )
+                except Exception:
+                    self.done.emit({
+                        "result": None,
+                        "error": (
+                            "Crucible could not revalidate the current server/Prism inputs. "
+                            "The public upload was not started; rebuild and review the ZIP again."
+                        ),
+                        "cancelled": False,
+                        "stale_inputs": True,
+                    })
+                    return
+                if current_fingerprint != self._expected_input_fingerprint:
+                    self.done.emit({
+                        "result": None,
+                        "error": (
+                            "The server or Prism client files changed after this ZIP was built. "
+                            "The public upload was not started; rebuild and review the ZIP again."
+                        ),
+                        "cancelled": False,
+                        "stale_inputs": True,
+                    })
+                    return
+
+            if self._cancel_event.is_set():
+                raise UploadCancelled("Upload cancelled before network transfer.")
             result = self._provider.upload_file(
                 self._path,
                 expected_sha256=self._expected_sha256,
@@ -1427,7 +1478,9 @@ class SharePlayersDialog(QDialog):
         self._upload_started_at = None
         self._progress.setFormat("Uploading 0 bytes")
         self._progress.show()
-        self._status.setText("Verifying the local ZIP checksum, then streaming it to Gofile…")
+        self._status.setText(
+            "Rechecking the current server/Prism inputs and ZIP checksum, then streaming it to Gofile…"
+        )
 
         self._upload_thread = QThread(self)
         self._upload_worker = _UploadWorker(
@@ -1435,6 +1488,10 @@ class SharePlayersDialog(QDialog):
             self._archive_path,
             self._archive_sha256,
             self._cancel_event,
+            instance=self._instance,
+            client_source=self._built_source,
+            include_resourcepacks=bool(self._built_include_resourcepacks),
+            expected_input_fingerprint=getattr(self._result, "input_fingerprint", ""),
         )
         self._upload_worker.moveToThread(self._upload_thread)
         self._upload_thread.started.connect(self._upload_worker.run)
@@ -1465,6 +1522,22 @@ class SharePlayersDialog(QDialog):
         self._remember_source.setEnabled(self._instance_manager is not None)
         self._use_api_token.setEnabled(True)
         self._api_token.setEnabled(self._use_api_token.isChecked())
+        if outcome.get("stale_inputs"):
+            self._phase = "stale-review"
+            self._record_history("upload-failed", error_code="stale-inputs")
+            self._review_ack.setChecked(False)
+            self._license_ack.setChecked(False)
+            self._public_ack.setChecked(False)
+            self._review_ack.setEnabled(False)
+            self._license_ack.setEnabled(False)
+            self._public_ack.setEnabled(False)
+            self._upload_btn.setText("Rebuild ZIP")
+            self._upload_btn.setEnabled(False)
+            self._status.setText(
+                outcome.get("error")
+                or "The server/Prism inputs changed after review. Rebuild and review the ZIP before uploading."
+            )
+            return
         if outcome.get("cancelled"):
             self._phase = "review"
             self._record_history("upload-cancelled", error_code="cancelled")
