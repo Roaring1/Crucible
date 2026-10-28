@@ -18,7 +18,7 @@ from crucible.exporters import client_export
 from crucible.exporters.client_export import ExportResult
 from crucible.mods import distribution_catalog
 from crucible.sharing.gofile import GofileUploadResult
-from crucible.ui.share_players_dialog import SharePlayersDialog, _PrepareWorker, _UploadWorker, _next_pack_path
+from crucible.ui.share_players_dialog import SharePlayersDialog, _PrepareWorker, _UploadWorker, _next_pack_path, _verified_cached_pack
 
 
 class SharePlayersDialogTests(unittest.TestCase):
@@ -185,6 +185,60 @@ class SharePlayersDialogTests(unittest.TestCase):
             self.assertEqual(Path(third_outcomes[0].path), third_path)
             self.assertNotEqual(third_outcomes[0].input_fingerprint, first_result.input_fingerprint)
             self.assertTrue(third_path.with_suffix(third_path.suffix + ".crucible-cache.json").is_file())
+
+    def test_cache_rejects_archive_with_forged_distribution_permission_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out_root = root / "player-packs"
+            out_root.mkdir(mode=0o700)
+            server = root / "server"
+            (server / "mods").mkdir(parents=True)
+            (server / "config").mkdir()
+            with zipfile.ZipFile(server / "mods" / "example.jar", "w") as jar:
+                jar.writestr("fabric.mod.json", json.dumps({
+                    "id": "examplemod", "name": "Example Mod", "version": "1.2.3", "environment": "*"
+                }))
+            source = root / "working-prism"
+            (source / ".minecraft" / "mods").mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.233"},
+                ],
+            }), encoding="utf-8")
+            instance = SimpleNamespace(
+                name="ForgedCatalogCache", path=str(server), minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.233",
+            )
+            archive_path = _next_pack_path(out_root, instance.name)
+            outcomes = []
+            worker = _PrepareWorker(instance, archive_path, str(source), False)
+            worker.done.connect(outcomes.append)
+            worker.run()
+            self.assertTrue(outcomes[0].ok, outcomes[0].error)
+            result = outcomes[0]
+            sidecar = archive_path.with_suffix(archive_path.suffix + ".crucible-cache.json")
+
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                entries = [(item.filename, archive.read(item.filename)) for item in archive.infolist()]
+            replacement = out_root / "replacement.tmp"
+            with zipfile.ZipFile(replacement, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for name, payload in entries:
+                    if name == result.manifest_path:
+                        manifest = json.loads(payload)
+                        row = manifest["distributionReview"][0]
+                        row["decision"] = "permitted"
+                        payload = json.dumps(manifest).encode("utf-8")
+                    archive.writestr(name, payload)
+            replacement.replace(archive_path)
+
+            # Simulate a self-consistent stale cache entry: update the sidecar's
+            # archive checksum too, so only catalog-to-manifest validation catches it.
+            metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+            metadata["archiveSha256"] = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+            sidecar.write_text(json.dumps(metadata), encoding="utf-8")
+            self.assertIsNone(_verified_cached_pack(archive_path, result.input_fingerprint))
 
     def test_worker_rebuilds_instead_of_reusing_a_corrupted_cache_entry(self):
         with tempfile.TemporaryDirectory() as tmp:

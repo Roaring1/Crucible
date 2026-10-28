@@ -490,6 +490,10 @@ def _verified_cached_pack(archive_path: Path, expected_fingerprint: str):
                 if count != expected_size or digest.hexdigest() != expected_sha:
                     return None
 
+        # Cache integrity is not enough: reuse must also satisfy the current
+        # catalog/evidence policy, otherwise a stale or edited manifest could
+        # loop back into the UI and fail review on every launch.
+        _validate_review_manifest(manifest)
         privacy_review = manifest.get("privacyReview")
         if not isinstance(privacy_review, dict):
             return None
