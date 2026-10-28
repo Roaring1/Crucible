@@ -530,7 +530,11 @@ class UpdatePlan:
 
 def _safe_world_component(value: str) -> bool:
     """Return whether a level-name is a single portable directory component."""
-    if not isinstance(value, str) or value in {"", ".", ".."}:
+    if (
+        not isinstance(value, str)
+        or value != value.strip()
+        or value in {"", ".", ".."}
+    ):
         return False
     # '/' and '\\' can escape the server root on either platform. A colon
     # can introduce a Windows drive or alternate data stream.
@@ -548,21 +552,32 @@ def _safe_world_component(value: str) -> bool:
 
 
 def _configured_level_name(root: Path) -> str | None:
-    """Read a safe level-name, defaulting to 'world'; None means unsafe."""
-    level = "world"
+    """Read the effective safe level-name; None means an unsafe explicit value."""
     props = root / "server.properties"
     try:
         lines = props.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
-        return level
+        return "world"
+
+    # java.util.Properties accepts whitespace or ':' as a key separator and
+    # applies last-value-wins semantics to duplicate keys. Mirror those rules
+    # for this safety decision instead of accidentally inspecting an earlier,
+    # safer level-name while Minecraft uses a later unsafe one.
+    found = False
+    candidate: str | None = None
     for line in lines:
-        s = line.strip()
-        if s.startswith("level-name="):
-            candidate = s.split("=", 1)[1].strip()
-            if candidate:
-                return candidate if _safe_world_component(candidate) else None
-            break
-    return level
+        s = line.lstrip()
+        if not s or s.startswith(("#", "!")):
+            continue
+        match = re.match(r"^level-name(?:\\s*[:=]\\s*|\\s+)(.*)$", s)
+        if match:
+            found = True
+            candidate = match.group(1)
+    if not found:
+        return "world"
+    if not candidate or not _safe_world_component(candidate):
+        return None
+    return candidate
 
 
 def _world_name_issue(root: Path) -> str | None:
