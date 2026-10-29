@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 
 from ...data.instance_model import ServerInstance
 from .. import theme
+from ..icons import local_icon
 
 # Keys we want to sort first and highlight -- grouped for readability
 _IMPORTANT: dict[str, list[str]] = {
@@ -97,7 +98,7 @@ class ConfigTab(QWidget):
         self._instance:   ServerInstance | None = None
         self._props_path: Path | None           = None
         self._data: OrderedDict[str, str]       = OrderedDict()
-        self._bool_rows: dict[int, "QComboBox"] = {}  # row → combo for boolean values
+        self._bool_rows: dict[int, QComboBox] = {}  # row → combo for boolean values
 
         self._build_ui()
 
@@ -123,8 +124,9 @@ class ConfigTab(QWidget):
         self._save_btn.clicked.connect(self._save)
         toolbar.addWidget(self._save_btn)
 
-        reload_btn = QPushButton("↻")
-        reload_btn.setFixedWidth(36)
+        reload_btn = QPushButton("Reload")
+        reload_btn.setIcon(local_icon("refresh-cw"))
+        reload_btn.setIconSize(QSize(16, 16))
         reload_btn.setToolTip("Reload from disk (discards unsaved edits)")
         reload_btn.setAccessibleName("Reload server properties")
         reload_btn.clicked.connect(self._reload_requested)
@@ -230,9 +232,7 @@ class ConfigTab(QWidget):
         clicked = box.clickedButton()
         if clicked is save_btn:
             return self._save()
-        if clicked is discard_btn:
-            return True
-        return False
+        return clicked is discard_btn
 
     def _reload_requested(self) -> None:
         if self.confirm_discard_or_save():

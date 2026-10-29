@@ -156,6 +156,8 @@ class ReleaseScriptTests(unittest.TestCase):
         text = (ROOT / "pyproject.toml").read_text()
         self.assertIn('[tool.setuptools.package-data]', text)
         self.assertIn('"assets/*.png"', text)
+        self.assertIn('"assets/icons/*.svg"', text)
+        self.assertIn('"assets/icons/LICENSES/*.txt"', text)
         self.assertIn('"data/*.json"', text)
         self.assertIn('"ui/assets/server-icons/*.svg"', text)
         catalog = ROOT / "crucible" / "data" / "mod_distribution_catalog.json"

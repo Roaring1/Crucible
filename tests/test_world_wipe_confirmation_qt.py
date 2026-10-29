@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 _DRIVER = r"""
@@ -23,6 +22,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PyQt6.QtCore import Qt, QTimer
@@ -167,7 +167,7 @@ def exercise(modal, mode):
     raise AssertionError("unknown scenario: " + mode)
 
 if integration:
-    tab = WorldTab(parent)
+    tab = WorldTab(SimpleNamespace(instances=[]), parent)
     tab.resize(parent_width, parent_height)
     tab.show()
     tab._manager = object()
@@ -223,6 +223,7 @@ def _run(tmp_path: Path, scenario: str, width: int = 1200, height: int = 760):
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(result.stdout.strip().splitlines()[-1])
