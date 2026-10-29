@@ -1,6 +1,6 @@
 # UI Design and Interaction Workstream
 
-**Status:** High-priority keyboard-focus and Create Server DPI fixes implemented in [PR #37](https://github.com/Roaring1/Crucible/pull/37) from the pinned main baseline; broader UI work remains staged and the Add Mod/provider files remain off-limits while PRs #34 and #35 are active.  
+**Status:** The first two high-priority audit fixes are implemented in [PR #37](https://github.com/Roaring1/Crucible/pull/37), and the destructive World wipe confirmation finding is implemented in [PR #38](https://github.com/Roaring1/Crucible/pull/38), both based on pinned main `34ca28fd8f989fe3eb98b90c81012d141684f4c9`. Broader Add Mod/provider work remains gated on PRs #34 and #35.  
 **Prepared:** 2026-10-29  
 **Initial reference commit:** `34ca28fd8f989fe3eb98b90c81012d141684f4c9`  
 **Workstream:** Chat 3 — whole-app UX, local SVG icons, loading skeletons, restrained transitions.
@@ -144,13 +144,14 @@ Evidence file examples (all below the audit root unless a path is shown explicit
 - **Proposed change:** make the stopped status label legible using a stronger theme text color, and do not rely on dot color as the sole persistent cue. Prefer a compact text/accessibility description or a higher-contrast marker that complements (rather than duplicates noisily) the selected-server header. Preserve a clear distinction for running, missing, unknown, starting, and stopping states.
 - **Repeatable test:** render synthetic stopped/running/missing/unknown states, calculate contrast for actual text and status graphics, inspect selected/disabled states, and verify accessible names/descriptions using a screen reader. WCAG 2.2 contrast values are a useful reference yardstick for the native Qt app, not a claim of conformance: normal text 4.5:1 and graphical UI state 3:1 ([W3C WCAG 2.2](https://www.w3.org/TR/wcag/)).
 
-#### 5. Medium — the destructive world-wipe prompt is too wide and its instructions are hard to scan
+#### 5. Implemented in PR #38 — bounded, safe World wipe confirmation
 
-- **Screen/state and exact widget:** \`WorldTab._confirm_and_wipe()\` uses \`QInputDialog.getText()\` for the permanent WIPE confirmation.
-- **Evidence:** \`extra-sf1.0/world-wipe-input-sf1.0.png\` shows a 1122×148 dialog dominated by a long single-line explanation and a narrow text field. The call was captured from the real widget path with a synthetic server and then cancelled; the synthetic marker remained present.
-- **Classification:** visually reproduced; the destructive branch was not executed.
-- **Proposed change:** use a bounded custom confirmation dialog with wrapped warning text, a visually separate “Type WIPE to confirm” instruction and input, and explicit Cancel/confirm buttons. Keep the irreversible consequence and absence of automatic backup unmistakable.
-- **Repeatable test:** capture at 900×600, 1200×760, and 1500×900, including 150% scale; ensure warning text wraps without clipping; cancel and verify the test world marker and files remain unchanged; enter a wrong phrase and verify refusal; use only a disposable fixture for any test of a valid phrase.
+- **Screen/state and exact widget:** WorldTab._confirm_and_wipe() now uses _WipeWorldConfirmDialog instead of QInputDialog.getText().
+- **Before evidence:** extra-sf1.0/world-wipe-input-sf1.0.png shows the prior 1122×148 one-line prompt with hard-to-scan text.
+- **Implemented behavior:** the new dialog is capped at 560px and adapts to the parent width. Its warning says that no backup will be created and that the deletion is permanent; the world-folder label, warning panel, exact-token instruction/input, and buttons are separate. Cancel is default and initial focus. The destructive button remains disabled unless the text is exactly uppercase WIPE; WorldTab checks the accepted result and token again before dispatch. Escape/close cancel. Return in the field is validated before it can reach the default button.
+- **Repeatable Qt tests:** tests/test_world_wipe_confirmation_qt.py covers Cancel, lowercase/wrong text and Return, exact token, Escape, close, focus and Tab navigation, standard/small layout, and WorldTab integration. The wipe dispatch boundary is mocked, and the synthetic world marker is checked after every integration case.
+- **Final screenshot evidence:** /tmp/crucible-world-wipe-evidence-20261029/final/world-wipe-before-after-contact.jpg compares the original prompt with standard (1200×760 parent; 560×349 dialog) and small (520×420 parent; 472×349 dialog) captures. The complete warning is visible in both. The manifest is /tmp/crucible-world-wipe-evidence-20261029/final/SHA256SUMS.txt.
+- **Validation:** the full suite passes with 617 tests and 74 subtests; the targeted dialog suite passes 10 interaction/visual cases. Captures use offscreen Qt and synthetic folders; desktop-compositor and screen-reader verification are still outside the evidence collected here.
 
 #### 6. Low–Medium — empty backup tables give no next-step guidance
 
@@ -232,6 +233,23 @@ For each of Qt scale factors 1.0, 1.25, and 1.5, the final rendered run measured
 
 This confirms focus-border visibility and line-edit sizing in the offscreen Qt renderer. It is not proof of identical behavior on every real desktop compositor/platform style, at other display scales, or with screen readers. Manual desktop focus/keyboard and assistive-technology verification remain before treating accessibility as complete. The SVG provenance/licensing inventory remains a plan in this workstream; this focused fix intentionally did not add icons or begin ghost UI/transitions.
 
+## Implementation evidence — World wipe confirmation
+
+The separate implementation is in [PR #38 — Make World wipe confirmation bounded and safe](https://github.com/Roaring1/Crucible/pull/38).
+
+- **Branch/base/commit:** fix/world-wipe-confirmation-20261029 / 34ca28fd8f989fe3eb98b90c81012d141684f4c9 / 6269467f103f0fe2ea348347b7cf394332782157.
+- **Changed paths:** only crucible/ui/tabs/world_tab.py and new tests/test_world_wipe_confirmation_qt.py. Current open-PR filenames were rechecked immediately before opening #38; it overlaps none of #34–#37.
+- **Safety gate:** a separate _start_wipe() is reached only after the dialog returns Accepted and its token is exactly WIPE; the dialog itself checks the same exact case-sensitive token. Cancel is the default and initial focus, Escape/window close reject, Return is intercepted to avoid accidental default-button activation, and Tab/Space supports keyboard-only confirmation. Local focus indicators are checked at the pixel level.
+- **Validation:** targeted dialog tests 10 passed; World-related combined tests 38 passed; full suite 617 passed, 74 subtests passed; compileall and git diff --check passed.
+- **Visual evidence opened:** original extra-sf1.0/world-wipe-input-sf1.0.png; final standard and small dialog captures; world-wipe-before-after-contact.jpg. Measurements show 560×349 for the standard host and 472×349 for the small host; warning body height increases from 54px to 72px to accommodate wrapping.
+- **Artifacts:** the PNGs, measurements.json, contact sheet, and SHA256SUMS.txt are under /tmp/crucible-world-wipe-evidence-20261029/final/ on the supervised Nobara machine. Tests use synthetic server data and mock the dispatch boundary; no actual wipe operation runs.
+- **Limits:** screenshot and widget-pixel checks use offscreen Qt. Physical desktop styling and screen-reader behavior remain to be verified manually.
+
+### Next independent design implementation
+
+Keep the next work out of this destructive-dialog PR. First choose a small SVG set that materially improves scanning, bundle the original local SVG paths, and record exact upstream version/commit, icons used, file hashes/edits, and applicable license notices (including distinct upstream notices when required). Add a package/build test that confirms the assets ship. Do not decorate every button.
+
+After that, implement loading skeletons/transitions in focused state-specific changes. Each relevant flow must test loading, success, empty, error, cancel/close, stale-result cleanup, and reduced-motion behavior. Avoid broad motion changes until lifecycle and cancellation guarantees are proven.
 ## Implementation sequence after the integration gate
 
 1. Fetch current `main`; record its commit and inspect the merged PRs plus current design files.
