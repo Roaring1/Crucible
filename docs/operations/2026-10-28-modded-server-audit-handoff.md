@@ -2,28 +2,27 @@
 
 ## Latest resumed-session update — 2026-10-28
 
-The current authoritative plan and evidence are in [the fresh-world preflight](https://github.com/Roaring1/Crucible/blob/main/docs/operations/2026-10-28-fresh-world-preflight.md).
+The authoritative current state, exact startup/test evidence, checksums, and rollback instructions are in [the fresh-world preflight](https://github.com/Roaring1/Crucible/blob/main/docs/operations/2026-10-28-fresh-world-preflight.md).
 
-### Production is prepared for the next Start click
+### Final status
 
-- Production instance: `/home/roaring/CrucibleServers/username-admin-server`; **left stopped**. There is no production tmux session or Minecraft JVM, and port 25566 is free.
-- `server.properties` now sets `level-name=world_fresh_20261028`. The target folder contains only `datapacks/fresh-world-launch-fixes/` and no `level.dat` yet, so the first Start creates a genuinely fresh world while `world` and both dated historical folders remain intact.
-- The actual Crucible `ServerInstance.readiness()` reports all seven checks OK, including `Server program is installed` and `Server settings are valid`. The real `TmuxManager.start()` was exercised on a disposable copy and returned success using the registered `-Xms8G -Xmx16G` heap settings. It reached `Done (3.589s)!`; the matching `TmuxManager.stop()` then stopped it gracefully.
-- The final datapack is deployed only under the new world. ZIP SHA-256: `e76ddbb936b502eb664388da8bd75372580e451d029c37e49f3c702f61e75e57`; 429 data JSON resources validate. `/datapack list enabled` in the final isolated test showed `file/fresh-world-launch-fixes (world)` among 20 packs.
-- Two local JAR hotfixes are deployed identically to the server and corresponding Prism client: `sablephysicscompat-1.3.0.jar` SHA-256 `a01586a6e74405b6690202fdc9b072028b057c42442aa9d82bdc7bb4df5c0578`, and `recipe_integration-0.4.0.jar` SHA-256 `f6cfe76956df1af5bacfc10fadebbaba9f85e88c380e3fc97b11348d6cded8b5`.
-- The final isolated start has zero recipe parser errors, zero loot-table parser errors, zero Sable malformed-resource errors, zero invalid Recipe Integration resource-path errors, and zero BCLib level-data errors. Seven ERROR-level log lines remain but are nonfatal: five client-only class probes, one Moonlight/Connector warning, and one HammerLib test-attachment message.
-- Terralith biome `terralith:blooming_valley` and ATi structure `ati_structures:lighthouse` were both registered/locatable in the test world. The verified ATi 1.4.7 JAR matches its published SHA-512; its earlier missing-pool error did not recur.
+- Production is **stopped**, with port 25566 free and no Minecraft JVM/tmux session. The next action is for the operator to click Start in Crucible; `level-name=world_fresh_20261028` is already configured.
+- The final isolated **first-generation** launch through Crucible `TmuxManager.start()` started a truly new level with no existing `level.dat`, reached `Done (5.687s)!`, enabled `file/fresh-world-launch-fixes (world)`, created `level.dat` and 4 region files, and used `wover:normal` with Terralith biomes present. The second restart reached `Done (6.319s)!`.
+- Recipe parser errors: 0. Loot-table parser errors: 0. Sable malformed-data errors: 0. Invalid Recipe Integration path errors: 0. Dedicated-server client-class probes: 0. BCLib first-generation errors recur only before first `level.dat` creation; on the second start the BCLib error count is 0.
+- Only two nonfatal ERROR-level families remain: Moonlight's Connector/Fabric API warning and HammerLib's `HammerLibRecipeExtension` test attachment. Both starts reached `Done`; do not remove those mods blindly only to silence their log messages.
 
-### Rollback points
+### Final deployed compatibility state
 
-- Existing-world archive: `/home/roaring/.local/share/crucible-backups/username-admin-server-world-factor8-before-fresh-20261028-161756.tar.gz`, SHA-256 `f9191b54c77e0a87438df9cbc65bb9e819546ff5f074aada6af1cdf46dc3653c`.
-- Deployment backup directory: `/home/roaring/.local/share/crucible-backups/username-admin-server-fresh-world-deployment-20261028-171846/`.
-- Original server files backup SHA-256: `703b24d64f9404af2d77fbaceaefac61231b5b412c38a735da239254724a7acc`; original Prism-client JAR backup SHA-256: `787952d74e8f6decd4c2ccc9f4acf7fcffad066330b8ab7b1bcadde69ead3f59`.
-- `deployment-manifest.json` and `test-results.md` in that backup folder record the hashes and test state. The old active-world `level.dat` hash remains `091d4e46ff6980c931887ba66fd959712e57e211c83d6c929d0c7d086bf29482`.
+- Datapack installed only at `world_fresh_20261028/datapacks/fresh-world-launch-fixes/`, ZIP SHA-256 `e76ddbb936b502eb664388da8bd75372580e451d029c37e49f3c702f61e75e57`, 429 valid JSON resources.
+- `sablephysicscompat-1.3.0.jar` and `recipe_integration-0.4.0.jar` are deployed identically to server and matching Prism client with original backups retained.
+- `struts-1.3.1.jar` is patched to keep its RenderSystem accessor client-only and deployed identically to server/client.
+- `ConnectorExtras-1.12.1+1.21.1.jar` is patched **only on the dedicated server** so EMI Bridge's Main entrypoint mixin does not probe `net.minecraft.client.main.Main`; the Prism client retains the original JAR to keep the client entrypoint functioning.
+- Additional rollback folder: `/home/roaring/.local/share/crucible-backups/username-admin-server-compatibility-round2-20261028-172940/`. Its original server/client compatibility archives are checksum-verified. Initial deployment originals remain at `/home/roaring/.local/share/crucible-backups/username-admin-server-fresh-world-deployment-20261028-171846/`.
+- The original production `world/level.dat` SHA-256 remains `091d4e46ff6980c931887ba66fd959712e57e211c83d6c929d0c7d086bf29482`. The fresh production world has not yet generated a level file because production was intentionally not started.
 
 ### Immediate next action
 
-No more pre-start mutation is needed. When the operator is ready, click Start in Crucible for `username admin server`; do not change the level name back to `world`. After the first production start, verify the Done marker, enabled datapack, fresh `world_fresh_20261028/level.dat` and region files, zero recipe/loot parser errors, and unchanged hash of the retained `world/level.dat`. Then do a short player playtest of biome/structure variety and normal modded recipes.
+No more pre-start mutation is required. When ready, click **Start** in Crucible for `username admin server`; don't change the level name back to `world`. Then verify `Done`, the enabled repair pack, new `world_fresh_20261028/level.dat` and region files, and zero recipe/loot parser errors. Only after those checks, join and playtest biomes, structures, loot, and the most-used modded recipe/machine paths.
 
 ## Status and confidence
 
