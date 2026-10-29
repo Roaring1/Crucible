@@ -45,6 +45,9 @@ def test_capture_ui_previews_writes_expected_pngs(tmp_path):
         "create-server.png",
         "import-files.png",
         "install-modpack.png",
+        "add-mod-icons-first-page.png",
+        "add-mod-icons-later-page.png",
+        "add-mod-icons-selected-detail.png",
     )
     for filename in expected:
         path = tmp_path / filename

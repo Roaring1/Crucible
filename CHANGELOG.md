@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+
 - Add an opt-in native Qt system tray. Closing the window hides Crucible only when **Keep Crucible running in the system tray when its window closes** is enabled; explicit Quit exits Crucible without stopping tmux-managed Minecraft servers.
 - Add a compact tray server menu for registered Crucible instances, with current textual status, exact-state Start/Stop actions, Open in Crucible, and Open folder. It reuses the main window's shared health result and existing server artwork.
 - Add on-demand system resource summaries for Crucible plus registered server JVMs, whole-system CPU/RAM, and optional GPU/VRAM. No recurring GPU sampler or telemetry service is started; the menu samples on demand with bounded waits and caches the result briefly.
@@ -10,6 +11,11 @@
 - Show Checking until the immediate startup tmux inventory resolves. Host-reboot crash recovery now reports what happened without starting Minecraft; the owner explicitly chooses when each server starts.
 - Verify shortcut ownership before updating/removing an existing hashed desktop-entry filename, so a coincidentally named user launcher is never overwritten or deleted.
 - Add regression coverage for shortcut file safety, server-state gates, resource aggregation, and tray menu behavior.
+
+
+- Fix Add Mod icon paging: later result pages append to a bounded, single icon queue instead of cancelling earlier-page fetches. Loaded, missing, failed and loading icon states now have deliberate placeholders; decoded images and cache size are bounded.
+- Fetch provider icons through an HTTPS-only, provider-host allowlisted path with redirect validation, socket timeouts, byte limits, and no provider credentials. Invalid images and oversized dimensions fail gracefully instead of remaining stuck as an ellipsis.
+- Expand the offline UI preview suite with synthetic first-page, later-page and selected-detail Add Mod screenshots; add controlled worker, URL-security and Qt pagination regressions.
 
 - Fix the Add Mod dialog startup race: deferred initial search is now owned by the dialog and cannot launch a background request after early close. The Qt smoke regression verifies that close-before-startup launches no worker.
 - Isolate Qt smoke tests from the developer's real CurseForge key and live CurseForge API so ordinary tests are deterministic and never consume personal credentials.
