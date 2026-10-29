@@ -234,7 +234,6 @@ def test_svg_family_and_license_are_in_built_wheel(tmp_path):
             "pip",
             "wheel",
             "--no-deps",
-            "--no-build-isolation",
             "--wheel-dir",
             str(wheel_dir),
             str(ROOT),
