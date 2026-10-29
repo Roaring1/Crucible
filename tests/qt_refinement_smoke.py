@@ -93,7 +93,40 @@ with patch.object(_SearchWorker,'run',unexpected_search):
  QTest.qWait(40)
 assert search_started==[], f'closed Add Mod dialog unexpectedly launched a search: {search_started}'
 
-m=InstanceManager(root/'registry');m.load();(root/'server').mkdir()
+# The selected provider must route search to its own adapter, not silently
+# fall back to Modrinth. These calls use fixtures and never access the network.
+from crucible.mods import curseforge, modrinth
+with patch.object(curseforge, 'search', return_value=[]) as cf_search, \
+     patch.object(modrinth, 'search', return_value=[]) as mr_search:
+ worker=_SearchWorker('example','forge','1.20.1',provider='CurseForge')
+ worker.run()
+ cf_search.assert_called_once_with('example',loader='forge',mc_version='1.20.1',limit=30,offset=0)
+ assert not mr_search.called
+with patch.object(curseforge, 'search', return_value=[]) as cf_search, \
+     patch.object(modrinth, 'search', return_value=[]) as mr_search:
+ worker=_SearchWorker('example','forge','1.20.1',provider='Modrinth')
+ worker.run()
+ mr_search.assert_called_once_with('example',loader='forge',mc_version='1.20.1',limit=30,offset=0)
+ assert not cf_search.called
+
+# An identified CurseForge JAR opens its actual project page, resolving the
+# official slug asynchronously instead of opening a guessed Modrinth search.
+(root/'server').mkdir(exist_ok=True)
+(root/'server'/'.crucible').mkdir(exist_ok=True)
+(root/'server'/'.crucible'/'added-mods.json').write_text(json.dumps({
+ 'identified.jar': {'project_id':'cf:123','version_id':'456','identity':'exact-curseforge-fingerprint'}
+}))
+mods=ModsTab();mods._instance=inst
+identified=ModEntry('identified.jar',root/'server'/'mods'/'identified.jar',True,10)
+with patch.object(ModsTab,'_run_net',lambda self,fn,on_done,busy:on_done(fn())), \
+     patch.object(curseforge,'project_url',return_value='https://www.curseforge.com/minecraft/mc-mods/example-mod') as project_url, \
+     patch('PyQt6.QtGui.QDesktopServices.openUrl') as open_url:
+ mods._open_mod_page(identified)
+ project_url.assert_called_once_with('cf:123')
+ assert open_url.call_count==1 and open_url.call_args.args[0].toString()=='https://www.curseforge.com/minecraft/mc-mods/example-mod'
+mods.close()
+
+m=InstanceManager(root/'registry');m.load();(root/'server').mkdir(exist_ok=True)
 empty_manager=InstanceManager(root/'empty-registry');empty_manager.load()
 empty_panel=InstancePanel(empty_manager);empty_panel.resize(900,560);empty_panel.show();QTest.qWait(20)
 assert empty_panel._empty_title.text()=='No servers yet'
