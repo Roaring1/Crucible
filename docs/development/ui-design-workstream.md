@@ -1,6 +1,6 @@
 # UI Design and Interaction Workstream
 
-**Status:** PRs #37-#41 retain their verified implementation status. The pre-existing Setup horizontal overflow found in the combined audit is now fixed in [PR #42](https://github.com/Roaring1/Crucible/pull/42), with a new responsive-layout test file, 611 passing tests plus 74 subtests, and the cross-version keyboard-focus issue from its first hosted run corrected locally; CI for the final head is pending. PRs #34/#35 remain integration gates for broader Add Mod/provider work.  
+**Status:** PRs #37–#42 each have a focused implementation PR open. PR #42's final hosted CI passes on Python 3.11 and 3.13 (run #163); the combined #37–#42 test overlay passes 635 tests plus 74 subtests, `compileall`, and `git diff --check`, with 18 refreshed visual evidence entries. These results establish implementation and test-overlay status, not merge status: PRs #37–#42 remain open and unmerged, and real-desktop/platform/screen-reader validation is still outstanding. PR #36 remains draft for normal review. PRs #34/#35 remain integration gates for broader Add Mod/provider work.
 **Prepared:** 2026-10-29  
 **Initial reference commit:** `34ca28fd8f989fe3eb98b90c81012d141684f4c9`  
 **Workstream:** Chat 3 — whole-app UX, local SVG icons, loading skeletons, restrained transitions.
@@ -170,7 +170,7 @@ Evidence file examples (all below the audit root unless a path is shown explicit
 - **Final observed geometry:** at 640x420 content and viewport are both 633px wide, horizontal scroll maximum is zero, 16 controls fit, and both forward and reverse focus passes record zero targets outside the viewport. At 900x600 content and viewport are both 893px wide and vertical scroll remains available.
 - **Validation on PR #42 commit 3bec9d3bd93f51ea767002c35d20b76376402b25:** focused responsive tests 4 passed; full suite 611 passed and 74 subtests passed; compileall and git diff --check passed. Hosted Qt 6.12 initially revealed partially clipped memory spin boxes during keyboard traversal. The latest code adjusts the scrollbar from the focused widget's content coordinates after native focus handling and ignores queued callbacks from stale layout generations. The strict focus assertion remains. Hosted Python 3.11 and 3.13 checks on this final head both pass.
 - **Visual evidence:** /tmp/crucible-setup-responsive-evidence-20261029/setup-responsive-before-after.jpg, setup-after-standard.png, setup-after-small.png, responsive-report.json, and SHA256SUMS.txt. Before and after images were opened and inspected.
-- **Limits:** evidence uses offscreen Qt and synthetic server data. Real desktop compositor/platform-theme and screen-reader validation remain separate follow-ups. PR #42 was tested on main and has not yet been overlaid with PRs #37-#41.
+- **Limits:** evidence uses offscreen Qt and synthetic server data. Real desktop compositor/platform-theme and screen-reader validation remain separate follow-ups. The refreshed combined test overlay applies the exact heads of PRs #37–#42; it is evidence only and does not merge any PR.
 
 #### 8. Low / source-level — sidebar context menu colors are hard-coded outside the theme
 
@@ -285,64 +285,72 @@ The focused test-only guard is in [PR #41 — Test Setup keyboard scroll reachab
 - **Screenshot evidence:** /tmp/crucible-setup-scroll-evidence-20261029/setup-scroll-bottom.png; report and SHA256 manifest in the same directory.
 - **Scope decision:** because the keyboard/scroll concern was not reproduced as a defect, this PR adds a guard rather than changing production layout. Real desktop and assistive-technology validation remains a separate question.
 
-## Combined integration audit — PRs #37–#41 (2026-10-29)
+## Combined integration test overlay — PRs #37–#42 (2026-10-29)
 
-A disposable worktree was created at the freshly fetched base commit 34ca28fd8f989fe3eb98b90c81012d141684f4c9. The exact PR heads were applied as patches to that tree only; no branch was merged, rewritten, or committed by the integration audit.
+A disposable worktree at base `34ca28fd8f989fe3eb98b90c81012d141684f4c9` applied the exact source/test heads listed below. This is a combined test overlay, not an integration branch. The audit did not merge, rewrite, commit to, or push any of the six PR branches.
 
-| PR | Exact audited head | Purpose | Changed-file overlap with other audited PRs |
+| PR | Exact audited head | Purpose | Changed-file overlap within #37–#42 |
 |---|---|---|---|
-| #37 | eece818439b752ac274f87f16b421bdfc84c2d09 | Shared visible keyboard focus and Create Server high-DPI sizing | None |
-| #38 | 6269467f103f0fe2ea348347b7cf394332782157 | Bounded World wipe confirmation and exact WIPE gate | None |
-| #39 | d932b5b24ca7228ebe5dcbd37c980106f3f660a9 | Local SVG family, provenance/license, wheel packaging | None |
-| #40 | f3129d05bba04e05875e05269eb2956a9be5f0eb | Player avatar loading, error, stale-cache and thread cleanup | None |
-| #41 | 5c555da8ae91aa249bc368a8c5595ec2f5fd9d88 | Test-only Setup vertical keyboard-scroll guard | None |
+| #37 | `eece818439b752ac274f87f16b421bdfc84c2d09` | Shared visible keyboard focus and Create Server high-DPI sizing | None |
+| #38 | `6269467f103f0fe2ea348347b7cf394332782157` | Bounded World wipe confirmation and exact WIPE gate | None |
+| #39 | `d932b5b24ca7228ebe5dcbd37c980106f3f660a9` | Local SVG family, provenance/license, wheel packaging | None |
+| #40 | `f3129d05bba04e05875e05269eb2956a9be5f0eb` | Player avatar loading, error, stale-cache and thread cleanup | None |
+| #41 | `5c555da8ae91aa249bc368a8c5595ec2f5fd9d88` | Test-only Setup vertical keyboard-scroll guard | None |
+| #42 | `3bec9d3bd93f51ea767002c35d20b76376402b25` | Responsive Setup width and focus-scroll visibility | None |
 
-### Combined verification
+### Status, separated by evidence type
 
-- **Full test suite:** 631 passed, 74 subtests passed. `compileall` and `git diff --check` passed on the combined tree.
-- **Hosted CI:** Python 3.11 and Python 3.13 checks are green on the exact current heads of all five PRs.
-- **Wheel/package check:** independently built `crucible-0.8.0-py3-none-any.whl` from the combined tree (373,473 bytes; SHA-256 `00a87b790ebf92f2d77f3ef0e66c89c4ae8e4bcacb0461eebecf61adf9e1c8d2`). It contains the three SVGs, `crucible/ui/icons.py`, and the complete packaged Lucide license file. The packaged license SHA-256 is `b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57`, matching the recorded source copy.
-- **Provenance/network/art check:** ICON_SOURCES.md includes the pinned Lucide commit, upstream blob IDs, original and packaged SHA-256 hashes, local stroke-color edits, and license notes. The packaged license retains its ISC and Feather/MIT sections. The icon loader reads only local package files; no decorative icon runtime network request was found. The only new visual assets are the three pinned-source SVGs—no AI-generated or new raster image assets were added. PlayersTab still fetches real player avatars from Minotar, with an 8-second timeout; that existing avatar content request is distinct from decorative icons.
-- **Shared focus/Create Server:** the integrated focus driver recorded no missing focus rings. At the standard 100% Qt scale, the Create Server name/path/loader-version fields were each 33px high against 18px font metrics plus 14px for padding/focus border. The full suite also ran the existing 100%, 125%, and 150% scale-factor regression cases.
-- **World wipe:** combined dialog captures at standard and small parent sizes show the bounded 560×349 dialog, naturally wrapped warning, separate WIPE instruction/input, Cancel focused and default, and destructive action initially disabled. An integrated WorldTab call-path check for Cancel at 1200×760 and 640×420, and incorrect text at 1200×760, left the call list for the wipe worker empty and kept the synthetic world marker present.
-- **SVG controls:** standard and small Backup/Config captures retain “Open Folder”, “Backup Now”, and “Reload” labels. Their icons loaded locally; Reload retains accessible name “Reload server properties”. The archive icon uses dark ink on the amber primary button.
-- **Avatar loading/error:** integrated 1040×560 and 640×420 captures show the static skeleton and a contrasting red/pink error marker; both states keep the player label and explanatory tooltip. The error marker had 44 qualifying red/pink pixels in each icon capture, and no animation objects were present. Worker completion, stale result, cache, and close-during-fetch paths were covered by the combined test suite.
-- **Setup scrolling:** Tab reached the bottom update action at both 900×600 and 640×420; focused target was visible and PageUp worked. However, the 640×420 capture also revealed the horizontal overflow detailed in finding #7 above.
-- **Visual evidence:** the combined contact sheet is /tmp/crucible-pr37-41-integration-audit-20261029/visual-audit/combined-ui-contact-sheet.jpg; per-screen captures, measurements/reports, and hashes are under the same `visual-audit/` directory. Setup overflow geometry is preserved in `visual-audit/setup-small-overflow.json` (SHA-256 `1bc9bb8dfbda3e6387f850dc40694075efef38a7777e75f70af43f518fef6a59`). The wheel manifest is under `package-audit/wheel/package-audit.json`. These files are temporary integration evidence, not source additions.
+**Implementation:** the six focused changes are implemented on their respective open PR branches. In particular, #42 moves Save memory settings to its own row without shrinking fonts and adds responsive-layout and keyboard-focus regression tests. This is implementation status only; none of these changes is on `main`.
 
-### Proposed integration order — do not merge automatically
+**Combined test overlay:** the exact #37–#42 heads passed **635 tests and 74 subtests**; `python -m compileall -q crucible tests` passed; and `git diff --check` passed. The overlay used base `34ca28fd8f989fe3eb98b90c81012d141684f4c9` and the six pinned heads above. The combined suite and these checks are recorded in `visual-audit/combined-capture-report.json`. This result does not replace normal PR review or post-merge CI.
 
-1. **PR #37 first:** it establishes the shared focus treatment and Create Server sizing baseline used by the other UI screens.
-2. **PR #38:** integrate the independently tested destructive World wipe gate.
-3. **PR #39:** integrate the small licensed SVG family and package-data changes; keep its provenance manifest attached to future asset changes.
-4. **PR #40:** integrate the independent PlayersTab worker/state lifecycle.
-5. **PR #41:** integrate the test-only 900×600 Setup vertical-focus guard after the production focus/layout baseline is in place.
+**Hosted CI:** Python 3.11 and Python 3.13 checks are green on the exact current heads of PRs #37–#42. PR #42's final head `3bec9d3bd93f51ea767002c35d20b76376402b25` passed hosted run [#163](https://github.com/Roaring1/Crucible/actions/runs/40968216579).
 
-All five branches are based on the same main commit and their changed filenames do not overlap. Merge one at a time, let hosted CI complete after each merge, and fetch the updated main before proceeding. This is a proposed order only; no integration was performed in this audit.
+**PR/review status:** GitHub currently reports PRs #37–#42 open and unmerged; PR #36 remains open as a draft. Keep the next merge decision with normal sequential review: review and decide on one PR at a time, wait for its hosted CI after any merge, then refresh `main` and the active changed-file lists before the next decision. The combined overlay is not a merge approval.
 
-### Remaining audit findings vs. desktop validation
+### Combined visual and responsive Setup evidence
 
-**Remaining implementation findings after the current set:**
-- **Setup narrow width:** horizontal overflow at 640×420 is reproduced in the combined tree and in pristine main; it is a pre-existing issue, not a regression from PRs #37–#41. A responsive row/layout fix remains outstanding for a later focused change.
-- **More button:** secondary tab title truncation remains from finding #3; revisit after PR #37 integrates so it does not overlap the current focus/theme change.
-- **Stopped status:** strengthen the dim stopped marker and improve non-color-only inline status communication from finding #4 after rechecking the merged sidebar/theme code.
-- **Empty backups:** add short next-step guidance to empty Backup and saved-world tables from finding #6 after PR #39 integrates.
-- **Sidebar context menu:** source-level hard-coded palette remains from finding #8; confirm the real menu rendering before treating it as a visually reproduced defect.
-- **Motion:** no general animation system was added. Define and test a real reduced-motion policy before introducing transitions.
+The refreshed combined capture records **18 screenshot/evidence entries** for visible keyboard-focus states, Create Server fields, World wipe confirmation at standard/small sizes, local icons on Backup/Config, player-avatar loading/error, and Setup keyboard scrolling. The refreshed archive provided for this review is `/home/roaring/Downloads/Crucible-PR37-42-Visual-Audit-2026-10-29.tar.gz`; its contact sheet is `visual-audit/combined-ui-contact-sheet.jpg`, its numeric report is `visual-audit/combined-capture-report.json`, and its integrity manifest is `visual-audit/SHA256SUMS.txt`. The extracted combined visual evidence root on the supervised host is `/tmp/crucible-pr37-42-integration-audit-20261029/visual-audit/`.
 
-**Real-desktop checks still required:** verify shared focus visibility and Create Server fields at actual 100%/125%/150% display scaling; check the wipe dialog’s focus/Cancel/Escape behavior with the real desktop theme; inspect icon contrast and accessible names with available assistive technology; observe avatar fetch/cache/error/switch/close behavior against real UI lifecycle and a real network; and verify the Setup horizontal overflow and proposed responsive fix in the physical desktop compositor. Offscreen Qt and screenshots do not prove screen-reader behavior or pixel-identical rendering across desktop themes/compositors.
+The refreshed #42 before/after contact sheet is `visual-audit/setup-responsive/setup-responsive-before-after.jpg`; final screenshots are `visual-audit/setup-responsive/setup-after-small.png` and `visual-audit/setup-responsive/setup-after-standard.png`; geometry and traversal details are in `visual-audit/setup-responsive/responsive-report.json`.
 
-### Next independent UI task
+- At **640×420**, content width and viewport width are both 633px; horizontal scroll maximum is **0**; no visible widget overflow was measured; forward and reverse Tab traversals recorded zero focused controls outside the viewport; the bottom update action is visible; and no action was activated.
+- At **900×600**, content width and viewport width are both 893px; horizontal scroll maximum is **0**; forward and reverse Tab traversals also recorded zero focused controls outside the viewport; and the bottom update action is visible.
+- These Setup captures use a synthetic readiness fixture and mocked local Java lookup. They establish the reported offscreen Qt geometry and traversal behavior, not real-desktop compositor or assistive-technology behavior.
 
-Pause new UI scope until PRs #37–#41 have been reviewed and integrated in the order proposed above. The combined audit confirmed a pre-existing Setup horizontal overflow at 640×420; keep it explicitly open, but do not start another feature PR during this integration cycle. After integration, address that narrow-width layout first, then revisit the More-tabs selected-label truncation (finding #3), stopped-state contrast/non-color status (finding #4), empty-backup next-step guidance (finding #6), and the sidebar context-menu palette (finding #8). Keep each fix focused, rechecking changed-file overlap against the refreshed main and any still-open PRs. For future animated transitions, first define a real reduced-motion policy and test loading/success/empty/error/cancel/close plus stale-result cleanup. Do not add animation to the avatar placeholders.
+### Other verified overlay details and audit boundaries
+
+- **World wipe:** Cancel/default/initial focus and incorrect confirmation text do not dispatch destructive work; the actual wipe worker is mocked and synthetic world files remain. Exact `WIPE` is covered by PR #38 tests.
+- **Local icons:** labels and the `Reload server properties` accessible name are retained. The separate #37–#41 package audit recorded a built wheel with the SVGs and license; the refreshed #42 overlay did not rebuild the wheel, so its prior wheel hash is not claimed as a hash for the exact #37–#42 overlay.
+- **Player avatar:** loading/error states remain represented at standard/small sizes with a static loading placeholder and alert-colored error marker. No animation was added in this first slice.
+- **Shared focus/Create Server:** the refreshed screenshot capture includes focus states and Create Server fields at Qt scale factor 1.0; the #37 tests separately cover 100%, 125%, and 150% scaling.
+- **Prior findings are not all closed by this overlay.** Offscreen tests and screenshots do not establish screen-reader behavior, physical desktop rendering, or pixel-identical output across desktop styles/compositors.
+
+### Review sequence, remaining work, and desktop validation
+
+The proposed review sequence remains #37 (shared focus/DPI), #38 (World wipe safety), #39 (local SVG/license/package data), #40 (avatar lifecycle), #41 (Setup vertical-scroll test), then #42 (responsive Setup width). This is a suggested sequence for ordinary review, not an instruction to merge without review.
+
+**Remaining design findings after the current PR set is reviewed/integrated:**
+- **More tab:** the selected secondary-page label still truncates in the compact control (finding #3).
+- **Stopped status:** improve the stopped-state cue and provide status communication that does not rely on color alone (finding #4).
+- **Empty Backup guidance:** add useful next-step guidance to empty Backup and saved-world tables (finding #6).
+- **Sidebar context menu:** hard-coded palette values remain a source-level concern (finding #8); inspect the actual desktop rendering before treating it as visually reproduced.
+- **Motion:** keep general transition/animation work deferred until a reduced-motion policy is defined and tested. Do not add motion to the static avatar placeholders.
+
+**Real-desktop validation still outstanding:** check focus and Create Server sizing at actual 100%/125%/150% display scaling; inspect World wipe keyboard behavior using the real desktop theme; verify icon contrast/accessibility names and stopped-state non-color cues with available assistive technology; observe avatar fetch/cache/error/switch/close behavior in the running app; and verify the Setup responsive fix on the actual compositor at 640×420. The refreshed offscreen evidence does not close these checks.
+
+## Next work after review
+
+Do not open another feature branch for this responsive fix; it is already implemented in PR #42. Keep the current scope in sequential normal review of PRs #37–#42. After the accepted changes are integrated, address the More-tab truncation, stopped-state non-color status cue, empty Backup guidance, and the source-level sidebar context-menu palette finding as focused follow-up work after checking the refreshed `main` and active changed-file lists. Keep real-desktop and screen-reader validation explicitly open. For animated transitions, first define a reduced-motion policy and test loading/success/empty/error/cancel/close plus stale-result cleanup. Do not add animation to the avatar placeholders.
+
 ## Implementation sequence after the integration gate
 
-1. Integrate the existing focused PRs in this order, one at a time: #37 (shared focus/Create Server DPI), #38 (World wipe confirmation), #39 (local SVG/license/package data), #40 (PlayersTab avatar lifecycle), #41 (test-only Setup vertical-scroll guard), then #42 (responsive Setup width). Wait for hosted CI after each merge and fetch the updated main before the next.
-2. Do not add new UI feature branches during that merge sequence. Record the Setup horizontal overflow at 640×420 as pre-existing layout debt, not a regression from these PRs.
-3. After integration, address that narrow-width Setup overflow first, then the remaining ranked audit findings in focused branches after rechecking changed filenames and current main.
-4. Perform real-desktop focus/scaling/keyboard checks and available assistive-technology review; keep the offscreen Qt limitations explicit in the evidence.
+1. Review and decide on one PR at a time, starting with #37, then #38, #39, #40, #41, and #42 in the proposed sequence above. This is a review sequence only, not an automatic merge.
+2. After each merge, wait for hosted CI, fetch the updated `main`, and re-check changed-file overlap for the remaining open PRs before deciding on the next merge.
+3. Complete the remaining More-tab, stopped-state non-color cue, empty Backup guidance, and sidebar context-menu palette review as focused tasks after the current implementation set is integrated.
+4. Perform real-desktop focus/scaling/keyboard checks and available assistive-technology review; keep the offscreen Qt limitations explicit.
 5. Define a reliable reduced-motion policy before adding transitions. Transitions must never hide status, delay interaction, or revive a closed/stale view. Keep the current avatar placeholders static.
-6. Continue running the unit suite, real Qt interaction checks, keyboard-only checks, focus/contrast, scaling/clipping review, and wheel/package validation for the affected areas. Do not bump release version or deploy.
+6. Continue running the relevant unit suite, real Qt interaction checks, keyboard-only checks, focus/contrast, scaling/clipping review, and wheel/package validation for affected areas. Do not bump the release version or deploy.
 
 ## Icon provenance and licensing requirement
 
