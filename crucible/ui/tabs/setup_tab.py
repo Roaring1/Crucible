@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import threading
 
-from PyQt6.QtCore import Qt, QUrl, QTimer, QObject, QThread, QEvent, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QUrl, QTimer, QObject, QThread, QEvent, QPoint, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -89,6 +89,7 @@ class SetupTab(QWidget):
         self._fml_combo: QComboBox | None = None
         self._scroll_area: QScrollArea | None = None
         self._scroll_content: QWidget | None = None
+        self._setup_layout_generation = 0
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -153,17 +154,34 @@ class SetupTab(QWidget):
             if widget.focusPolicy() & Qt.FocusPolicy.TabFocus:
                 widget.installEventFilter(self)
 
-    def _ensure_focus_widget_visible(self, widget: QWidget) -> None:
+    def _ensure_focus_widget_visible(self, widget: QWidget, generation: int) -> None:
         content = self._scroll_content
         area = self._scroll_area
         try:
             if (
-                area is not None
-                and content is not None
-                and content.isAncestorOf(widget)
-                and widget.isVisible()
+                generation != self._setup_layout_generation
+                or area is None
+                or content is None
+                or not content.isAncestorOf(widget)
+                or not widget.isVisible()
+                or widget.height() <= 0
             ):
-                area.ensureWidgetVisible(widget, 6, 6)
+                return
+
+            # Compute the target in scroll-content coordinates. Qt's
+            # ensureWidgetVisible can leave a focus target a few pixels beyond
+            # the viewport edge on some platforms, so adjust the scrollbar
+            # directly and leave a small readable margin.
+            top = widget.mapTo(content, QPoint(0, 0)).y()
+            bottom = top + widget.height()
+            bar = area.verticalScrollBar()
+            offset = bar.value()
+            view_height = area.viewport().height()
+            margin = min(6, max(0, (view_height - widget.height()) // 2))
+            if top < offset + margin:
+                bar.setValue(max(bar.minimum(), top - margin))
+            elif bottom > offset + view_height - margin:
+                bar.setValue(min(bar.maximum(), bottom - view_height + margin))
         except RuntimeError:
             # A quick refresh can delete the old focused widget before the
             # deferred callback runs; stale callbacks must be harmless.
@@ -178,10 +196,16 @@ class SetupTab(QWidget):
         ):
             # Run after Qt finishes its native focus traversal; otherwise its
             # own scroll update can leave the just-focused spin box clipped.
-            QTimer.singleShot(0, lambda target=watched: self._ensure_focus_widget_visible(target))
+            generation = self._setup_layout_generation
+            QTimer.singleShot(
+                0,
+                lambda target=watched, expected=generation:
+                    self._ensure_focus_widget_visible(target, expected),
+            )
         return super().eventFilter(watched, event)
 
     def _rebuild(self) -> None:
+        self._setup_layout_generation += 1
         self._clear()
         inst = self._instance
         if inst is None:
