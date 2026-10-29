@@ -279,7 +279,7 @@ The focused test-only guard is in [PR #41 — Test Setup keyboard scroll reachab
 
 - **Branch/base/commit:** test/setup-scroll-reachability-20261029 / 34ca28fd8f989fe3eb98b90c81012d141684f4c9 / 5c555da8ae91aa249bc368a8c5595ec2f5fd9d88.
 - **Changed path:** tests/test_setup_scroll_keyboard_qt.py only. Changed-file sets for all open PRs #34–#40 were refreshed before this PR; none overlap.
-- **Validation:** focused test 1 passed; full suite 608 passed, 74 subtests passed; compileall and git diff --check passed. The current PR's Python 3.11 and Python 3.13 checks are running separately.
+- **Validation:** focused test 1 passed; full suite 608 passed, 74 subtests passed; compileall and git diff --check passed. GitHub Actions checks on Python 3.11 and Python 3.13 both pass.
 - **What it establishes:** on the actual SetupTab widget with synthetic server data, Tab reaches the bottom update action, focused controls remain entirely inside the visible viewport, the scrollbar reaches its maximum, and PageUp scrolls back. No setup action is activated.
 - **Screenshot evidence:** /tmp/crucible-setup-scroll-evidence-20261029/setup-scroll-bottom.png; report and SHA256 manifest in the same directory.
 - **Scope decision:** because the keyboard/scroll concern was not reproduced as a defect, this PR adds a guard rather than changing production layout. Real desktop and assistive-technology validation remains a separate question.
