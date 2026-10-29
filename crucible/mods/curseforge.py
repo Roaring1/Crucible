@@ -121,6 +121,13 @@ def fingerprint_file(path, *, chunk_size=1024 * 1024) -> int:
     return (mixed ^ (mixed >> 15)) & mask
 
 
+
+class FingerprintMatches(dict):
+    """Unambiguous exact matches, plus fingerprints with conflicting file IDs."""
+
+    ambiguous_fingerprints = ()
+
+
 def identify_fingerprints(paths_by_fingerprint):
     """Return exact CurseForge matches keyed by input fingerprint. No fuzzy hits."""
     if not paths_by_fingerprint:
@@ -128,7 +135,8 @@ def identify_fingerprints(paths_by_fingerprint):
     if not has_api_key():
         return {}
     from ..download_http import make_request, open_url, http_error_message
-    matches = {}
+    matches = FingerprintMatches()
+    candidates = {}
     fingerprints = list(paths_by_fingerprint)
     for offset in range(0, len(fingerprints), 100):
         batch = fingerprints[offset:offset + 100]
@@ -161,7 +169,7 @@ def identify_fingerprints(paths_by_fingerprint):
             # fingerprint to agree with the submitted local fingerprint.
             if fingerprint not in requested or file_fingerprint != fingerprint:
                 continue
-            matches[fingerprint] = {
+            candidate = {
                 'project_id': f'cf:{project_id}', 'version_id': str(file_id),
                 'version': file_data.get('displayName', ''),
                 'filename': file_data.get('fileName', ''),
@@ -169,6 +177,16 @@ def identify_fingerprints(paths_by_fingerprint):
                 'sha1': next((h.get('value', '') for h in file_data.get('hashes', [])
                               if h.get('algo') == 1), ''),
             }
+            # A fingerprint can be reported for more than one project/file.
+            # Never let response ordering choose an identity arbitrarily.
+            candidates.setdefault(fingerprint, {})[(project_id, file_id)] = candidate
+    ambiguous = []
+    for fingerprint, exact_candidates in candidates.items():
+        if len(exact_candidates) == 1:
+            matches[fingerprint] = next(iter(exact_candidates.values()))
+        else:
+            ambiguous.append(fingerprint)
+    matches.ambiguous_fingerprints = tuple(sorted(ambiguous))
     return matches
 
 

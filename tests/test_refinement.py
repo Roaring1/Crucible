@@ -20,6 +20,15 @@ from crucible.process.resource_monitor import machine_cpu_percent
 from crucible.diagnostics.loadcheck import autofix_loading, parse_crash_log, latest_crash_text
 
 
+@pytest.fixture(autouse=True)
+def isolate_curseforge_credentials(monkeypatch, tmp_path):
+    """Never let this suite inherit the developer's real CurseForge key."""
+    monkeypatch.delenv('CURSEFORGE_API_KEY', raising=False)
+    monkeypatch.delenv('CURSEFORGE_API_KEY_FILE', raising=False)
+    monkeypatch.setattr(cf, '_session_key', '')
+    monkeypatch.setattr(cf, '_DEFAULT_KEY_FILE', tmp_path / 'no-live-curseforge-key')
+
+
 def mf(name='new.jar', data=b'new', project='project'):
     return mr.ModFile(project,'Demo','v2','2.0',name,'https://example.invalid/file',hashlib.sha1(data).hexdigest(),len(data))
 
@@ -423,6 +432,27 @@ def test_curseforge_fingerprint_lookup_rejects_inconsistent_exact_match(monkeypa
     assert cf.identify_fingerprints({fingerprint: [Path('x.jar')]}) == {}
 
 
+def test_identify_files_rejects_ambiguous_exact_curseforge_matches(tmp_path, monkeypatch):
+    server(tmp_path)
+    digest = 1234
+    payload = {'data': {'exactMatches': [
+        {'id': digest, 'file': {'id': 654, 'modId': 321, 'fileFingerprint': digest,
+                                'displayName': 'Release A', 'fileName': 'a.jar'}},
+        {'id': digest, 'file': {'id': 655, 'modId': 322, 'fileFingerprint': digest,
+                                'displayName': 'Release B', 'fileName': 'b.jar'}},
+    ]}}
+    from crucible import download_http
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kw: io.BytesIO(b'{}'))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'get_api_key', lambda: 'synthetic-test-key')
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: digest)
+    monkeypatch.setattr(download_http, 'open_url', lambda request, timeout: io.BytesIO(json.dumps(payload).encode()))
+
+    with pytest.raises(mr.ModrinthError, match='matched multiple exact files'):
+        v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+    assert not (tmp_path/'.crucible/added-mods.json').exists()
+
+
 def test_identify_files_uses_curseforge_when_key_available_and_preserves_duplicate_jars(tmp_path, monkeypatch):
     server(tmp_path)
     (tmp_path / 'mods' / 'copy.jar').write_bytes(b'old')
@@ -439,6 +469,130 @@ def test_identify_files_uses_curseforge_when_key_available_and_preserves_duplica
     record = json.loads((tmp_path/'.crucible/added-mods.json').read_text())
     assert record['old.jar']['identity'] == 'exact-curseforge-fingerprint'
     assert record['copy.jar']['identity'] == 'exact-curseforge-fingerprint'
+
+
+def test_identify_files_uses_curseforge_when_modrinth_lookup_fails_and_preserves_duplicate_jars(tmp_path, monkeypatch):
+    server(tmp_path)
+    (tmp_path / 'mods' / 'copy.jar').write_bytes(b'old')
+
+    def modrinth_unavailable(req, **kwargs):
+        raise OSError('synthetic Modrinth outage')
+
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', modrinth_unavailable)
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    monkeypatch.setattr(cf, 'identify_fingerprints', lambda mapping: {
+        1234: {'project_id': 'cf:321', 'version_id': '654', 'version': 'Demo',
+               'fingerprint': 1234, 'identity': 'exact-curseforge-fingerprint',
+               'sha1': hashlib.sha1(b'old').hexdigest()}
+    })
+
+    found = v.identify_files(tmp_path, [tmp_path/'mods/old.jar', tmp_path/'mods/copy.jar'])
+
+    assert set(found) == {'old.jar', 'copy.jar'}
+    for filename in ('old.jar', 'copy.jar'):
+        assert found[filename]['project_id'] == 'cf:321'
+        assert found[filename]['version_id'] == '654'
+        assert found[filename]['identity'] == 'exact-curseforge-fingerprint'
+        assert found[filename]['fingerprint'] == 1234
+        assert found[filename]['sha1'] == hashlib.sha1(b'old').hexdigest()
+    assert 'Modrinth could not be checked' in found.warning
+    assert 'synthetic Modrinth outage' in found.warning
+    record = json.loads((tmp_path/'.crucible/added-mods.json').read_text())
+    assert record['old.jar']['project_id'] == record['copy.jar']['project_id'] == 'cf:321'
+
+
+def test_identify_files_reports_both_provider_failures_without_exposing_credentials(tmp_path, monkeypatch):
+    server(tmp_path)
+
+    def modrinth_unavailable(req, **kwargs):
+        raise OSError('synthetic Modrinth outage')
+
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', modrinth_unavailable)
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    monkeypatch.setattr(cf, 'identify_fingerprints', lambda mapping: (_ for _ in ()).throw(
+        mr.ModrinthError('CurseForge rejected the configured key (HTTP 403).')
+    ))
+
+    with pytest.raises(mr.ModrinthError) as excinfo:
+        v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+    message = str(excinfo.value)
+    assert 'Modrinth' in message and 'synthetic Modrinth outage' in message
+    assert 'CurseForge' in message and 'HTTP 403' in message
+    assert 'synthetic-test-key' not in message
+    assert not (tmp_path/'.crucible/added-mods.json').exists()
+
+
+def test_verified_identity_rejects_stale_sha1_before_update_or_source_use(tmp_path, monkeypatch):
+    server(tmp_path)
+    original_sha1 = hashlib.sha1(b'previous bytes').hexdigest()
+    (tmp_path/'.crucible').mkdir(exist_ok=True)
+    (tmp_path/'.crucible'/'added-mods.json').write_text(json.dumps({
+        'old.jar': {'project_id':'old-project','version_id':'old-version','sha1':original_sha1}
+    }))
+
+    assert v.verified_identity_for_file(tmp_path, 'old.jar', tmp_path/'mods'/'old.jar') is None
+    monkeypatch.setattr(mr, 'resolve_file', lambda *args, **kwargs: pytest.fail('stale identity must not trigger update lookup'))
+    assert mr.check_update(tmp_path, 'old.jar', loader='fabric', mc_version='1.21.1') is None
+
+
+def test_check_update_routes_curseforge_identity_through_curseforge_versions(tmp_path, monkeypatch):
+    server(tmp_path)
+    current_sha1 = hashlib.sha1(b'old').hexdigest()
+    (tmp_path/'.crucible').mkdir(exist_ok=True)
+    (tmp_path/'.crucible'/'added-mods.json').write_text(json.dumps({
+        'old.jar': {'project_id':'cf:321','version_id':'654','sha1':current_sha1}
+    }))
+    newest = mr.ModFile('cf:321', 'Demo', '655', 'New release', 'new.jar',
+                        'https://edge.forgecdn.net/new.jar', hashlib.sha1(b'new').hexdigest(), 3)
+    calls = []
+    monkeypatch.setattr(v, 'list_versions', lambda project_id, *, loader, mc_version: calls.append(
+        (project_id, loader, mc_version)
+    ) or [newest])
+    monkeypatch.setattr(mr, 'resolve_file', lambda *args, **kwargs: pytest.fail('CF IDs must not go to Modrinth'))
+
+    result = mr.check_update(tmp_path, 'old.jar', loader='forge', mc_version='1.20.1')
+
+    assert result is newest
+    assert calls == [('cf:321', 'forge', '1.20.1')]
+
+
+def test_verify_dependencies_skips_a_stale_identity_record(tmp_path, monkeypatch):
+    server(tmp_path)
+    (tmp_path/'.crucible').mkdir(exist_ok=True)
+    (tmp_path/'.crucible'/'added-mods.json').write_text(json.dumps({
+        'old.jar': {'project_id':'mr-project','version_id':'mr-version',
+                    'sha1':hashlib.sha1(b'previous bytes').hexdigest()}
+    }))
+    monkeypatch.setattr(mr, '_get', lambda *args, **kwargs: pytest.fail('stale record must not trigger provider lookup'))
+
+    missing, notes = mr.verify_dependencies(tmp_path, loader='fabric', mc_version='1.21.1')
+
+    assert not missing
+    assert any('no longer matches its recorded identity' in note for note in notes)
+
+
+def test_verified_identity_accepts_current_exact_hashes_and_curseforge_fingerprint_fallback(tmp_path, monkeypatch):
+    server(tmp_path)
+    current_sha1 = hashlib.sha1(b'old').hexdigest()
+    record_path = tmp_path/'.crucible'/'added-mods.json'
+    record_path.parent.mkdir(exist_ok=True)
+    record_path.write_text(json.dumps({
+        'old.jar': {'project_id':'mr-project','version_id':'mr-version','sha1':current_sha1},
+    }))
+    meta = v.verified_identity_for_file(tmp_path, 'old.jar', tmp_path/'mods'/'old.jar')
+    assert meta and meta['project_id'] == 'mr-project'
+
+    record_path.write_text(json.dumps({
+        'old.jar': {'project_id':'cf:321','version_id':'654','identity':'exact-curseforge-fingerprint',
+                    'fingerprint':1234,'sha1':''},
+    }))
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    meta = v.verified_identity_for_file(tmp_path, 'old.jar', tmp_path/'mods'/'old.jar')
+    assert meta and meta['project_id'] == 'cf:321'
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 9999)
+    assert v.verified_identity_for_file(tmp_path, 'old.jar', tmp_path/'mods'/'old.jar') is None
 
 
 def test_identify_files_keeps_modrinth_available_without_curseforge_key(tmp_path, monkeypatch):

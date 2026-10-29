@@ -570,13 +570,13 @@ class ModsTab(QWidget):
     def _change_version(self, mod):
         if not self._require_stopped():
             return
-        from ...mods import modrinth
-        from ...mods.versions import identify_files, list_versions, resolve_selected, replace_files
+        from ...mods.versions import identify_files, list_versions, resolve_selected, replace_files, verified_identity_for_file
         inst = self._instance
         path, loader, mc = inst.path, inst.loader, inst.minecraft_version
         def work():
-            record = modrinth.added_mods(path)
-            meta = record.get(mod.filename) or record.get(mod.filename.removesuffix(".disabled"))
+            # A saved project/version record is usable only if the installed
+            # JAR still matches its exact SHA-1 or CurseForge fingerprint.
+            meta = verified_identity_for_file(path, mod.filename, mod.path)
             if not meta:
                 meta = identify_files(path, [mod.path]).get(mod.filename)
             if not meta:
@@ -700,10 +700,11 @@ class ModsTab(QWidget):
         from PyQt6.QtGui import QDesktopServices
         from PyQt6.QtCore import QUrl
         from urllib.parse import quote
-        from ...mods.modrinth import added_mods
+        from ...mods.versions import verified_identity_for_file
 
-        record = added_mods(self._instance.path) if getattr(self, "_instance", None) else {}
-        meta = record.get(mod.filename) or record.get(mod.filename.removesuffix(".disabled")) or {}
+        inst = getattr(self, "_instance", None)
+        meta = verified_identity_for_file(inst.path, mod.filename, mod.path) if inst else None
+        meta = meta or {}
         project_id = str(meta.get("project_id", ""))
         if project_id.startswith("cf:"):
             # Resolve the official slug on a worker; don't invent a CurseForge
@@ -819,7 +820,8 @@ class ModsTab(QWidget):
                 item.setText(mod.name)
             from ...mods.modrinth import added_mods
             meta = added_mods(self._instance.path).get(mod.filename, {})
-            identity = "Exact online match" if meta.get("project_id") else "Not linked online · use Identify online"
+            identity = ("Recorded online identity · verified before use" if meta.get("project_id")
+                        else "Not linked online · use Identify online")
             item.setToolTip(f"{mod.filename}\n{mod.description}\n{identity}")
             version = self._table.item(current, self._COL_VERSION)
             if version and mod.version:

@@ -1,4 +1,5 @@
 """Real PyQt interaction checks, isolated from legacy tests' optional-module stubs."""
+import hashlib
 import json
 import tempfile
 import time
@@ -113,17 +114,31 @@ with patch.object(curseforge, 'search', return_value=[]) as cf_search, \
 # official slug asynchronously instead of opening a guessed Modrinth search.
 (root/'server').mkdir(exist_ok=True)
 (root/'server'/'.crucible').mkdir(exist_ok=True)
+(root/'server'/'mods').mkdir(exist_ok=True)
+identified_path=root/'server'/'mods'/'identified.jar'
+identified_bytes=b'identified test JAR bytes'
+identified_path.write_bytes(identified_bytes)
 (root/'server'/'.crucible'/'added-mods.json').write_text(json.dumps({
- 'identified.jar': {'project_id':'cf:123','version_id':'456','identity':'exact-curseforge-fingerprint'}
+ 'identified.jar': {'project_id':'cf:123','version_id':'456','sha1':hashlib.sha1(identified_bytes).hexdigest(),
+                    'identity':'exact-curseforge-fingerprint'}
 }))
 mods=ModsTab();mods._instance=inst
-identified=ModEntry('identified.jar',root/'server'/'mods'/'identified.jar',True,10)
+identified=ModEntry('identified.jar',identified_path,True,10)
 with patch.object(ModsTab,'_run_net',lambda self,fn,on_done,busy:on_done(fn())), \
      patch.object(curseforge,'project_url',return_value='https://www.curseforge.com/minecraft/mc-mods/example-mod') as project_url, \
      patch('PyQt6.QtGui.QDesktopServices.openUrl') as open_url:
  mods._open_mod_page(identified)
  project_url.assert_called_once_with('cf:123')
  assert open_url.call_count==1 and open_url.call_args.args[0].toString()=='https://www.curseforge.com/minecraft/mc-mods/example-mod'
+# Replacing the file manually must invalidate the saved project link; never
+# send the user to the old project's page based only on the stale filename.
+identified_path.write_bytes(b'manually replaced test bytes')
+with patch.object(curseforge,'project_url') as stale_project_url, \
+     patch('PyQt6.QtGui.QDesktopServices.openUrl') as stale_open_url:
+ mods._open_mod_page(identified)
+stale_project_url.assert_not_called()
+assert stale_open_url.call_count==1
+assert 'curseforge.com' not in stale_open_url.call_args.args[0].toString()
 mods.close()
 
 # Exact Modrinth hits survive a CurseForge auth failure, and the real Qt

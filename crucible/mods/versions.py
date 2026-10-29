@@ -16,58 +16,80 @@ class IdentityMatches(dict):
 
 
 def identify_files(server_path, paths):
-    """Identify installed JARs by exact Modrinth SHA-1 and CurseForge fingerprint.
+    """Identify installed JARs independently through exact provider hashes.
 
-    JAR contents are never uploaded. Duplicate bytes under different filenames
-    are preserved, and CurseForge is optional: Modrinth continues to work when
-    no CurseForge key is configured. Approximate/fuzzy matches are never used.
+    Modrinth uses SHA-1 and CurseForge uses its normalized fingerprint. A
+    failure in either provider must not prevent the other from being queried;
+    exact matches from a working provider remain useful when the other is down.
+    JAR contents are never uploaded and duplicate paths are preserved.
     """
     from . import curseforge as cf
 
     files = [Path(p) for p in paths if Path(p).is_file() and not Path(p).is_symlink()]
     if not files:
         return {}
-    by_sha1 = {}
-    for path in files:
-        by_sha1.setdefault(mr._sha1(path), []).append(path)
-    found = IdentityMatches()
-    items = list(by_sha1)
-    for offset in range(0, len(items), 100):
-        batch = items[offset:offset + 100]
-        req = mr.urllib.request.Request(
-            mr._API + '/version_files',
-            data=json.dumps({'hashes': batch, 'algorithm': 'sha1'}).encode(),
-            headers={'User-Agent': mr._UA, 'Content-Type': 'application/json'},
-        )
-        try:
-            with mr.urllib.request.urlopen(req, timeout=20) as response:
-                raw = response.read(mr._MAX_JSON_BYTES + 1)
-            if len(raw) > mr._MAX_JSON_BYTES:
-                raise mr.ModrinthError('Identity response was too large.')
-            result = json.loads(raw)
-        except (OSError, ValueError) as exc:
-            raise mr.ModrinthError('Could not identify mods on Modrinth. Existing files have not been changed.') from exc
-        for digest, version in result.items():
-            if digest not in by_sha1:
-                continue
-            if not any(f.get('hashes', {}).get('sha1') == digest for f in version.get('files', [])):
-                continue
-            meta = {
-                'project_id': version['project_id'], 'version_id': version['id'],
-                'version': version.get('version_number', ''), 'sha1': digest,
-                'identity': 'exact-sha1',
-            }
-            for path in by_sha1[digest]:
-                found[path.name] = dict(meta)
 
     record_path = Path(server_path) / '.crucible' / 'added-mods.json'
     record = mr._load_record(record_path)
+    by_sha1 = {}
+    for path in files:
+        by_sha1.setdefault(mr._sha1(path), []).append(path)
 
-    # CurseForge fingerprints are a different algorithm from SHA-1. Compute
-    # and query them only when the user has configured a private API key.
-    # A broken/expired key or failed CurseForge request must not discard valid
-    # Modrinth exact matches. If Modrinth found nothing, retain the provider
-    # error so the UI can explain why identity lookup could not be completed.
+    found = IdentityMatches()
+    provider_errors = []
+
+    # Provider 1: Modrinth exact SHA-1. Keep this whole provider operation
+    # independent from CurseForge, including network and malformed-response
+    # errors, so failure here never short-circuits the second provider.
+    try:
+        items = list(by_sha1)
+        for offset in range(0, len(items), 100):
+            batch = items[offset:offset + 100]
+            req = mr.urllib.request.Request(
+                mr._API + '/version_files',
+                data=json.dumps({'hashes': batch, 'algorithm': 'sha1'}).encode(),
+                headers={'User-Agent': mr._UA, 'Content-Type': 'application/json'},
+            )
+            try:
+                with mr.urllib.request.urlopen(req, timeout=20) as response:
+                    raw = response.read(mr._MAX_JSON_BYTES + 1)
+                if len(raw) > mr._MAX_JSON_BYTES:
+                    raise mr.ModrinthError('Identity response was too large.')
+                result = json.loads(raw)
+                if not isinstance(result, dict):
+                    raise mr.ModrinthError('Identity response had an unexpected format.')
+            except (OSError, ValueError) as exc:
+                raise mr.ModrinthError(
+                    'Could not identify mods on Modrinth: ' + (str(exc) or 'provider request failed')
+                    + '. Existing files have not been changed.'
+                ) from exc
+
+            for digest, version in result.items():
+                if digest not in by_sha1 or not isinstance(version, dict):
+                    continue
+                version_files = version.get('files', [])
+                if not isinstance(version_files, list) or not any(
+                    isinstance(f, dict) and f.get('hashes', {}).get('sha1') == digest
+                    for f in version_files
+                ):
+                    continue
+                project_id, version_id = version.get('project_id'), version.get('id')
+                if not isinstance(project_id, str) or not project_id or not isinstance(version_id, str) or not version_id:
+                    continue
+                meta = {
+                    'project_id': project_id, 'version_id': version_id,
+                    'version': version.get('version_number', ''), 'sha1': digest,
+                    'identity': 'exact-sha1',
+                }
+                for path in by_sha1[digest]:
+                    found[path.name] = dict(meta)
+    except (mr.ModrinthError, OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        provider_errors.append(('Modrinth', 'could not be checked: ' + (str(exc) or 'provider lookup failed')))
+
+    # Provider 2: CurseForge exact fingerprint. A missing key means this
+    # provider is intentionally skipped, not an error; Modrinth remains usable
+    # without CurseForge credentials. Unsafe or invalid configured key files
+    # raise a user-facing error which is handled like any other CF failure.
     try:
         if cf.has_api_key():
             by_fingerprint = {}
@@ -75,11 +97,15 @@ def identify_files(server_path, paths):
                 fingerprint = cf.fingerprint_file(path)
                 by_fingerprint.setdefault(fingerprint, []).append(path)
             cf_matches = cf.identify_fingerprints(by_fingerprint)
+            for fingerprint in getattr(cf_matches, 'ambiguous_fingerprints', ()):
+                provider_errors.append((
+                    'CurseForge',
+                    f'fingerprint {fingerprint} matched multiple exact files; identity was left unlinked',
+                ))
             for fingerprint, meta in cf_matches.items():
                 for path in by_fingerprint.get(fingerprint, []):
-                    # Prefer an already-found Modrinth exact match deterministically
-                    # if the same artifact is published on both providers. Existing
-                    # provider identity is retained when it remains an exact match.
+                    # Prefer a prior provider identity only when this exact file
+                    # is still identified as that same project on this provider.
                     prior = found.get(path.name, {})
                     existing = record.get(path.name, {})
                     existing_project = existing.get('project_id', '')
@@ -87,12 +113,17 @@ def identify_files(server_path, paths):
                         found[path.name] = dict(meta)
                     elif not prior:
                         found[path.name] = dict(meta)
-    except (mr.ModrinthError, OSError) as exc:
-        if not found:
-            raise
-        found.warning = (
-            'CurseForge could not be checked; only exact Modrinth matches are shown. '
-            + str(exc)
+    except (mr.ModrinthError, OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        provider_errors.append(('CurseForge', 'could not be checked: ' + (str(exc) or 'provider lookup failed')))
+
+    # Never turn an error from one provider into a false "no match" result.
+    # Conversely, do not throw away successful exact matches from the other.
+    if not found and provider_errors:
+        details = '; '.join(f'{provider} {message}' for provider, message in provider_errors)
+        raise mr.ModrinthError('Could not complete exact mod identification. ' + details)
+    if found and provider_errors:
+        found.warning = 'Partial online identity results. ' + '; '.join(
+            f'{provider} {message}' for provider, message in provider_errors
         )
 
     for filename, meta in found.items():
@@ -100,6 +131,46 @@ def identify_files(server_path, paths):
     if found:
         _write_record(record_path, record)
     return found
+
+
+def verified_identity_for_file(server_path, filename, file_path):
+    """Return a saved identity only while its exact local hash still matches.
+
+    Older records can outlive manual replacement of a JAR. Never use those
+    records for version changes, dependency checks, or source links unless the
+    current file still matches its recorded SHA-1 or CurseForge fingerprint.
+    """
+    path = Path(file_path)
+    if Path(filename).name != filename or "\\" in filename:
+        return None
+    if not path.is_file() or path.is_symlink():
+        return None
+
+    record = mr.added_mods(server_path)
+    base = filename.removesuffix('.disabled')
+    meta = record.get(filename) or record.get(base)
+    if not isinstance(meta, dict) or not meta.get('project_id') or not meta.get('version_id'):
+        return None
+
+    recorded_sha1 = meta.get('sha1', '')
+    if (isinstance(recorded_sha1, str) and len(recorded_sha1) == 40
+            and all(ch in '0123456789abcdefABCDEF' for ch in recorded_sha1)):
+        try:
+            return meta if mr._sha1(path).lower() == recorded_sha1.lower() else None
+        except OSError:
+            return None
+
+    # CurseForge API matches may not include SHA-1; in that case their exact
+    # normalized fingerprint is the provider's identity proof. Don't reuse a
+    # stray fingerprint field from a different identity type.
+    recorded_fingerprint = meta.get('fingerprint')
+    if meta.get('identity') == 'exact-curseforge-fingerprint' and isinstance(recorded_fingerprint, int):
+        from . import curseforge as cf
+        try:
+            return meta if cf.fingerprint_file(path) == recorded_fingerprint else None
+        except OSError:
+            return None
+    return None
 
 
 def _write_record(path, record):

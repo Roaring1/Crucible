@@ -451,12 +451,18 @@ def check_update(server_path, filename: str, *, loader: str,
     the exact version that was installed). Raises ModrinthError on network
     failure so the caller can show a friendly offline message.
     """
-    rec = added_mods(server_path)
-    base = filename[:-9] if filename.endswith(".disabled") else filename
-    meta = rec.get(base) or rec.get(filename)
+    from .versions import list_versions, verified_identity_for_file
+    meta = verified_identity_for_file(
+        server_path, filename, Path(server_path) / "mods" / filename
+    )
     if not meta or not meta.get("project_id"):
         return None
-    newest = resolve_file(meta["project_id"], loader=loader, mc_version=mc_version)
+    # Route through the provider-aware listing so a saved CurseForge ID is
+    # never accidentally sent to the Modrinth project endpoint.
+    options = list_versions(meta["project_id"], loader=loader, mc_version=mc_version)
+    if not options:
+        return None
+    newest = options[0]
     if newest.version_id and newest.version_id == meta.get("version_id", ""):
         return None
     return newest
@@ -486,8 +492,13 @@ def verify_dependencies(server_path, *, loader: str, mc_version: str):
     rec = added_mods(server_path)
     missing = {}
     notes = []
-    for fname, meta in rec.items():
+    from .versions import verified_identity_for_file
+    for fname in rec:
         if fname.endswith(".disabled") or fname not in present:
+            continue
+        meta = verified_identity_for_file(server_path, fname, mods / fname)
+        if not meta:
+            notes.append(f"{fname}: installed file no longer matches its recorded identity; identify online before trusting dependency metadata.")
             continue
         pid = meta.get("project_id")
         if not pid:
