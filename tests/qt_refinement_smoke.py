@@ -134,15 +134,21 @@ partial_matches['identified.jar']={'project_id':'mr-project','identity':'exact-s
 partial_matches.warning='CurseForge could not be checked; only exact Modrinth matches are shown. HTTP 403.'
 mods=ModsTab();mods._instance=inst
 with patch.object(mod_versions,'identify_files',return_value=partial_matches), \
-     patch.object(ModsTab,'_run_net',lambda self,fn,on_done,busy:on_done(fn())), \
      patch.object(ModsTab,'refresh'), \
      patch('PyQt6.QtWidgets.QMessageBox.warning') as partial_warning, \
      patch('PyQt6.QtWidgets.QMessageBox.information') as full_info:
  mods._identify_online()
-partial_warning.assert_called_once()
-assert partial_warning.call_args.args[1]=='Partial online identity'
-assert 'HTTP 403' in partial_warning.call_args.args[2]
-assert not full_info.called
+ deadline=time.monotonic()+4
+ while not partial_warning.called and time.monotonic()<deadline:
+  QTest.qWait(10)
+ partial_warning.assert_called_once()
+ assert partial_warning.call_args.args[1]=='Partial online identity'
+ assert 'HTTP 403' in partial_warning.call_args.args[2]
+ assert not full_info.called
+ deadline=time.monotonic()+4
+ while mods.has_active_operation() and time.monotonic()<deadline:
+  QTest.qWait(10)
+ assert not mods.has_active_operation(), 'identity worker should retire after delivering the warning'
 mods.close()
 
 m=InstanceManager(root/'registry');m.load();(root/'server').mkdir(exist_ok=True)
