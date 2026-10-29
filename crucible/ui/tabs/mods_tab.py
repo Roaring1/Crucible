@@ -686,7 +686,7 @@ class ModsTab(QWidget):
                 lines.append("No missing dependencies were found among linked mods. Unlinked/custom mods are not verified.")
             else:
                 lines.append(
-                    f"Installed {len(missing)} missing dependency(ies):")
+                    f"Found {len(missing)} missing dependency(ies) to install:")
                 lines.extend(f"  • {m.filename}" for m in missing)
                 if installed is not None:
                     lines.append("")

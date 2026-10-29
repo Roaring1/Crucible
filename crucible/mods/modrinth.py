@@ -83,9 +83,19 @@ class ModHit:
         return ""
 
     def page_url(self) -> str:
+        # CurseForge requires its official slug; a numeric project ID is not a
+        # trustworthy URL slug. Do not guess a URL if provider metadata lacks it.
+        if not isinstance(self.project_id, str) or not self.project_id:
+            return ""
         if self.project_id.startswith("cf:"):
-            return "https://www.curseforge.com/minecraft/mc-mods/" + (self.slug or self.project_id[3:])
-        return "https://modrinth.com/mod/" + (self.slug or self.project_id)
+            slug = self.slug.strip() if isinstance(self.slug, str) else ""
+            if not slug or slug in (".", "..") or any(ord(ch) < 32 for ch in slug):
+                return ""
+            return "https://www.curseforge.com/minecraft/mc-mods/" + urllib.parse.quote(slug, safe="")
+        slug = (self.slug if isinstance(self.slug, str) and self.slug else self.project_id).strip()
+        if not slug or any(ord(ch) < 32 for ch in slug):
+            return ""
+        return "https://modrinth.com/mod/" + urllib.parse.quote(slug, safe="")
 
     def human_downloads(self) -> str:
         return humanize_count(self.downloads)
@@ -139,10 +149,17 @@ def search(query: str, *, loader: str = "", mc_version: str = "",
               "offset": str(max(0, int(offset))),
               "facets": json.dumps(facets), "index": index}
     data = _get(f"{_API}/search?{urllib.parse.urlencode(params)}")
+    if not isinstance(data, dict) or not isinstance(data.get("hits"), list):
+        raise ModrinthError("Modrinth returned an unexpected search-result format.")
     hits = []
-    for h in data.get("hits", []):
+    for h in data["hits"]:
+        if not isinstance(h, dict):
+            raise ModrinthError("Modrinth returned malformed search metadata.")
+        project_id = h.get("project_id")
+        if not isinstance(project_id, str) or not project_id or project_id.startswith("cf:"):
+            raise ModrinthError("Modrinth returned a project ID from the wrong provider namespace.")
         hits.append(ModHit(
-            project_id=h.get("project_id", ""), slug=h.get("slug", ""),
+            project_id=project_id, slug=h.get("slug", ""),
             title=h.get("title", "?"), description=h.get("description", ""),
             downloads=int(h.get("downloads", 0) or 0),
             categories=list(h.get("display_categories")
@@ -190,19 +207,27 @@ class ModpackFile:
 def resolve_modpack(project_id: str, *, mc_version: str = "",
                     loader: str = "") -> "ModpackFile":
     """Find the newest .mrpack file for a Modrinth modpack project."""
+    if not isinstance(project_id, str) or not project_id or project_id.startswith("cf:"):
+        raise ModrinthError("Modrinth modpack resolution requires a Modrinth project ID.")
     params = {}
     if mc_version:
         params["game_versions"] = json.dumps([mc_version])
     if loader and loader != "vanilla":
         params["loaders"] = json.dumps([loader])
-    url = f"{_API}/project/{project_id}/version"
+    url = f"{_API}/project/{urllib.parse.quote(project_id, safe='')}/version"
     if params:
         url += "?" + urllib.parse.urlencode(params)
     versions = _get(url)
+    if not isinstance(versions, list):
+        raise ModrinthError("Modrinth returned an unexpected modpack-version format.")
     if not versions:
         raise ModrinthError("No matching modpack version found.")
     v = versions[0]
+    if not isinstance(v, dict) or v.get("project_id") != project_id or not v.get("id"):
+        raise ModrinthError("Modrinth returned a modpack version for a different or unknown project.")
     files = v.get("files", []) or []
+    if not isinstance(files, list) or any(not isinstance(item, dict) for item in files):
+        raise ModrinthError("Modrinth returned malformed modpack file metadata.")
     mrpack = None
     for f in files:
         if str(f.get("filename", "")).lower().endswith(".mrpack"):
@@ -213,12 +238,15 @@ def resolve_modpack(project_id: str, *, mc_version: str = "",
         mrpack = _pick_primary(files)
     if not mrpack:
         raise ModrinthError("Modpack version has no downloadable file.")
+    hashes = mrpack.get("hashes", {}) or {}
+    if not isinstance(hashes, dict):
+        raise ModrinthError("Modrinth returned malformed modpack file hashes.")
     return ModpackFile(
         project_id=project_id, title=v.get("name", project_id),
         version_id=v.get("id", ""), version_number=v.get("version_number", ""),
         filename=mrpack.get("filename", "modpack.mrpack"),
         url=mrpack.get("url", ""),
-        sha1=(mrpack.get("hashes", {}) or {}).get("sha1", ""),
+        sha1=hashes.get("sha1", ""),
         size=int(mrpack.get("size", 0) or 0),
         game_versions=list(v.get("game_versions", []) or []),
         loaders=list(v.get("loaders", []) or []),
@@ -256,6 +284,8 @@ def resolve_file(project_id: str, *, loader: str, mc_version: str) -> ModFile:
     up installed on a Forge 1.7.10 server. Better to stop and make the caller
     fill in the instance metadata.
     """
+    if not isinstance(project_id, str) or not project_id or project_id.startswith("cf:"):
+        raise ModrinthError("Modrinth release resolution requires a Modrinth project ID.")
     if not mc_version or not loader:
         missing = " and ".join(
             part for part, ok in (("Minecraft version", mc_version), ("mod loader", loader))
@@ -272,25 +302,58 @@ def resolve_file(project_id: str, *, loader: str, mc_version: str) -> ModFile:
         params["loaders"] = json.dumps([loader])
     if mc_version:
         params["game_versions"] = json.dumps([mc_version])
-    url = f"{_API}/project/{project_id}/version"
+    url = f"{_API}/project/{urllib.parse.quote(project_id, safe='')}/version"
     if params:
         url += "?" + urllib.parse.urlencode(params)
     versions = _get(url)
+    if not isinstance(versions, list):
+        raise ModrinthError("Modrinth returned an unexpected release-list format.")
     if not versions:
         raise ModrinthError(
             "No file matches this server's Minecraft version/loader.")
     v = versions[0]
-    pf = _pick_primary(v.get("files", []))
-    if not pf:
+    if not isinstance(v, dict) or v.get("project_id") != project_id or not isinstance(v.get("id"), str) or not v.get("id"):
+        raise ModrinthError("Modrinth returned a release for a different or unknown project.")
+    loaders = v.get("loaders", [])
+    game_versions = v.get("game_versions", [])
+    if not isinstance(loaders, list) or not isinstance(game_versions, list):
+        raise ModrinthError("Modrinth returned malformed compatibility metadata.")
+    if mc_version not in game_versions or (loader != "vanilla" and loader not in loaders):
+        raise ModrinthError("Modrinth returned a release incompatible with this server's Minecraft version or loader.")
+    version_files = v.get("files", [])
+    if not isinstance(version_files, list) or any(not isinstance(item, dict) for item in version_files):
+        raise ModrinthError("Modrinth returned malformed file metadata.")
+    pf = _pick_primary(version_files)
+    if not isinstance(pf, dict):
         raise ModrinthError("Selected version has no downloadable file.")
-    deps = [d.get("project_id") for d in v.get("dependencies", [])
+    filename = pf.get("filename")
+    if not isinstance(filename, str) or Path(filename).name != filename or "\\" in filename or not filename.endswith(".jar"):
+        raise ModrinthError("Modrinth returned an unsafe or non-JAR filename.")
+    hashes = pf.get("hashes", {}) or {}
+    if not isinstance(hashes, dict):
+        raise ModrinthError("Modrinth returned malformed file hashes.")
+    sha1 = hashes.get("sha1", "")
+    if not isinstance(sha1, str) or len(sha1) != 40 or any(ch not in "0123456789abcdefABCDEF" for ch in sha1):
+        raise ModrinthError("Modrinth did not provide a verifiable SHA-1 for the selected file.")
+    raw_dependencies = v.get("dependencies", [])
+    if not isinstance(raw_dependencies, list) or any(not isinstance(dep, dict) for dep in raw_dependencies):
+        raise ModrinthError("Modrinth returned malformed dependency metadata.")
+    deps = [d.get("project_id") for d in raw_dependencies
             if d.get("dependency_type") == "required" and d.get("project_id")]
+    try:
+        size = int(pf.get("size", 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise ModrinthError("Modrinth returned an invalid file size.") from exc
+    if size < 0:
+        raise ModrinthError("Modrinth returned an invalid file size.")
+    url = pf.get("url", "") or ""
+    if not isinstance(url, str):
+        raise ModrinthError("Modrinth returned an invalid download URL.")
     return ModFile(
         project_id=project_id, title=v.get("name", project_id),
         version_id=v.get("id", ""), version_number=v.get("version_number", ""),
-        filename=pf.get("filename", "mod.jar"), url=pf.get("url", ""),
-        sha1=(pf.get("hashes", {}) or {}).get("sha1", ""),
-        size=int(pf.get("size", 0) or 0), dependencies=deps,
+        filename=filename, url=url, sha1=sha1,
+        size=size, dependencies=deps,
     )
 
 
@@ -387,12 +450,21 @@ def install_files(server_path, files: list, *, verify: bool = True) -> InstallRe
                 or "\\" in mf.filename or not mf.filename.lower().endswith(".jar")):
             res.failed.append(f"{mf.filename} (unsafe mod filename)")
             continue
+        # Every provider-backed install must carry a usable SHA-1. Without
+        # this, the old implementation skipped the checksum comparison entirely
+        # when the hash was empty, which is unsafe for the direct dependency-
+        # install path as well as the transactional replacement path.
+        sha1 = mf.sha1
+        if (not isinstance(sha1, str) or len(sha1) != 40
+                or any(ch not in "0123456789abcdefABCDEF" for ch in sha1)):
+            res.failed.append(mf.filename + " (no valid SHA-1; download was not installed)")
+            continue
         dest = mods / mf.filename
         if dest.is_symlink():
             res.failed.append(mf.filename + " (symlinked destination)")
             continue
         if dest.exists():
-            if not mf.sha1 or _sha1(dest).lower() != mf.sha1.lower():
+            if _sha1(dest).lower() != sha1.lower():
                 res.failed.append(mf.filename + " (different file already exists; use Change version to replace safely)")
                 continue
             res.skipped.append(mf.filename)
@@ -403,7 +475,9 @@ def install_files(server_path, files: list, *, verify: bool = True) -> InstallRe
             continue
         try:
             _download(mf.url, dest)
-            if verify and mf.sha1 and _sha1(dest).lower() != mf.sha1.lower():
+            # Keep `verify` in the public signature for backwards compatibility,
+            # but never permit an unchecked provider install.
+            if _sha1(dest).lower() != sha1.lower():
                 dest.unlink(missing_ok=True)
                 res.failed.append(mf.filename + " (checksum mismatch)")
                 continue
@@ -510,7 +584,10 @@ def verify_dependencies(server_path, *, loader: str, mc_version: str):
                 main = next((v for v in options if v.version_id == meta.get("version_id")), None)
                 if main is None: raise ModrinthError("Installed CurseForge version was not found; refusing to verify a different release.")
             elif meta.get("version_id"):
-                main = _mod_file(_get(f"{_API}/version/{urllib.parse.quote(meta['version_id'], safe='')}"))
+                raw = _get(f"{_API}/version/{urllib.parse.quote(meta['version_id'], safe='')}")
+                if raw.get("project_id") != pid:
+                    raise ModrinthError("Recorded version does not belong to the recorded project; refusing to verify a different release.")
+                main = _mod_file(raw)
             else:
                 raise ModrinthError("Installed version is unknown; use Identify online first.")
             files = resolve_selected(main, loader=loader, mc_version=mc_version)

@@ -94,6 +94,23 @@ with patch.object(_SearchWorker,'run',unexpected_search):
  QTest.qWait(40)
 assert search_started==[], f'closed Add Mod dialog unexpectedly launched a search: {search_started}'
 
+# Add Mod must never turn a missing CurseForge slug into a guessed numeric URL.
+from crucible.mods.modrinth import ModHit
+with patch.object(AddModDialog,'_do_search',lambda *args,**kw:None):
+ browser=AddModDialog(inst)
+ browser._view=[ModHit('cf:123','','Example','',0)]
+ browser._results.addItem('Example')
+ browser._results.setCurrentRow(0)
+ with (
+  patch('PyQt6.QtWidgets.QMessageBox.information') as missing_slug,
+  patch('PyQt6.QtGui.QDesktopServices.openUrl') as guessed_open,
+ ):
+  browser._open_page()
+ missing_slug.assert_called_once()
+ assert missing_slug.call_args.args[1]=='Project page unavailable'
+ guessed_open.assert_not_called()
+ browser.reject()
+
 # The selected provider must route search to its own adapter, not silently
 # fall back to Modrinth. These calls use fixtures and never access the network.
 from crucible.mods import curseforge, modrinth
@@ -119,8 +136,7 @@ identified_path=root/'server'/'mods'/'identified.jar'
 identified_bytes=b'identified test JAR bytes'
 identified_path.write_bytes(identified_bytes)
 (root/'server'/'.crucible'/'added-mods.json').write_text(json.dumps({
- 'identified.jar': {'project_id':'cf:123','version_id':'456','sha1':hashlib.sha1(identified_bytes).hexdigest(),
-                    'identity':'exact-curseforge-fingerprint'}
+ 'identified.jar': {'project_id':'cf:123','version_id':'456','sha1':hashlib.sha1(identified_bytes).hexdigest()}
 }))
 mods=ModsTab();mods._instance=inst
 identified=ModEntry('identified.jar',identified_path,True,10)
@@ -190,6 +206,37 @@ with (
  while mods.has_active_operation() and time.monotonic()<deadline:
   QTest.qWait(10)
  assert not mods.has_active_operation(), 'Change version identity worker should retire cleanly'
+mods.close()
+
+# Dependency verification must report actual installation outcomes, and direct
+# installs with missing checksums are refused without changing existing mods.
+from crucible.mods.modrinth import ModFile, InstallResult
+mods=ModsTab();mods._instance=inst
+candidate=ModFile('mr-dependency','Dependency','v1','1.0','dependency.jar',
+                  'https://cdn.modrinth.com/dependency.jar','',4)
+with (
+ patch.object(ModsTab,'_require_stopped',return_value=True),
+ patch.object(modrinth,'verify_dependencies',return_value=([candidate],[])),
+ patch.object(modrinth,'install_files',return_value=InstallResult(failed=[
+     'dependency.jar (no valid SHA-1; download was not installed)'
+ ])),
+ patch.object(ModsTab,'_update_count'),
+ patch.object(ModsTab,'refresh'),
+ patch('PyQt6.QtWidgets.QMessageBox.information') as dep_result,
+):
+ mods._verify_deps()
+ deadline=time.monotonic()+4
+ while not dep_result.called and time.monotonic()<deadline:
+  QTest.qWait(10)
+ dep_result.assert_called_once()
+ dep_message=dep_result.call_args.args[2]
+ assert 'Found 1 missing dependency(ies) to install' in dep_message
+ assert '1 failed' in dep_message
+ assert 'Installed 1 missing dependency(ies)' not in dep_message
+ deadline=time.monotonic()+4
+ while mods.has_active_operation() and time.monotonic()<deadline:
+  QTest.qWait(10)
+ assert not mods.has_active_operation(), 'dependency verifier worker should retire cleanly'
 mods.close()
 
 m=InstanceManager(root/'registry');m.load();(root/'server').mkdir(exist_ok=True)
