@@ -62,32 +62,54 @@ This audit maps the reviewed call chain into the known identity and replacement 
 
 This is the safest engineering baseline under the literal published wording, but it is not a guarantee of compliance: the terms are broad enough that CurseForge must clarify UI memory, required file downloads/installation, destination filenames, locally computed hashes, and local recovery metadata. A written exception / license for the current persistent design could preserve more behavior than a no-persistence redesign.
 
-## 3. Written support/application request (draft — not submitted)
+## 3. Owner decision matrix
 
-**Subject:** API application and written clarification: Crucible Linux desktop server manager and no-cache restriction
+This is an engineering decision aid, not a statement of permission. The owner can choose whether to seek approval for the existing integration or pursue minimal retention; only CurseForge/Overwolf can clarify the terms and grant any required authorization.
+
+| Category | Provenance / current issue | Least-retention proposal | Exact external clarification required |
+|---|---|---|---|
+| API-response metadata | Provider-returned IDs, version labels, hashes, URLs, dependency/compatibility fields and names currently flow into persistent identity/history records. | Keep only the fields required in active UI/operation memory, then discard. No API-response cache, provider mapping, history copy, or provider-derived logs. | Does the no-save/no-cache clause permit active-dialog memory or one-operation use? Which fields, locations and retention durations are permitted? |
+| Locally computed digests | Fingerprints and SHA-1 values can be computed locally. A fingerprint-to-project association exists only after an API match; the association is not merely a local calculation. | Recompute when needed; do not persist provider mappings. Persist a local digest only if specifically authorized and only without the provider association. | May local hashes/fingerprints be retained solely for local integrity checks? Is an API-confirmed fingerprint association restricted even if the raw fingerprint was computed locally? |
+| User-supplied Prism manifest values | Imported `manifest.json` may contain `projectID`/`fileID`. The IDs came from user-supplied input at copy time, but Crucible's copy can survive restart and drive later API lookups. | Do not silently rewrite/delete existing files. Until clarified, avoid creating new app-owned copies or automatically using retained IDs for new API lookups; keep the original imported input intact. | Are user-supplied IDs or a copied source manifest treated differently from API-returned data? May the app retain and reuse them for fresh requests? |
+| API-derived filenames | A returned `fileName` can become the installed destination and appear in operation receipts. | Don't retain the name as provider metadata. Use a local-generated name only if that remains compatible with Minecraft/mod tooling and is approved; otherwise keep the feature gated. | Is using a provider-returned filename as a durable installed filename or receipt entry covered by the retention restriction? Is a generated local name acceptable? |
+| Temporary staging/history data | Replacement staging can write `added-mods.json`; history copies metadata; receipts record filenames. Deleting staging afterward doesn't prove the writes are allowed. | Never stage provider metadata in JSON or logs; keep receipts to local operation IDs/status. Keep history metadata provider-free. | Are transient in-memory fields permitted? Are temporary disk writes permitted even if removed at operation completion? Which local recovery fields may remain? |
+| Downloaded/installed artifacts | JAR bytes are downloaded to staging, installed in `mods/`, and may be copied for rollback. Artifacts and filenames persist. | Install/retain only if artifact storage is allowed. Keep API metadata out of receipts/history. Keep JAR backups only if separately approved. | Does the restriction apply to downloaded bytes, temporary files, installed JARs, and rollback copies? What about normal user-requested installation into the user's own server? |
+
+## 4. Written support/application request (ready to submit — **not submitted**)
+
+**Subject:** API application and written terms clarification for Crucible desktop Minecraft server manager
 
 Hello CurseForge / Overwolf API team,
 
-I maintain Crucible, an open-source Linux desktop application for managing user-owned Minecraft Java dedicated servers. The proposed optional CurseForge provider lets a user search projects, match an installed JAR using a locally computed file fingerprint, select a compatible file and required dependencies, and install/update files into that user's own server folder. JAR bytes are not uploaded. Requests use the official API and approved download endpoints; Crucible does not scrape the site, invent download URLs, bypass author distribution controls, or retry denied downloads through alternate hosts. Modrinth and local/manual JAR workflows remain available independently.
+We maintain [Crucible](https://github.com/Roaring1/Crucible), an open-source Linux desktop application for managing user-owned Minecraft Java dedicated servers. We are seeking approval and written guidance before enabling or distributing its optional CurseForge integration.
 
-I am preparing/submitting the developer application and would like written clarification before enabling or distributing this integration. Section 3.1 of the published third-party API terms says the developer must not “save or cache any data obtained through the API or SDK.” The current prototype persists response-derived project/file IDs, display/version labels and SHA-1 values in local install records, also snapshots those records into operation history, and records installed filenames in recovery receipts. It also stages selected files on disk to verify and install them.
+The proposed integration uses the official CurseForge API for project search, exact fingerprint matching of locally installed JARs, compatible file/version selection, required dependency resolution, and user-initiated installation or update through the official download infrastructure. Crucible computes file fingerprints locally; it does not upload the JAR contents for fingerprint identification. It does not scrape CurseForge pages, invent download URLs, bypass distribution controls, or retry denied requests against alternate hosts. Modrinth and local/manual JAR workflows are independent.
 
-Could you please confirm in writing:
+The published third-party API terms prohibit saving or caching data obtained through the API/SDK. We want to understand precisely what the terms permit before deciding whether to seek an app-specific authorization or redesign the integration for minimal retention.
 
-1. Is this desktop server-management use case eligible for API approval, and are there any application, licensing, attribution, quota, author-consent, or distribution restrictions specific to it?
-2. When a user imports a Prism pack whose supplied `manifest.json` contains CurseForge `projectID` and `fileID` values, may Crucible retain that original manifest in the user's own server folder and later use those user-provided identifiers for fresh API lookups? Does your no-save/no-cache clause distinguish user-supplied source files from data returned by the API?
-3. Does “save or cache any data” prohibit these local per-server records and history snapshots? What about a response kept only in process memory for an open dialog or one immediate install operation, and temporary metadata files deleted at operation completion?
-4. May the app persist a locally computed digest solely to detect whether the user's local JAR later changed, if it does **not** persist a mapping to a CurseForge project/file ID? May it persist any association between an exact local fingerprint and provider identity? Are API-returned filenames permissible as installed destination names or in local recovery receipts?
-5. Are users required to apply for and configure their own individually issued API keys, or can an approved developer use an app-specific key in a distributed open-source desktop client? The published terms say a developer's key is unique, non-transferable and may not be shared. We will not bundle or publish a secret. If no end-user key model is supported, what documented authentication arrangement is approved for a desktop client? We will not use a proxy unless you expressly approve the arrangement in writing.
-6. Is downloading the official JAR to the user's chosen server folder and retaining the installed file and local rollback copy permitted under the applicable API terms and project distribution setting? If yes, which response metadata must be discarded and when?
+Please answer these questions in writing:
 
-We can implement a strict no-provider-metadata-persistence mode if required, but it affects restart behavior, offline use, update/dependency UI and file naming. We will keep the integration disabled for general release until the correct approval and retention design are clear. Please point us to the applicable application form and confirm whether this reply can be treated as written guidance for this specific app.
+1. **Application eligibility and key arrangement.** Is an open-source Linux desktop server manager that operates on users' own Minecraft servers an eligible third-party application? Must each user obtain and configure their own API key, or can an approved application use a developer-issued key in a distributed open-source desktop client? The terms describe each developer's key as unique and non-transferable; we will not bundle or publish a secret. Please specify the approved key model, any quota or separate licensing requirements, attribution/branding requirements, author-consent rules, and whether the same key is accepted for REST API and direct CDN downloads.
 
-Thank you.
+2. **No-save/no-cache interpretation.** Which of the following are allowed: holding response fields in process memory while a search dialog is visible; keeping them in memory for one user-initiated install/update; writing temporary metadata to disk during staging and deleting it at the end; and retaining any fields in local operation logs or receipts? If allowed, please state any field, location, or time limits.
 
-**Submission:** the official API application guidance directs third-party developers to a reviewed application and requires acceptance of the terms; it says review considers author earnings, API/server/CDN impact, and author consent for third-party distribution. Start at the [CurseForge API application form](https://forms.monday.com/forms/dce5ccb7afda9a1c21dab1a1aa1d84eb?r=use1). For a written support ticket, use [CurseForge Support](https://support.curseforge.com/support/tickets/new).
+3. **Locally computed data.** May Crucible compute fingerprints or SHA-1 digests locally and retain a digest solely for local integrity/change detection if it does not retain any CurseForge project/file association? May it retain an exact locally-computed fingerprint-to-project/file association returned by a successful fingerprint match? Please distinguish the raw locally computed value from the identity association created by the API response.
 
-## 4. Release gates
+4. **User-supplied Prism manifests.** A user may import a Prism pack whose supplied `manifest.json` already contains CurseForge `projectID` and `fileID` values. May Crucible retain an exact copy of that user-supplied manifest in the user's server-management folder and use the user-provided IDs to make fresh API lookup requests later? Does the no-save/no-cache restriction treat values from user-supplied source files differently from values returned by the API? We will not silently modify or delete source manifests to work around the terms.
+
+5. **Filenames, downloaded artifacts and recovery copies.** Is Crucible permitted to download an official JAR to the user's selected server folder and retain the installed JAR? Are temporary staging files and byte-for-byte rollback copies permitted? Is using the API-returned `fileName` as a durable destination filename or in a recovery receipt considered saving API data? If downloaded artifacts are permitted, which metadata must be discarded, and when? If they are not permitted, please state the permitted installation model.
+
+6. **Author distribution controls.** Where the project's third-party distribution setting allows distribution, is a user-requested download/install via Crucible permitted, or is separate author consent, licensing, or attribution required? We will respect restrictions and will not seek alternate download URLs for unavailable files.
+
+We can remove persistent provider metadata and perform fresh online lookups after restart if that is the approved approach, but it would reduce offline identification, saved update selection and dependency resolution. We will keep the current persistent integration unmerged and undistributed until the approved key arrangement and retention treatment are clear. Please confirm whether the application should be submitted through the official [API application form](https://forms.monday.com/forms/dce5ccb7afda9a1c21dab1a1aa1d84eb?r=use1), and whether this request can be associated with that application for written review.
+
+Thank you,
+Crucible maintainers
+
+**Submission route:** [CurseForge API application form](https://forms.monday.com/forms/dce5ccb7afda9a1c21dab1a1aa1d84eb?r=use1) · [CurseForge Support ticket](https://support.curseforge.com/support/tickets/new)
+
+## 5. Release gates
+
 
 - Keep PR #34 open and **do not merge/release/deploy the current persistent CurseForge integration** pending resolution.
 - Do not treat possession or successful validation of a key as approval for Crucible or as an exception to the retention clause.
