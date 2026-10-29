@@ -126,6 +126,25 @@ with patch.object(ModsTab,'_run_net',lambda self,fn,on_done,busy:on_done(fn())),
  assert open_url.call_count==1 and open_url.call_args.args[0].toString()=='https://www.curseforge.com/minecraft/mc-mods/example-mod'
 mods.close()
 
+# Exact Modrinth hits survive a CurseForge auth failure, and the real Qt
+# completion callback communicates that the result is partial rather than full.
+from crucible.mods import versions as mod_versions
+partial_matches=mod_versions.IdentityMatches()
+partial_matches['identified.jar']={'project_id':'mr-project','identity':'exact-sha1'}
+partial_matches.warning='CurseForge could not be checked; only exact Modrinth matches are shown. HTTP 403.'
+mods=ModsTab();mods._instance=inst
+with patch.object(mod_versions,'identify_files',return_value=partial_matches), \
+     patch.object(ModsTab,'_run_net',lambda self,fn,on_done,busy:on_done(fn())), \
+     patch.object(ModsTab,'refresh'), \
+     patch('PyQt6.QtWidgets.QMessageBox.warning') as partial_warning, \
+     patch('PyQt6.QtWidgets.QMessageBox.information') as full_info:
+ mods._identify_online()
+partial_warning.assert_called_once()
+assert partial_warning.call_args.args[1]=='Partial online identity'
+assert 'HTTP 403' in partial_warning.call_args.args[2]
+assert not full_info.called
+mods.close()
+
 m=InstanceManager(root/'registry');m.load();(root/'server').mkdir(exist_ok=True)
 empty_manager=InstanceManager(root/'empty-registry');empty_manager.load()
 empty_panel=InstancePanel(empty_manager);empty_panel.resize(900,560);empty_panel.show();QTest.qWait(20)
