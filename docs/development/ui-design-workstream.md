@@ -1,6 +1,6 @@
 # UI Design and Interaction Workstream
 
-**Status:** PRs #37-#41 retain their verified implementation status. The pre-existing Setup horizontal overflow found in the combined audit is now fixed in [PR #42](https://github.com/Roaring1/Crucible/pull/42), with a new responsive-layout test file, 611 passing tests plus 74 subtests, and hosted CI pending. PRs #34/#35 remain integration gates for broader Add Mod/provider work.  
+**Status:** PRs #37-#41 retain their verified implementation status. The pre-existing Setup horizontal overflow found in the combined audit is now fixed in [PR #42](https://github.com/Roaring1/Crucible/pull/42), with a new responsive-layout test file, 611 passing tests plus 74 subtests, and the cross-version keyboard-focus issue from its first hosted run corrected locally; CI for the final head is pending. PRs #34/#35 remain integration gates for broader Add Mod/provider work.  
 **Prepared:** 2026-10-29  
 **Initial reference commit:** `34ca28fd8f989fe3eb98b90c81012d141684f4c9`  
 **Workstream:** Chat 3 — whole-app UX, local SVG icons, loading skeletons, restrained transitions.
