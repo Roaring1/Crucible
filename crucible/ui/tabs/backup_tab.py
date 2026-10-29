@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThread
+from PyQt6.QtCore import Qt, QThread, QSize
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtCore import QUrl
 from PyQt6.QtWidgets import (
@@ -35,6 +35,7 @@ from ...data.instance_model import ServerInstance
 from ...data.backup_manager import BackupManager, BackupWorker, BackupEntry
 from ...process.tmux_manager import TmuxManager
 from .. import theme
+from ..icons import local_icon
 from ..thread_lifecycle import connect_thread_cleanup
 
 
@@ -66,8 +67,12 @@ class BackupTab(QWidget):
         self._size_label  = QLabel("")
         self._size_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
 
-        self._open_btn   = QPushButton("📁  Open Folder")
-        self._backup_btn = QPushButton("💾  Backup Now")
+        self._open_btn = QPushButton("Open Folder")
+        self._open_btn.setIcon(local_icon("folder-open"))
+        self._open_btn.setIconSize(QSize(16, 16))
+        self._backup_btn = QPushButton("Backup Now")
+        self._backup_btn.setIcon(local_icon("archive"))
+        self._backup_btn.setIconSize(QSize(16, 16))
         self._backup_btn.setObjectName("PrimaryButton")
 
         self._open_btn.clicked.connect(self._open_folder)

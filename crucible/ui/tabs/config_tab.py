@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
 
 from ...data.instance_model import ServerInstance
 from .. import theme
+from ..icons import local_icon
 
 
 # Keys we want to sort first and highlight -- grouped for readability
@@ -114,8 +115,9 @@ class ConfigTab(QWidget):
         self._save_btn.clicked.connect(self._save)
         toolbar.addWidget(self._save_btn)
 
-        reload_btn = QPushButton("↻")
-        reload_btn.setFixedWidth(36)
+        reload_btn = QPushButton("Reload")
+        reload_btn.setIcon(local_icon("refresh-cw"))
+        reload_btn.setIconSize(QSize(16, 16))
         reload_btn.setToolTip("Reload from disk (discards unsaved edits)")
         reload_btn.setAccessibleName("Reload server properties")
         reload_btn.clicked.connect(self._reload_requested)
