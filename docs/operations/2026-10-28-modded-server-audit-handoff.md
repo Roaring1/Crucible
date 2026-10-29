@@ -2,27 +2,15 @@
 
 ## Latest resumed-session update — 2026-10-28
 
-The authoritative current state, final startup evidence, exact hashes, and rollback instructions are in [the fresh-world preflight](https://github.com/Roaring1/Crucible/blob/main/docs/operations/2026-10-28-fresh-world-preflight.md).
+The authoritative current state and hashes are in [the fresh-world preflight](https://github.com/Roaring1/Crucible/blob/main/docs/operations/2026-10-28-fresh-world-preflight.md).
 
-### Final status
+- Production is stopped with port 25566 free. Crucible readiness is 7/7. The next action is the operator's Start click; `level-name=world_fresh_20261028` is configured.
+- The deployed repair pack contains 436 data JSON resources, ZIP SHA-256 `3fda93a9d6f182b0553be124d192554abcefbfa8ebe3bb60906fb53a9631cf33`, and is installed only under the new world.
+- Original-Quark disposable fresh-world test reached `Done (3.315s)!`. Zero ERROR-level lines; zero recipe/loot parse errors; zero global-loot-modifier decode warnings; zero Dungeons Arise orphan-parent warnings; zero BCLib/Sable/path/dedicated-class errors.
+- Quark Stoneling/Toretoise `MONSTER` spawn category remains unchanged because the upstream maintainer confirms this is intentional mob-cap behavior. Experimental binary patch was discarded and is not deployed. Three optional data-map warnings reference map types from mods not installed.
+- Existing `world/level.dat` SHA-256 remains `091d4e46ff6980c931887ba66fd959712e57e211c83d6c929d0c7d086bf29482`; the new production target has the pack but no `level.dat` yet.
 
-- Production is **stopped**, port 25566 is free, and no production Minecraft JVM/tmux session exists. Crucible is ready for the operator's next Start click; `level-name=world_fresh_20261028` is configured.
-- The definitive final first-generation test reached `Done (3.887s)!` from a level folder without `level.dat`; created `level.dat` plus four region files; loaded `file/fresh-world-launch-fixes (world)` among 20 enabled data packs; and logged `wover:normal` with 95 Terralith biomes.
-- A second start reached `Done (3.561s)!`. Both starts have zero ERROR-level lines, zero recipe parse errors, zero loot-table parse errors, zero BCLib errors, zero Sable resource errors, zero invalid recipe-path errors, and zero dedicated-server class probes.
-- Moonlight's complete Fabric API/Connector compatibility advisory is still visible at WARN; it is not suppressed. HammerLib's successful recipe-extension registration is INFO; the extension still registers and injects 43 recipes.
-
-### Final deployed compatibility state
-
-- Repair datapack under `world_fresh_20261028/datapacks/fresh-world-launch-fixes/`, SHA-256 `e76ddbb936b502eb664388da8bd75372580e451d029c37e49f3c702f61e75e57` (429 valid JSON resources).
-- BCLib first-generation guard: `bclib-21.0.28.jar` SHA-256 `abf6e81ecaa1aafe945bd351e49fa9627c4ba351aeeba81ec50393be99fff80b`; it only skips the pre-patch if `worldDir/level.dat` doesn't exist. Fresh generation and second restart passed with zero BCLib errors.
-- Moonlight advisory severity fix: `moonlight-1.21.1-3.7.2-neoforge.jar` SHA-256 `7c7e8ff34976c2a47850cf6090d4c643d7aa38a3e49a11e415fdcbad65aa9e80`; only `Logger.error` -> `Logger.warn` changed for the explicit mixed-loader advisory, with the entire warning text preserved.
-- SablePhysicsCompat, Recipe Integration, Struts, and HammerLib fixes are deployed identically to server and Prism client. ConnectorExtras' EMI Bridge side fix is deployed to the dedicated server only; the client retains the original ConnectorExtras JAR.
-- Rollback dirs: primary `/home/roaring/.local/share/crucible-backups/username-admin-server-fresh-world-deployment-20261028-171846/`; round two `/home/roaring/.local/share/crucible-backups/username-admin-server-compatibility-round2-20261028-172940/`; HammerLib `/home/roaring/.local/share/crucible-backups/username-admin-server-hammerlib-log-fix-20261028-173507/`; BCLib `/home/roaring/.local/share/crucible-backups/username-admin-server-bclib-firstgen-fix-20261028-174136/`; Moonlight `/home/roaring/.local/share/crucible-backups/username-admin-server-moonlight-warning-level-20261028-174408/`.
-- Original production `world/level.dat` SHA-256 remains `091d4e46ff6980c931887ba66fd959712e57e211c83d6c929d0c7d086bf29482`. The production fresh world has no `level.dat` yet because production was intentionally not started.
-
-### Immediate next action
-
-No pre-start changes remain. When ready, click **Start** in Crucible for `username admin server`; do not change the level name back to `world`. Verify `Done`, enabled repair pack, new `world_fresh_20261028/level.dat` + region files, zero recipe/loot errors, and unchanged old-world hash, then playtest biomes, structures, loot, and normal modded recipe/machine flows.
+Next step: click **Start** in Crucible for `username admin server`, keep the configured new level name, verify `Done`, enabled pack, new level files, and unchanged old-world hash, then playtest biomes, structures, loot, and core mod recipes/machines.
 
 ## Status and confidence
 
