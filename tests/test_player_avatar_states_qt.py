@@ -140,6 +140,14 @@ if scenario == "render":
             if not tab.grab().save(str(path), "PNG"):
                 raise AssertionError(f"failed to capture {path}")
             item = row_for(tab, "Alex") if state != "empty" else None
+            error_marker_pixels = 0
+            if item and state == "error":
+                icon_image = item.icon().pixmap(QSize(20, 20)).toImage()
+                for y in range(icon_image.height()):
+                    for x in range(icon_image.width()):
+                        color = icon_image.pixelColor(x, y)
+                        if color.red() > 170 and color.green() < 190 and color.blue() > 100:
+                            error_marker_pixels += 1
             captures.append({
                 "state": state,
                 "window_size": [width, height],
@@ -147,6 +155,7 @@ if scenario == "render":
                 "row_count": tab._online_list.count(),
                 "alex_icon_non_null": bool(item and not item.icon().isNull()),
                 "alex_tooltip": item.toolTip() if item else "",
+                "error_marker_pixels": error_marker_pixels,
                 "empty_label": (
                     tab._online_list.item(0).text()
                     if state == "empty" and tab._online_list.count() else ""
@@ -379,5 +388,6 @@ def test_loading_success_error_and_empty_states_have_standard_and_small_captures
             assert "Loading avatar" in entry["alex_tooltip"]
         elif entry["state"] == "error":
             assert "Avatar unavailable" in entry["alex_tooltip"]
+            assert entry["error_marker_pixels"] >= 3, entry
         elif entry["state"] == "empty":
             assert "No players online" in entry["empty_label"]
