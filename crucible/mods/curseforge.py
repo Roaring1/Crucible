@@ -50,6 +50,128 @@ def get_api_key():
 def has_api_key():
     return bool(get_api_key())
 
+
+def _is_fingerprint_whitespace(byte):
+    return byte in (9, 10, 13, 32)
+
+
+def fingerprint_bytes(data: bytes) -> int:
+    """Compute CurseForge's file fingerprint (Murmur2 variant, seed 1).
+
+    CurseForge normalizes by removing TAB, LF, CR and ASCII space before
+    hashing. This is not SHA-1 and must only be used with its fingerprint API.
+    """
+    mask = 0xFFFFFFFF
+    multiplier = 1540483477
+    length = sum(not _is_fingerprint_whitespace(b) for b in data)
+    h = 1 ^ length
+    word = 0
+    shift = 0
+    for byte in data:
+        if _is_fingerprint_whitespace(byte):
+            continue
+        word |= byte << shift
+        shift += 8
+        if shift == 32:
+            mixed = (word * multiplier) & mask
+            mixed = (((mixed ^ (mixed >> 24)) * multiplier) & mask)
+            h = ((h * multiplier) ^ mixed) & mask
+            word = 0
+            shift = 0
+    if shift:
+        h = ((h ^ word) * multiplier) & mask
+    mixed = ((h ^ (h >> 13)) * multiplier) & mask
+    return (mixed ^ (mixed >> 15)) & mask
+
+
+def fingerprint_file(path, *, chunk_size=1024 * 1024) -> int:
+    """Fingerprint a file in two bounded-memory passes, including large JARs."""
+    path = Path(path)
+    normalized_length = 0
+    with path.open('rb') as source:
+        while True:
+            chunk = source.read(chunk_size)
+            if not chunk:
+                break
+            normalized_length += sum(not _is_fingerprint_whitespace(b) for b in chunk)
+    mask = 0xFFFFFFFF
+    multiplier = 1540483477
+    h = 1 ^ normalized_length
+    word = 0
+    shift = 0
+    with path.open('rb') as source:
+        while True:
+            chunk = source.read(chunk_size)
+            if not chunk:
+                break
+            for byte in chunk:
+                if _is_fingerprint_whitespace(byte):
+                    continue
+                word |= byte << shift
+                shift += 8
+                if shift == 32:
+                    mixed = (word * multiplier) & mask
+                    mixed = (((mixed ^ (mixed >> 24)) * multiplier) & mask)
+                    h = ((h * multiplier) ^ mixed) & mask
+                    word = 0
+                    shift = 0
+    if shift:
+        h = ((h ^ word) * multiplier) & mask
+    mixed = ((h ^ (h >> 13)) * multiplier) & mask
+    return (mixed ^ (mixed >> 15)) & mask
+
+
+def identify_fingerprints(paths_by_fingerprint):
+    """Return exact CurseForge matches keyed by input fingerprint. No fuzzy hits."""
+    if not paths_by_fingerprint:
+        return {}
+    if not has_api_key():
+        return {}
+    from ..download_http import make_request, open_url, http_error_message
+    matches = {}
+    fingerprints = list(paths_by_fingerprint)
+    for offset in range(0, len(fingerprints), 100):
+        batch = fingerprints[offset:offset + 100]
+        body = json.dumps({'fingerprints': batch}).encode('utf-8')
+        request = make_request(_API + '/fingerprints/432', data=body, headers={
+            'Accept': 'application/json', 'Content-Type': 'application/json',
+            'User-Agent': mr._UA,
+        })
+        try:
+            with open_url(request, timeout=20) as response:
+                raw = response.read(mr._MAX_JSON_BYTES + 1)
+            if len(raw) > mr._MAX_JSON_BYTES:
+                raise mr.ModrinthError('CurseForge fingerprint response exceeded the size limit.')
+            payload = json.loads(raw.decode('utf-8'))['data']
+        except urllib.error.HTTPError as exc:
+            raise mr.ModrinthError(http_error_message(exc.code, curseforge=True)) from exc
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise mr.ModrinthError('Could not identify files through CurseForge. Modrinth matches may still be available.') from exc
+        requested = set(batch)
+        for item in payload.get('exactMatches', []):
+            try:
+                fingerprint = int(item['id'])
+                file_data = item['file']
+                file_fingerprint = int(file_data.get('fileFingerprint', -1))
+                project_id = int(file_data['modId'])
+                file_id = int(file_data['id'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            # Require both the exact-match bucket and the matched file's own
+            # fingerprint to agree with the submitted local fingerprint.
+            if fingerprint not in requested or file_fingerprint != fingerprint:
+                continue
+            matches[fingerprint] = {
+                'project_id': f'cf:{project_id}', 'version_id': str(file_id),
+                'version': file_data.get('displayName', ''),
+                'filename': file_data.get('fileName', ''),
+                'fingerprint': fingerprint, 'identity': 'exact-curseforge-fingerprint',
+                'sha1': next((h.get('value', '') for h in file_data.get('hashes', [])
+                              if h.get('algo') == 1), ''),
+            }
+    return matches
+
+
 def _get(route):
     key = get_api_key()
     if not key:
@@ -86,9 +208,28 @@ def list_versions(project_id, *, loader, mc_version):
     for offset in range(0, 1000, 50):
         args=urllib.parse.urlencode({'gameVersion':mc_version,'modLoaderType':_LOADERS[loader],'pageSize':50,'index':offset})
         page=_get(f'/mods/{pid}/files?{args}')
-        files.extend(_file(pid,v) for v in page if v.get('isAvailable',True))
+        # The API filters by loader, while this local guard verifies the
+        # requested Minecraft version before a file can be offered. Missing
+        # compatibility metadata is not proof of compatibility.
+        files.extend(
+            _file(pid, v) for v in page
+            if v.get('isAvailable', True)
+            and mc_version in v.get('gameVersions', [])
+        )
         if len(page)<50: break
     return files
+
+def project_url(project_id):
+    """Resolve an identified CurseForge project ID to its official page URL."""
+    pid = str(project_id).removeprefix('cf:')
+    if not pid.isdigit():
+        raise mr.ModrinthError('Invalid CurseForge project ID; cannot open its source page.')
+    details = _get(f'/mods/{pid}')
+    slug = details.get('slug', '') if isinstance(details, dict) else ''
+    if not isinstance(slug, str) or not slug or any(ord(ch) < 32 for ch in slug):
+        raise mr.ModrinthError('CurseForge did not provide a usable project slug. The exact file identity remains recorded.')
+    return 'https://www.curseforge.com/minecraft/mc-mods/' + urllib.parse.quote(slug, safe='')
+
 
 def resolve_with_deps(project_id, *, loader, mc_version, _seen=None):
     seen = set() if _seen is None else _seen

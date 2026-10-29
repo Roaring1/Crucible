@@ -30,6 +30,10 @@ For a key whose use is authorized, supported local inputs are:
 
 Do not put a key in Git, exports, URLs, screenshots or logs. Local private-file permissions reduce exposure; they are not an authorization grant. The file is optional and can remain empty while approval is pending.
 
+## Exact installed-JAR identification
+
+When a private key is configured, **Identify online** computes CurseForge fingerprints locally using its Murmur2-derived algorithm (seed 1, excluding ASCII TAB/LF/CR/space) and submits only the numeric fingerprints to the official `POST /v1/fingerprints/432` endpoint. JAR bytes are not uploaded. CurseForge fingerprints are not SHA-1 values; the code keeps these algorithms and identity labels separate. The algorithm details are not specified in the API schema, so the implementation is cross-checked against the published Murmur2/seed-1 compatibility implementation at https://gist.github.com/arvitus/5126ca93898c008abed49c0db0e5ef5e and the Aternos client documentation at https://github.com/aternosorg/php-curseforge-api. Only API `exactMatches` whose returned fingerprint agrees with the submitted fingerprint are accepted. Partial/fuzzy matches are never treated as an identity. Without a configured CurseForge key, Modrinth exact SHA-1 identification continues to work.
+
 ## Network and installation behavior
 
 - Both API requests and official CDN downloads use x-api-key over verified HTTPS.

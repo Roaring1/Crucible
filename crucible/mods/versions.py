@@ -10,29 +10,78 @@ from . import modrinth as mr
 
 
 def identify_files(server_path, paths):
-    """Batch SHA-1 lookup. Never call a similar name an exact match."""
+    """Identify installed JARs by exact Modrinth SHA-1 and CurseForge fingerprint.
+
+    JAR contents are never uploaded. Duplicate bytes under different filenames
+    are preserved, and CurseForge is optional: Modrinth continues to work when
+    no CurseForge key is configured. Approximate/fuzzy matches are never used.
+    """
+    from . import curseforge as cf
+
     files = [Path(p) for p in paths if Path(p).is_file() and not Path(p).is_symlink()]
-    hashes = {mr._sha1(p): p for p in files}
+    if not files:
+        return {}
+    by_sha1 = {}
+    for path in files:
+        by_sha1.setdefault(mr._sha1(path), []).append(path)
     found = {}
-    items = list(hashes)
+    items = list(by_sha1)
     for offset in range(0, len(items), 100):
-        req = mr.urllib.request.Request(mr._API + '/version_files', data=json.dumps({'hashes':items[offset:offset+100], 'algorithm':'sha1'}).encode(), headers={'User-Agent':mr._UA,'Content-Type':'application/json'})
+        batch = items[offset:offset + 100]
+        req = mr.urllib.request.Request(
+            mr._API + '/version_files',
+            data=json.dumps({'hashes': batch, 'algorithm': 'sha1'}).encode(),
+            headers={'User-Agent': mr._UA, 'Content-Type': 'application/json'},
+        )
         try:
             with mr.urllib.request.urlopen(req, timeout=20) as response:
                 raw = response.read(mr._MAX_JSON_BYTES + 1)
-            if len(raw)>mr._MAX_JSON_BYTES: raise mr.ModrinthError('Identity response was too large.')
-            result=json.loads(raw)
+            if len(raw) > mr._MAX_JSON_BYTES:
+                raise mr.ModrinthError('Identity response was too large.')
+            result = json.loads(raw)
         except (OSError, ValueError) as exc:
-            raise mr.ModrinthError('Could not identify mods online. Existing files have not been changed.') from exc
+            raise mr.ModrinthError('Could not identify mods on Modrinth. Existing files have not been changed.') from exc
         for digest, version in result.items():
-            if digest not in hashes: continue
-            # Match the returned file hash as well, not just the response key.
-            if not any(f.get('hashes',{}).get('sha1') == digest for f in version.get('files',[])): continue
-            found[hashes[digest].name]={'project_id':version['project_id'],'version_id':version['id'],'version':version.get('version_number',''),'sha1':digest,'identity':'exact-sha1'}
-    record_path=Path(server_path)/'.crucible'/'added-mods.json'
-    record=mr._load_record(record_path)
-    for filename, meta in found.items(): record[filename] = {**record.get(filename,{}),**meta}
-    if found: _write_record(record_path,record)
+            if digest not in by_sha1:
+                continue
+            if not any(f.get('hashes', {}).get('sha1') == digest for f in version.get('files', [])):
+                continue
+            meta = {
+                'project_id': version['project_id'], 'version_id': version['id'],
+                'version': version.get('version_number', ''), 'sha1': digest,
+                'identity': 'exact-sha1',
+            }
+            for path in by_sha1[digest]:
+                found[path.name] = dict(meta)
+
+    record_path = Path(server_path) / '.crucible' / 'added-mods.json'
+    record = mr._load_record(record_path)
+
+    # CurseForge fingerprints are a different algorithm from SHA-1. Compute
+    # and query them only when the user has configured a private API key.
+    if cf.has_api_key():
+        by_fingerprint = {}
+        for path in files:
+            fingerprint = cf.fingerprint_file(path)
+            by_fingerprint.setdefault(fingerprint, []).append(path)
+        cf_matches = cf.identify_fingerprints(by_fingerprint)
+        for fingerprint, meta in cf_matches.items():
+            for path in by_fingerprint.get(fingerprint, []):
+                # Prefer an already-found Modrinth exact match deterministically
+                # if the same artifact is published on both providers. Existing
+                # provider identity is retained when it remains an exact match.
+                prior = found.get(path.name, {})
+                existing = record.get(path.name, {})
+                existing_project = existing.get('project_id', '')
+                if prior and existing_project == meta['project_id']:
+                    found[path.name] = dict(meta)
+                elif not prior:
+                    found[path.name] = dict(meta)
+
+    for filename, meta in found.items():
+        record[filename] = {**record.get(filename, {}), **meta}
+    if found:
+        _write_record(record_path, record)
     return found
 
 

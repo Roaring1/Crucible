@@ -111,10 +111,9 @@ class ModsTab(QWidget):
         platform_btn.clicked.connect(self._edit_platform)
         toolbar.addWidget(platform_btn)
 
-        # One-click "find and install a mod" (searches Modrinth automatically).
+        # One-click "find and install a mod" using the selected online provider.
         addmod_btn = QPushButton("✨ Add a mod")
-        addmod_btn.setToolTip("Search Modrinth and install a mod (with its "
-                              "dependencies) automatically.")
+        addmod_btn.setToolTip("Search the selected provider (Modrinth or CurseForge) and install a compatible mod with required dependencies.")
         addmod_btn.clicked.connect(self._open_add_mod)
         toolbar.addWidget(addmod_btn)
         layout.addLayout(toolbar)
@@ -124,7 +123,7 @@ class ModsTab(QWidget):
         version_btn.clicked.connect(self._change_selected_version)
         toolbar.addWidget(version_btn)
         identify_btn = QPushButton("Identify online")
-        identify_btn.setToolTip("Match installed JARs by exact file hash. Unmatched custom builds stay unlinked.")
+        identify_btn.setToolTip("Match installed JARs by exact Modrinth SHA-1 and, when configured, CurseForge fingerprints. No fuzzy matches.")
         identify_btn.clicked.connect(self._identify_online)
         toolbar.addWidget(identify_btn)
 
@@ -467,7 +466,7 @@ class ModsTab(QWidget):
             menu.addAction("Verify dependencies").triggered.connect(
                 lambda: self._verify_deps())
             menu.addSeparator()
-        menu.addAction("Open on Modrinth").triggered.connect(
+        menu.addAction("Open project page").triggered.connect(
             lambda: self._open_mod_page(mod))
         if not is_bundled:
             menu.addSeparator()
@@ -619,7 +618,7 @@ class ModsTab(QWidget):
         if self._net_thread is not None and self._net_thread.isRunning():
             QMessageBox.information(
                 self, "Please wait",
-                "Another Modrinth action is still running. Try again in a moment.")
+                "Another online mod action is still running. Try again in a moment.")
             return
         self._count_label.setText(busy)
         self._net_thread = QThread()
@@ -644,7 +643,7 @@ class ModsTab(QWidget):
     def _on_net_error(self, msg: str) -> None:
         self._update_count()
         QMessageBox.warning(
-            self, "Modrinth",
+            self, "Online mod services",
             f"Could not complete the request:\n{msg}\n\n"
             "Check your internet connection and try again.")
 
@@ -696,10 +695,28 @@ class ModsTab(QWidget):
         from PyQt6.QtGui import QDesktopServices
         from PyQt6.QtCore import QUrl
         from urllib.parse import quote
-        url = getattr(mod, "url", "") or ""
-        if not url:
-            term = getattr(mod, "name", "") or mod.filename
-            url = "https://modrinth.com/mods?q=" + quote(term)
+        from ...mods.modrinth import added_mods
+
+        record = added_mods(self._instance.path) if getattr(self, "_instance", None) else {}
+        meta = record.get(mod.filename) or record.get(mod.filename.removesuffix(".disabled")) or {}
+        project_id = str(meta.get("project_id", ""))
+        if project_id.startswith("cf:"):
+            # Resolve the official slug on a worker; don't invent a CurseForge
+            # page URL from a numeric project ID or block the Qt UI on HTTP.
+            from ...mods import curseforge
+            self._run_net(
+                lambda: curseforge.project_url(project_id),
+                lambda url: QDesktopServices.openUrl(QUrl(url)),
+                busy="Resolving CurseForge project page…",
+            )
+            return
+        if project_id:
+            url = "https://modrinth.com/mod/" + quote(project_id, safe="")
+        else:
+            url = getattr(mod, "url", "") or ""
+            if not url:
+                term = getattr(mod, "name", "") or mod.filename
+                url = "https://modrinth.com/mods?q=" + quote(term)
         QDesktopServices.openUrl(QUrl(url))
 
     # Add from file / drag-drop
