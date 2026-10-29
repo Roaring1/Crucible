@@ -1,6 +1,6 @@
 # UI Design and Interaction Workstream
 
-**Status:** Audit findings #1/#2 are implemented in [PR #37](https://github.com/Roaring1/Crucible/pull/37), World wipe finding #5 in [PR #38](https://github.com/Roaring1/Crucible/pull/38), a restrained local SVG subset in [PR #39](https://github.com/Roaring1/Crucible/pull/39), and PlayersTab avatar loading/failure lifecycle in [PR #40](https://github.com/Roaring1/Crucible/pull/40). Each is isolated from active provider/Add Mod code; PR #34 and #35 remain integration gates for overlapping work.  
+**Status:** Audit findings #1/#2 are implemented in [PR #37](https://github.com/Roaring1/Crucible/pull/37), World wipe finding #5 in [PR #38](https://github.com/Roaring1/Crucible/pull/38), the restrained local SVG subset in [PR #39](https://github.com/Roaring1/Crucible/pull/39), PlayersTab avatar lifecycle in [PR #40](https://github.com/Roaring1/Crucible/pull/40), and a test-only Setup keyboard-scroll guard in [PR #41](https://github.com/Roaring1/Crucible/pull/41). Each implementation branch is isolated from active provider/Add Mod code; PR #34 and #35 remain integration gates for overlapping work.  
 **Prepared:** 2026-10-29  
 **Initial reference commit:** `34ca28fd8f989fe3eb98b90c81012d141684f4c9`  
 **Workstream:** Chat 3 — whole-app UX, local SVG icons, loading skeletons, restrained transitions.
@@ -161,13 +161,15 @@ Evidence file examples (all below the audit root unless a path is shown explicit
 - **Proposed change:** add brief inline empty states: “No backups yet. Select Backup Now to create one.” and “No saved world slots yet. Create a backup to make one available.” Keep these messages near the relevant table and avoid a large decorative illustration.
 - **Repeatable test:** render empty and populated fixture states side by side; assert the empty message disappears once a row exists, and that the Backup Now / world-backup actions remain reachable and functional with temporary data.
 
-#### 7. Low — selected-server Setup content extends below the minimum-size viewport
+#### 7. Verified in PR #41 — Setup minimum-size scrolling keeps keyboard focus visible
 
-- **Screen/state and exact widget:** Setup tab checklist and memory settings at 900×600.
-- **Evidence:** \`extra-sf1.0/setup-min-sf1.0.png\` (also 125%/150% review sheets) shows that the Setup page continues below the visible area and relies on a scrollbar.
-- **Classification:** visual observation, **not yet classified as a defect**; a scrollbar is present, so the screenshot alone does not prove content is unreachable.
-- **Proposed change:** keep the checklist high in the hierarchy, make the scroll affordance easier to spot if keyboard interaction shows it is needed, and avoid shrinking text to fit everything at once.
-- **Repeatable test:** navigate Setup using keyboard only at 900×600, reach the last memory/legacy controls via Tab and scrollbar keys, and assert focus never lands on hidden/offscreen actionable controls without scrolling them into view.
+- **Screen/state and exact widget:** Setup tab at 900×600, including the server memory section, legacy Forge startup setting, and Modpack version actions.
+- **Original evidence:** the 900×600 screen is taller than the viewport and relies on a scrollbar. This is still a true layout fact, not itself a defect.
+- **Repeatable Qt test:** tests/test_setup_scroll_keyboard_qt.py constructs the real SetupTab with a synthetic temporary server directory, uses Tab to traverse the focus chain, and asserts each focused descendant is fully inside the scroll viewport. It reaches the bottom “Update from a link or file…” action without clicking any action and verifies PageUp scrolls back.
+- **Observed result:** content height 948px, viewport height 600px, maximum scroll 348px; 14 focused content controls were recorded, zero were outside the viewport, and the bottom action was visible at maximum scroll.
+- **Classification:** **no keyboard-scroll defect reproduced in offscreen Qt** for this synthetic fixture. Keep the regression guard; make a production layout change only if subsequent platform testing shows a real accessibility or discoverability issue.
+- **Evidence:** /tmp/crucible-setup-scroll-evidence-20261029/setup-scroll-bottom.png was opened and reviewed; metadata and hashes are at setup-scroll-measurements.json and SHA256SUMS.txt in the same temporary directory.
+- **Limits:** the result does not prove screen-reader behavior or pixel-identical behavior with every desktop compositor/theme.
 
 #### 8. Low / source-level — sidebar context menu colors are hard-coded outside the theme
 
@@ -270,6 +272,17 @@ The first stateful loading-UI slice is implemented in [PR #40 — Make player av
 - **Validation:** full suite 613 passed, 74 subtests passed; the dedicated avatar Qt suite passed 6 tests, and the separately rerun `test_log_tail.py` + `test_qt_slot_contracts.py` subset passed 10 tests. compileall and git diff --check passed. GitHub Actions checks on Python 3.11 and 3.13 both pass. The Qt suite includes mocked success, offline failure, stale cache, stale completion after server switch, close/delete with the worker actually blocked in a mocked request, and loading/success/error/empty captures.
 - **Visual evidence:** screenshots at standard 1040×560 and small 640×420 sizes were opened and inspected. Real worker success, offline error, and stale-cache fallback captures were opened as well. Evidence files are on the supervised Nobara host in /tmp/crucible-player-avatar-evidence-20261029/: players-avatar-states-standard-contact.jpg, players-avatar-states-small-contact.jpg, players-avatar-worker-and-state-review.jpg, and the final state contact sheet under `/tmp/crucible-player-avatar-evidence-20261029/final/`, with measurements JSON files and SHA256 manifests.
 - **Limits:** these are offscreen Qt renderings and deterministic mocked network outcomes. They confirm widget state and thread cleanup but are not physical-desktop or screen-reader verification.
+
+## Implementation evidence — Setup keyboard scroll regression
+
+The focused test-only guard is in [PR #41 — Test Setup keyboard scroll reachability at minimum size](https://github.com/Roaring1/Crucible/pull/41).
+
+- **Branch/base/commit:** test/setup-scroll-reachability-20261029 / 34ca28fd8f989fe3eb98b90c81012d141684f4c9 / 5c555da8ae91aa249bc368a8c5595ec2f5fd9d88.
+- **Changed path:** tests/test_setup_scroll_keyboard_qt.py only. Changed-file sets for all open PRs #34–#40 were refreshed before this PR; none overlap.
+- **Validation:** focused test 1 passed; full suite 608 passed, 74 subtests passed; compileall and git diff --check passed. The current PR's Python 3.11 and Python 3.13 checks are running separately.
+- **What it establishes:** on the actual SetupTab widget with synthetic server data, Tab reaches the bottom update action, focused controls remain entirely inside the visible viewport, the scrollbar reaches its maximum, and PageUp scrolls back. No setup action is activated.
+- **Screenshot evidence:** /tmp/crucible-setup-scroll-evidence-20261029/setup-scroll-bottom.png; report and SHA256 manifest in the same directory.
+- **Scope decision:** because the keyboard/scroll concern was not reproduced as a defect, this PR adds a guard rather than changing production layout. Real desktop and assistive-technology validation remains a separate question.
 
 ### Next independent UI task
 
