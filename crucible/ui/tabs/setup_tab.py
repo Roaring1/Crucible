@@ -308,11 +308,20 @@ class SetupTab(QWidget):
         row.addWidget(self._xmx_spin)
         row.addWidget(self._xmx_unit)
 
-        save_btn = QPushButton("Save memory settings")
-        save_btn.clicked.connect(self._save_memory)
-        row.addWidget(save_btn)
         row.addStretch()
         self._layout.addLayout(row)
+
+        # Keep the save action on its own trailing row. Combining this wide
+        # button with all four Xms/Xmx controls forced the entire scroll
+        # content to a 684px minimum width at a 640px window. A separate row
+        # lets the controls above keep their normal font/size while the
+        # scroll content follows a narrow viewport.
+        save_row = QHBoxLayout()
+        save_row.addStretch()
+        save_btn = QPushButton("Save memory settings")
+        save_btn.clicked.connect(self._save_memory)
+        save_row.addWidget(save_btn)
+        self._layout.addLayout(save_row)
 
         # Suggested amount -- a plain heuristic based on this machine's total
         # RAM, so non-technical owners don't have to guess a value out of thin
