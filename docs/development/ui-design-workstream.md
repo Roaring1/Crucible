@@ -1,11 +1,11 @@
 # UI Design and Interaction Workstream
 
-**Status:** Preparatory plan and source-level inspection; implementation not started.  
+**Status:** Evidence-only visual audit completed on pinned main snapshot; UI implementation not started while prerequisite PRs #34 and #35 remain open.  
 **Prepared:** 2026-10-29  
 **Initial reference commit:** `34ca28fd8f989fe3eb98b90c81012d141684f4c9`  
 **Workstream:** Chat 3 — whole-app UX, local SVG icons, loading skeletons, restrained transitions.
 
-This document records the implementation boundary and verification plan. It is not a claim that the full application has been rendered, visually reviewed, or tested at all listed sizes. The existing [UX audit](ux-audit.md) covers key first-run, create, import, and navigation decisions; this work extends the review across the whole application and its visual system.
+This document records the implementation boundary, evidence-only visual audit, and verification plan. The screenshots listed below were actually opened and reviewed; the audit is a bounded offscreen Qt review, not a claim that every application state, physical display, screen reader, or assistive-technology combination has been tested. The existing [UX audit](ux-audit.md) covers key first-run, create, import, and navigation decisions; this work extends the review across the whole application and its visual system.
 
 ## Integration gate and scope
 
@@ -88,6 +88,111 @@ Implementation should start with a small, reviewed subset of frequent actions an
 
 Each finding should state severity, screen/state, exact widget or interaction, evidence, proposed fix, and a repeatable check. A source-level hypothesis must stay labeled as a hypothesis until reproduced.
 
+## Evidence-only visual audit — 2026-10-29
+
+### Method, source boundary, and evidence location
+
+- **Exact source snapshot:** \`34ca28fd8f989fe3eb98b90c81012d141684f4c9\` (GitHub \`main\` at capture time). The local checkout's \`main\` ref did not match remote \`main\`, so the audit source was obtained with \`git archive\` at the explicit SHA rather than by trusting the local branch.
+- **Output root on the Nobara machine:** \`/tmp/crucible-ui-audit-20261029.bQJK3g/\`. The original PNGs, compressed review copies, JSON metadata, and SHA-256 manifest are local temporary evidence, not committed source files. The selected-file manifest is \`SHA256SUMS-evidence.txt\`.
+- **Standard preview states:** ran the existing \`scripts/capture_ui_previews.py\` at Qt scale factors 1.0, 1.25, and 1.5, giving six previews per scale (main empty, add-server menu, main selected, create server, import files, install modpack). The script used temporary registry data; the modpack/version lookups are explicitly disabled by the preview harness.
+- **Additional screens:** a separate temporary harness captured Setup, Console, World, Backups, Config, Players, Notes, and Info at 900×600, 1200×760, and a 1500×900 selected-server window. It also captured reset confirmation, wipe input prompt, and invalid-port warning dialogs. Test instance/config/world files were synthetic and isolated under \`/tmp\`; methods that could start/stop a real service were stubbed, and modal operations were cancelled automatically.
+- **Focus probe:** a temporary Qt test recorded focus-widget progression from repeated Tab presses, captured screenshots for selected focus steps, and compared their pixels. Focus ownership moved between widgets, but screenshots for the steps covering SidebarList, Add server, Copy IP, Start, Restart, QTabBar, More, and Accept EULA were byte-identical. This establishes an offscreen-rendered concern, not a screen-reader evaluation.
+- **Scaling:** the same Create dialog was rendered under \`QT_SCALE_FACTOR=1.0\`, \`1.25\`, and \`1.5\`. This exposes an actual clipping issue in offscreen captures, but must be confirmed on the user's normal desktop because offscreen scaling is not a substitute for physical high-DPI rendering.
+- **Safety check:** the temporary world marker remained present after the cancel-only dialog runs. No actual server registry, world, server process, API key, mod download, or user server data was used.
+- **Capture harness limitation:** the multi-instance sidebar capture process segfaulted during Qt shutdown *after* writing the screenshots. Treat those sidebar variants as supporting images only; this capture did not count as a clean process-level pass.
+
+Evidence file examples (all below the audit root unless a path is shown explicitly):
+- First-run: \`previews/main-empty.png\`
+- Create form / DPI comparison: \`previews/create-server.png\`, \`previews-sf1.25/create-server.png\`, \`previews-sf1.5/create-server.png\`, \`create-fields-scaling.jpg\`
+- Import and selected workspace: \`previews/import-files.png\`, \`previews/main-selected.png\`
+- Console/World/Backups/Config/Players/Notes/Info at standard dimensions: \`extra-sf1.0/console-standard-sf1.0.png\`, \`extra-sf1.0/world-standard-sf1.0.png\`, \`extra-sf1.0/backups-standard-sf1.0.png\`, \`extra-sf1.0/config-standard-sf1.0.png\`, \`extra-sf1.0/players-standard-sf1.0.png\`, \`extra-sf1.0/notes-standard-sf1.0.png\`, \`extra-sf1.0/info-standard-sf1.0.png\`
+- Additional dialogs: \`extra-sf1.0/world-reset-confirm-sf1.0.png\`, \`extra-sf1.0/world-wipe-input-sf1.0.png\`, \`extra-sf1.0/invalid-port-warning-sf1.0.png\`
+- Keyboard focus: \`keyboard/focus-chain.json\`, \`keyboard/focus-00.png\`, \`keyboard/focus-01.png\`, \`keyboard/focus-03.png\`, \`keyboard/focus-05.png\`, \`keyboard/focus-07.png\`, \`keyboard/focus-11.png\`
+- Multi-instance sidebar: \`sidebar-variants/contact-sidebar.jpg\` (process crashed on shutdown after saving the images).
+
+### Ranked findings
+
+#### 1. High — visible keyboard focus is missing in the captured common controls
+
+- **Screen/state and exact controls:** selected-server Setup with focus moving through \`SidebarList\`, \`SidebarAddButton\`, Copy IP, Start, Restart, \`QTabBar\`, \`MoreTabsButton\`, and Setup buttons.
+- **Evidence:** \`keyboard/focus-chain.json\` records a different focused widget after Tab; \`keyboard/focus-00.png\`, \`focus-01.png\`, \`focus-03.png\`, \`focus-05.png\`, \`focus-07.png\`, and \`focus-11.png\` have identical SHA-256 hashes. A pixel comparison also found no changed pixels between focus step 0 and steps 1–11. Source inspection finds a global \`outline: none\` in \`crucible/ui/theme.py\`.
+- **Classification:** visually reproduced in offscreen Qt. This does not yet prove behavior on every desktop style and does not constitute a screen-reader test.
+- **Proposed change:** add a deliberate shared, high-contrast \`:focus\` treatment to buttons, tool buttons, the sidebar's selected/focused item, tab bar/tab, inputs, and menu actions as appropriate. Do not make focus indicators depend on hover or animation; preserve clear selected and disabled states.
+- **Repeatable test:** run the temporary focus-chain probe (or promote it into a safe Qt test), use Tab/Shift+Tab to focus each control, capture its focus state, and assert visible pixel changes in a bounded indicator region. Repeat with ordinary desktop Qt rendering and manually inspect with the platform's screen reader before closing the finding.
+
+#### 2. High — Create-server text fields clip their text at 125% and 150% Qt scale factors
+
+- **Screen/state and exact controls:** Create a server dialog, \`NewServerDialog._name_edit\` and \`NewServerDialog._path_edit\`.
+- **Evidence:** \`previews/create-server.png\` at scale 1.0 looks normal; the same existing preview tool at scale 1.25 and 1.5 shows the server name/path text vertically clipped inside the line edits. \`create-fields-scaling.jpg\` shows matched crops from the three outputs. Source is \`crucible/ui/new_server_dialog.py\`; the fields are ordinary \`QLineEdit\`s without an explicit sizing policy, under a stylesheet that sets font size and padding.
+- **Classification:** visually reproduced in Qt offscreen scaled captures; verify against the real desktop compositor before treating offscreen pixels as final platform evidence.
+- **Proposed change:** adjust the line-edit minimum/size policy and the related form layout/font metrics together rather than reducing text size. Inspect Browse, combo-box, and button baselines at the same time.
+- **Repeatable test:** capture the dialog at \`QT_SCALE_FACTOR=1.0\`, \`1.25\`, and \`1.5\`; assert text ink remains within each field's content rectangle and compare actual rendered screenshots. Keep the test-only data local and network-free.
+
+#### 3. Medium — the selected secondary-tab label truncates in the More button
+
+- **Screen/state and exact control:** selected Config/Info secondary pages; \`InstancePanel._more_tabs_button\` (\`objectName=MoreTabsButton\`).
+- **Evidence:** \`extra-sf1.0/config-standard-sf1.0.png\` and \`extra-sf1.5/config-standard-sf1.5.png\` show the secondary selection label shortened to \`More: Confi... settings\`; the Info label is likewise visually crowded. This occurs because \`_update_more_tabs_button()\` inserts the selected page's longer label into a compact corner widget.
+- **Classification:** visually reproduced.
+- **Proposed change:** keep the compact visible control label stable (for example, \`More ▾\`) and communicate the selected secondary page through the page itself and the menu's checked action; set a useful accessible name/tooltip without relying on clipped text. If a selected label is retained, choose measured short labels and enforce a sensible minimum width.
+- **Repeatable test:** choose every More-menu page at 900×600 and 1200×760, then at scale factors 1.0/1.25/1.5; assert the button caption is not elided or clipped and the correct menu action remains checked.
+
+#### 4. Medium — offline/stopped status marker is visually too dim, and the sidebar uses color dots as the inline status cue
+
+- **Screen/state and exact widgets:** selected-server header \`_dot\` and \`_status_label\`; sidebar \`InstanceItem.drawRow()\` status dot.
+- **Evidence:** \`previews/main-selected.png\`, \`extra-sf1.0/setup-min-sf1.0.png\`, and \`sidebar-variants/contact-sidebar.jpg\`. The stopped header label uses \`theme.SURFACE2\`; \`STATUS_COLORS["stopped"]\` also feeds the dot. Palette arithmetic gives \`SURFACE2 #545460\` against \`BASE #1c1c1e\` about 2.28:1. In the sidebar, each row paints a colored dot; the status word exists in the row tooltip, but it is not persistently visible inline.
+- **Classification:** visual dimness and dot-only inline representation are observed; the numeric contrast is a color calculation from the current palette. Screen-reader announcements and tooltip accessibility have **not** been verified.
+- **Proposed change:** make the stopped status label legible using a stronger theme text color, and do not rely on dot color as the sole persistent cue. Prefer a compact text/accessibility description or a higher-contrast marker that complements (rather than duplicates noisily) the selected-server header. Preserve a clear distinction for running, missing, unknown, starting, and stopping states.
+- **Repeatable test:** render synthetic stopped/running/missing/unknown states, calculate contrast for actual text and status graphics, inspect selected/disabled states, and verify accessible names/descriptions using a screen reader. WCAG 2.2 contrast values are a useful reference yardstick for the native Qt app, not a claim of conformance: normal text 4.5:1 and graphical UI state 3:1 ([W3C WCAG 2.2](https://www.w3.org/TR/wcag/)).
+
+#### 5. Medium — the destructive world-wipe prompt is too wide and its instructions are hard to scan
+
+- **Screen/state and exact widget:** \`WorldTab._confirm_and_wipe()\` uses \`QInputDialog.getText()\` for the permanent WIPE confirmation.
+- **Evidence:** \`extra-sf1.0/world-wipe-input-sf1.0.png\` shows a 1122×148 dialog dominated by a long single-line explanation and a narrow text field. The call was captured from the real widget path with a synthetic server and then cancelled; the synthetic marker remained present.
+- **Classification:** visually reproduced; the destructive branch was not executed.
+- **Proposed change:** use a bounded custom confirmation dialog with wrapped warning text, a visually separate “Type WIPE to confirm” instruction and input, and explicit Cancel/confirm buttons. Keep the irreversible consequence and absence of automatic backup unmistakable.
+- **Repeatable test:** capture at 900×600, 1200×760, and 1500×900, including 150% scale; ensure warning text wraps without clipping; cancel and verify the test world marker and files remain unchanged; enter a wrong phrase and verify refusal; use only a disposable fixture for any test of a valid phrase.
+
+#### 6. Low–Medium — empty backup tables give no next-step guidance
+
+- **Screen/state and exact widgets:** Backups tab table and World tab's “Saved worlds (backups)” section.
+- **Evidence:** \`extra-sf1.0/backups-standard-sf1.0.png\` shows \`Backups: 0 (0 KB)\` above an empty filename table; \`extra-sf1.0/world-standard-sf1.0.png\` shows the saved-worlds table empty under a descriptive heading. Both screens retain their action buttons, but the table areas are mostly blank.
+- **Classification:** visually observed; this is a comprehension/usability opportunity rather than a functional failure.
+- **Proposed change:** add brief inline empty states: “No backups yet. Select Backup Now to create one.” and “No saved world slots yet. Create a backup to make one available.” Keep these messages near the relevant table and avoid a large decorative illustration.
+- **Repeatable test:** render empty and populated fixture states side by side; assert the empty message disappears once a row exists, and that the Backup Now / world-backup actions remain reachable and functional with temporary data.
+
+#### 7. Low — selected-server Setup content extends below the minimum-size viewport
+
+- **Screen/state and exact widget:** Setup tab checklist and memory settings at 900×600.
+- **Evidence:** \`extra-sf1.0/setup-min-sf1.0.png\` (also 125%/150% review sheets) shows that the Setup page continues below the visible area and relies on a scrollbar.
+- **Classification:** visual observation, **not yet classified as a defect**; a scrollbar is present, so the screenshot alone does not prove content is unreachable.
+- **Proposed change:** keep the checklist high in the hierarchy, make the scroll affordance easier to spot if keyboard interaction shows it is needed, and avoid shrinking text to fit everything at once.
+- **Repeatable test:** navigate Setup using keyboard only at 900×600, reach the last memory/legacy controls via Tab and scrollbar keys, and assert focus never lands on hidden/offscreen actionable controls without scrolling them into view.
+
+#### 8. Low / source-level — sidebar context menu colors are hard-coded outside the theme
+
+- **Screen/state and exact widget:** \`Sidebar._on_context_menu()\` in \`crucible/ui/sidebar.py\`.
+- **Evidence:** source sets its own purple-toned colors (\`#1e1e2e\`, \`#cdd6f4\`, \`#45475a\`, \`#313244\`) while the shared application palette is warm dark/amber in \`crucible/ui/theme.py\`. This menu was not separately captured in the evidence run; the finding is source-level, not a visually reproduced defect.
+- **Proposed change:** route menu colors, border, focus/selection, and spacing through shared tokens or a shared menu style. Keep the menu readable with long server names and preserve native keyboard behavior.
+- **Repeatable test:** capture the menu for a short and long server name, inspect normal/selected/disabled/focused menu rows and check that theme values come from shared tokens.
+
+### Other observations that did not warrant a defect report
+
+- **First run:** \`previews/main-empty.png\` makes “No servers yet” prominent, explains the next step, and gives Add server a clear primary treatment. The empty state is deliberately sparse and looks coherent.
+- **Add-server menu:** \`previews/add-server-menu.png\` clearly separates create, modpack install, and import tasks.
+- **Import:** \`previews/import-files.png\` and the 150% capture show the source choices, destination, optional Change action, collapsed registration, and Cancel/Add server actions in a readable hierarchy.
+- **Console:** \`extra-sf1.0/console-standard-sf1.0.png\` gives the log viewport most of the space and groups command entry/utilities at the bottom; the empty/offline message makes the absence of logs understandable.
+- **Players and Notes:** Players explicitly says “No players online”; Notes has a brief placeholder. These are better empty-state examples than the blank backup tables.
+- **World reset confirmation and invalid-port warning:** \`extra-sf1.0/world-reset-confirm-sf1.0.png\` and \`extra-sf1.0/invalid-port-warning-sf1.0.png\` are readable at the captured size. Their actions were not confirmed/continued during the audit.
+- **Icon restraint:** the current mix of emoji and text in navigation is inconsistent, but the answer is not to decorate every action. Use a small set of repeatable SVGs where they materially improve scanning, while retaining text for command/destructive/ambiguous actions.
+
+### Audit limits
+
+- All captures were from an offscreen Qt renderer, not a full physical desktop/display-driver matrix.
+- The focus-chain check measured widget focus and pixels; it did not test screen-reader output, color-vision emulation, or moderated usability with participants.
+- The synthetic server's mods directory was deliberately absent in these fixtures (some startup/log messages note that); the review is not a claim about a fully installed server state.
+- The temporary scripts and screenshots are not part of PR #36. The document records findings and exact local evidence paths; it does not claim that visual or accessibility fixes have already been implemented.
+- The six standard preview captures do not include the Mod tab's Add Mod UI because that is covered by active PR #35. Do not modify the active Add Mod/provider files until those changes integrate.
+
 ## Implementation sequence after the integration gate
 
 1. Fetch current `main`; record its commit and inspect the merged PRs plus current design files.
@@ -98,6 +203,16 @@ Each finding should state severity, screen/state, exact widget or interaction, e
 6. Add restrained state transitions and reduced-motion fallback without delaying input or affecting server operations.
 7. Run the unit suite, real Qt interaction checks, keyboard-only checks, focus visibility/contrast review, and scaling/clipping review. Capture before/after states and document remaining gaps.
 8. Update changelog and design docs; open a focused PR. Do not auto-deploy or change the release version.
+
+## Icon provenance and licensing requirement
+
+For the eventual local SVG subset, do not assume every SVG in an icon repository has identical provenance just because icons share a visual style. Lucide's official project currently identifies the library as ISC-licensed while documenting a subset of icons that originated in Feather under MIT. Before assets are added:
+
+- Pin and record the upstream Lucide version/tag or commit, retrieval date, icon names, original file hashes, and any path edits in \`ICON_SOURCES.md\`.
+- Preserve the required upstream license text/attribution for the specific files actually used. Keep the ISC notice and any required MIT/Feather notice distinct in \`LICENSES/\`; do not copy icons without recording source and applicable terms. Verify against the actual upstream license files at adoption time: [Lucide license](https://lucide.dev/license) and [Lucide repository](https://github.com/lucide-icons/lucide).
+- Bundle selected SVG assets under \`crucible/assets/icons/\` and update package-data (including \`assets/icons/*.svg\`) with a package-build test that opens each packaged asset.
+- Use SVG source, not AI-generated images or raster redraws, and no external runtime image requests for decoration.
+- Keep a restrained semantic set; do not give every button an icon. Labels remain adjacent to controls when they explain meaning or consequence.
 
 ## Completion criteria
 
