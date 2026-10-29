@@ -14,7 +14,7 @@ The official application process requires review. A working key does not by itse
 
 - This open-source desktop Minecraft server-manager use case and the competition restriction.
 - Application-key distribution versus user-owned keys; do not ship a developer key in source or assume a binary can keep it secret.
-- Retention of installed project/file IDs, version labels, checksums and recovery records. Crucible's existing installer writes these to local added-mods.json/history; API-derived fields may fall under the published no-save/no-cache restriction.
+- **Blocking compliance issue for the current implementation:** the published [CurseForge 3rd Party API Terms](https://support.curseforge.com/support/solutions/articles/9000207405-curseforge-3rd-party-api-terms-and-conditions) prohibit saving or caching data obtained through the API/SDK. This provider flow currently persists CurseForge project/file IDs, version labels and API-returned SHA-1 values in `.crucible/added-mods.json` and operation history. Treat that behavior as incompatible with the published terms unless Overwolf/CurseForge gives written permission or a compliant design removes persistence of API-derived data. **Do not merge or distribute the active persistence path based only on a working key.**
 - Any response/icon caching, attribution, download and quota requirements. Do not add a persistent API catalog cache without permission.
 - A backend if one becomes necessary. A backend can technically protect a key but is NOT an automatic terms workaround: proxy/identity restrictions also need clarification. No hosted proxy or mirror is deployed by Crucible.
 
