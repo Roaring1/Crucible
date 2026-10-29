@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import threading
 
-from PyQt6.QtCore import Qt, QUrl, QTimer, QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QUrl, QTimer, QObject, QThread, QEvent, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -87,6 +87,8 @@ class SetupTab(QWidget):
         self._xmx_unit: QComboBox | None = None
         self._mem_status: QLabel | None = None
         self._fml_combo: QComboBox | None = None
+        self._scroll_area: QScrollArea | None = None
+        self._scroll_content: QWidget | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -94,11 +96,13 @@ class SetupTab(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
 
         scroll = QScrollArea()
+        self._scroll_area = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         outer.addWidget(scroll)
 
         container = QWidget()
+        self._scroll_content = container
         scroll.setWidget(container)
         self._layout = QVBoxLayout(container)
         self._layout.setContentsMargins(20, 16, 20, 16)
@@ -139,6 +143,43 @@ class SetupTab(QWidget):
                 w.deleteLater()
             elif item.layout():
                 self._clear_layout(item.layout())
+
+    def _install_focus_visibility_filters(self) -> None:
+        """Ensure keyboard focus never remains clipped by the Setup viewport."""
+        content = self._scroll_content
+        if content is None:
+            return
+        for widget in content.findChildren(QWidget):
+            if widget.focusPolicy() & Qt.FocusPolicy.TabFocus:
+                widget.installEventFilter(self)
+
+    def _ensure_focus_widget_visible(self, widget: QWidget) -> None:
+        content = self._scroll_content
+        area = self._scroll_area
+        try:
+            if (
+                area is not None
+                and content is not None
+                and content.isAncestorOf(widget)
+                and widget.isVisible()
+            ):
+                area.ensureWidgetVisible(widget, 6, 6)
+        except RuntimeError:
+            # A quick refresh can delete the old focused widget before the
+            # deferred callback runs; stale callbacks must be harmless.
+            return
+
+    def eventFilter(self, watched, event) -> bool:
+        if (
+            event.type() == QEvent.Type.FocusIn
+            and isinstance(watched, QWidget)
+            and self._scroll_content is not None
+            and self._scroll_content.isAncestorOf(watched)
+        ):
+            # Run after Qt finishes its native focus traversal; otherwise its
+            # own scroll update can leave the just-focused spin box clipped.
+            QTimer.singleShot(0, lambda target=watched: self._ensure_focus_widget_visible(target))
+        return super().eventFilter(watched, event)
 
     def _rebuild(self) -> None:
         self._clear()
@@ -248,6 +289,7 @@ class SetupTab(QWidget):
         self._maybe_add_update_section()
 
         self._layout.addStretch()
+        self._install_focus_visibility_filters()
 
     def _add_memory_section(self, inst: ServerInstance) -> None:
         """In-app editor for the server's -Xms/-Xmx JVM memory flags.
