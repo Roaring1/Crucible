@@ -1,6 +1,11 @@
 # CurseForge integration: conditional provider support
 
-Reviewed 2026-10-27. This is implementation guidance, not legal advice or a claim of CurseForge approval.
+Updated 2026-10-29. This is implementation guidance, not legal advice or a claim of CurseForge approval.
+
+
+## Current compliance disposition (2026-10-29)
+
+A field-by-field source-to-sink audit and proposed no-persistence architecture are documented in [the CurseForge API data-lineage audit](docs/development/curseforge-data-lineage-audit.md). The audit found API-derived CurseForge identity/install metadata persisted in `.crucible/added-mods.json`, temporary staging metadata, historical `added-mods.json` snapshots and installed-file names in operation receipts. A broad no-save/no-cache clause means passing tests or having a working key is not enough. **Keep PR #34 open; do not merge, release, deploy or distribute the current persistent CurseForge integration pending written clarification/approval or an accepted no-persistence redesign.** The support/application request in the audit is drafted but has not been submitted.
 
 ## Current scope
 
