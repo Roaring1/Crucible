@@ -36,6 +36,26 @@ _LOADERS = [
 ]
 
 
+def _ensure_scaled_line_edit_height(edit: QLineEdit) -> None:
+    """Reserve room for font metrics, QSS padding, and the focused border.
+
+    The shared stylesheet uses 5px vertical line-edit padding and a 2px focused
+    border. Derive a minimum from the actual font rather than reducing text size.
+    """
+    font_height = edit.fontMetrics().height()
+    vertical_padding = 5
+    maximum_border = 2
+    # Leave room for Qt font/style polish and DPI rounding after show().
+    layout_rounding_allowance = 2
+    required_height = (
+        font_height
+        + (2 * vertical_padding)
+        + (2 * maximum_border)
+        + layout_rounding_allowance
+    )
+    edit.setMinimumHeight(max(edit.minimumHeight(), required_height))
+
+
 class _VersionWorker(QObject):
     """Fetches the Minecraft version list off the UI thread."""
 
@@ -150,6 +170,9 @@ class NewServerDialog(QDialog):
         self._ver_combo = QComboBox()
         self._ver_combo.setEditable(True)
         self._ver_combo.setMinimumWidth(220)
+        self._ver_combo.setMinimumHeight(
+            max(self._ver_combo.minimumHeight(), self._ver_combo.fontMetrics().height() + 14)
+        )
         form.addRow("Minecraft version:", self._ver_combo)
 
         self._ver_status = QLabel("Loading versions…")
@@ -165,7 +188,9 @@ class NewServerDialog(QDialog):
             Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         )
         self._advanced_toggle.setStyleSheet(
-            f"color: {theme.TEXT}; font-weight: 600; padding: 5px 0;"
+            f"QToolButton {{ color: {theme.TEXT}; font-weight: 600; padding: 5px 0; }}"
+            f"QToolButton:focus {{ border: 2px solid {theme.ACCENT}; "
+            "border-radius: 3px; padding: 3px 0; }"
         )
         self._advanced_toggle.toggled.connect(self._toggle_advanced_options)
         layout.addWidget(self._advanced_toggle)
@@ -177,6 +202,7 @@ class NewServerDialog(QDialog):
 
         self._lver_edit = QLineEdit()
         self._lver_edit.setPlaceholderText("Leave blank to use the latest version")
+        _ensure_scaled_line_edit_height(self._lver_edit)
         self._lver_row_label = QLabel("Loader version (optional):")
         advanced_form.addRow(self._lver_row_label, self._lver_edit)
 
@@ -196,6 +222,7 @@ class NewServerDialog(QDialog):
         # Display name first -- the folder is derived from it automatically.
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText("My Server")
+        _ensure_scaled_line_edit_height(self._name_edit)
         self._name_edit.textChanged.connect(self._on_name_changed)
         form.addRow("Server name:", self._name_edit)
 
@@ -204,6 +231,7 @@ class NewServerDialog(QDialog):
         dst_row = QHBoxLayout()
         self._path_edit = QLineEdit()
         self._path_edit.setPlaceholderText(str(Path.home() / "CrucibleServers" / "my-server"))
+        _ensure_scaled_line_edit_height(self._path_edit)
         self._path_edit.textEdited.connect(self._on_path_edited)
         dst_row.addWidget(self._path_edit, stretch=1)
         browse = QPushButton("Browse…")
@@ -221,7 +249,11 @@ class NewServerDialog(QDialog):
         self._eula_check = QCheckBox(
             "I accept the Minecraft EULA — required before the server can start"
         )
-        self._eula_check.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
+        self._eula_check.setStyleSheet(
+            f"QCheckBox {{ color: {theme.SUBTEXT}; font-size: 12px; }}"
+            f"QCheckBox:focus {{ border: 2px solid {theme.ACCENT}; "
+            "border-radius: 3px; padding: 1px 3px; }"
+        )
         layout.addWidget(self._eula_check)
         eula_hint = QLabel(
             "Leave unchecked to create the server files now and accept the EULA later in Setup."

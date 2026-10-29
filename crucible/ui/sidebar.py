@@ -321,7 +321,9 @@ class Sidebar(QWidget):
             "QMenu { background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; "
             "border-radius: 6px; padding: 4px; }"
             "QMenu::item { padding: 6px 20px 6px 12px; border-radius: 4px; }"
-            "QMenu::item:selected { background: #313244; }"
+            f"QMenu::item:selected {{ background: {theme.SURFACE0}; "
+            f"border: 1px solid {theme.ACCENT}; padding: 5px 19px 5px 11px; "
+            "border-radius: 4px; }"
             "QMenu::separator { height: 1px; background: #45475a; margin: 3px 8px; }"
         )
 
