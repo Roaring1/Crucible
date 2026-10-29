@@ -295,7 +295,7 @@ def test_add_mod_detail_icon_states_replace_permanent_ellipsis(qapp):
 
     valid = dialog._decode_icon_pixmap(_png_bytes())
     assert valid is not None and not valid.isNull()
-    assert valid.width() <= 128 and valid.height() <= 128
+    assert valid.width() <= 64 and valid.height() <= 64
     assert dialog._decode_icon_pixmap(_png_bytes(4097, 1)) is None
     assert dialog._decode_icon_pixmap(b"garbage") is None
 
