@@ -19,7 +19,9 @@ import argparse
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -30,12 +32,15 @@ if str(REPO_ROOT) not in sys.path:
 def capture_previews(output: Path) -> list[Path]:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-    from PyQt6.QtCore import QCoreApplication, QEvent, QPoint
+    from PyQt6.QtCore import QCoreApplication, QEvent, QPoint, QBuffer, QIODevice
+    from PyQt6.QtGui import QColor, QImage
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QMenu
     from crucible.data.instance_manager import InstanceManager
     from crucible.ui import theme
+    from crucible.mods import icon_fetch
     from crucible.ui.add_dialog import AddInstanceDialog
+    from crucible.ui.add_mod_dialog import AddModDialog
     from crucible.ui.main_window import MainWindow
     from crucible.ui.modpack_dialog import ModpackDialog
     from crucible.ui.new_server_dialog import NewServerDialog
@@ -154,6 +159,102 @@ def capture_previews(output: Path) -> list[Path]:
         import_dialog.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         app.processEvents()
+
+        # The Add Mod browser gets deterministic first-page, later-page, and
+        # selected-detail screenshots. Fake icon bytes ensure this visual
+        # evidence never touches provider APIs or the user's CurseForge key.
+        class PreviewModHit:
+            def __init__(self, project_id: str, title: str, icon_url: str, color: str):
+                self.project_id = project_id
+                self.title = title
+                self.description = "Synthetic preview result used only for UI evidence."
+                self.icon_url = icon_url
+                self.downloads = 12_345
+                self.follows = 456
+                self.author = "Preview fixture"
+                self.categories = ["technology"]
+                self.client_side = "optional"
+                self.server_side = "required"
+                self.is_client_only = False
+                self._color = color
+
+            def server_label(self) -> str:
+                return "Client & server"
+
+        def synthetic_png(color: str) -> bytes:
+            image = QImage(32, 32, QImage.Format.Format_ARGB32)
+            image.fill(QColor(color))
+            buffer = QBuffer()
+            if not buffer.open(QIODevice.OpenModeFlag.WriteOnly) or not image.save(buffer, "PNG"):
+                raise RuntimeError("Could not build a synthetic mod-icon fixture")
+            data = bytes(buffer.data())
+            buffer.close()
+            return data
+
+        first_page = [
+            PreviewModHit("preview-top-1", "Amber Toolkit", "https://cdn.modrinth.com/preview/amber.png", "#c8903a"),
+            PreviewModHit("preview-top-2", "Copper Utilities", "https://cdn.modrinth.com/preview/copper.png", "#d9a048"),
+            PreviewModHit("preview-missing", "No Icon Provided", "", "#545460"),
+        ]
+        later_page = [
+            PreviewModHit("preview-later-1", "Foundry Extras", "https://cdn.modrinth.com/preview/foundry.png", "#a6e3a1"),
+            PreviewModHit("preview-later-2", "Quiet Machines", "https://cdn.modrinth.com/preview/quiet.png", "#96929e"),
+        ]
+        preview_payloads = {
+            hit.icon_url: synthetic_png(hit._color)
+            for hit in first_page + later_page
+        }
+
+        def synthetic_icon_fetch(url: str, *, provider: str) -> bytes:
+            if provider != "modrinth" or url not in preview_payloads:
+                raise RuntimeError("Unexpected non-fixture request from Add Mod screenshot capture")
+            return preview_payloads[url]
+
+        with patch.object(AddModDialog, "_do_search", lambda *_args, **_kwargs: None):
+            with patch.object(icon_fetch, "fetch_icon_bytes", synthetic_icon_fetch):
+                add_mod = AddModDialog(SimpleNamespace(loader="fabric", minecraft_version="1.21.1"))
+                add_mod._initial_search_timer.stop()
+                add_mod._has_more = False
+                add_mod._resolved = {hit.project_id: [] for hit in first_page + later_page}
+                add_mod.resize(960, 640)
+                add_mod.show()
+                add_mod._all_hits = list(first_page)
+                add_mod._rebuild_view()
+
+                def wait_for_icons(project_ids: set[str]) -> None:
+                    deadline = time.monotonic() + 3
+                    while time.monotonic() < deadline:
+                        app.processEvents()
+                        if project_ids <= set(add_mod._pixmaps) and not add_mod._workers_running():
+                            return
+                        QTest.qWait(10)
+                    missing = sorted(project_ids - set(add_mod._pixmaps))
+                    raise RuntimeError(f"Add Mod icon screenshot timed out waiting for {missing}")
+
+                wait_for_icons({hit.project_id for hit in first_page if hit.icon_url})
+                save(add_mod, "add-mod-icons-first-page.png", 960, 640)
+
+                add_mod._results.setCurrentRow(2)
+                QTest.qWait(20)
+                if add_mod._d_icon_status.text() != "No icon provided":
+                    raise RuntimeError("Add Mod missing-icon detail state did not render deliberately")
+                save(add_mod, "add-mod-icons-missing-detail.png", 960, 640)
+
+                add_mod._all_hits.extend(later_page)
+                add_mod._rebuild_view()
+                wait_for_icons({hit.project_id for hit in later_page})
+                add_mod._results.scrollToBottom()
+                QTest.qWait(20)
+                save(add_mod, "add-mod-icons-later-page.png", 960, 640)
+
+                add_mod._results.setCurrentRow(len(add_mod._view) - 1)
+                QTest.qWait(20)
+                save(add_mod, "add-mod-icons-selected-detail.png", 960, 640)
+                add_mod.close()
+                QTest.qWait(30)
+                add_mod.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+                app.processEvents()
 
         def no_network_search(dialog, initial: bool = False) -> None:
             dialog._status.setText("Preview only · modpack search disabled")

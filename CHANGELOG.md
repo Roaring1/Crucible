@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix Add Mod icon paging: prioritize the selected/current viewport rows, cap the appendable icon queue at 48 jobs, and avoid cancelling earlier-page fetches. Use deliberate loading/missing/failed placeholders; cap decoded images at 64×64, the pixmap LRU at 256 entries, and icon-state bookkeeping at 1,024 entries. Eviction also replaces result-row QIcons so rows do not retain old pixel data.
+- Fetch provider icons through an HTTPS-only, provider-host allowlisted path with validated redirects, a maximum 8 MiB response, 64 KiB body reads, socket timeouts, and no provider credentials. The body reader checks a monotonic deadline; urllib response-header parsing remains bounded per socket wait rather than by a strict end-to-end wall-clock deadline. Invalid images and oversized dimensions fail gracefully instead of remaining stuck as an ellipsis.
+- Expand the offline UI preview suite with synthetic first-page, missing-detail, later-page and selected-detail Add Mod screenshots; add controlled queue-priority, timeout, cancellation, URL-security and Qt pagination/cache regressions.
 - Fix the Add Mod dialog startup race: deferred initial search is now owned by the dialog and cannot launch a background request after early close. The Qt smoke regression verifies that close-before-startup launches no worker.
 - Isolate Qt smoke tests from the developer's real CurseForge key and live CurseForge API so ordinary tests are deterministic and never consume personal credentials.
 
