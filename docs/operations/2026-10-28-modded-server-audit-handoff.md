@@ -2,25 +2,34 @@
 
 ## Latest resumed-session update — 2026-10-28
 
-The current fresh-world preflight is the reference for this audit:
-[docs/operations/2026-10-28-fresh-world-preflight.md](https://github.com/Roaring1/Crucible/blob/main/docs/operations/2026-10-28-fresh-world-preflight.md).
+The current authoritative plan and evidence are in [the fresh-world preflight](https://github.com/Roaring1/Crucible/blob/main/docs/operations/2026-10-28-fresh-world-preflight.md).
 
-Important findings:
+### Production is prepared for the next Start click
 
-- Supervisor is connected (service 1.5.0, OAuth enabled). Minecraft remains stopped; the last log reached `Done (3.209s)!` at 14:50:29 and recorded `Stopping the server` at 14:54:05. The user may have stopped it manually; no crash is established.
-- The installed ATi Structures 1.4.7 JAR SHA-512 exactly matches the published artifact hash. The missing `ati_structures:terrain` pool is absent from that JAR, but the current latest log does not reproduce the older error and installed-JAR JSON scanning found no active reference beyond `terrain_large`/`terrain_small`. Do not patch/replace ATi without a fresh-world regression.
-- A scan of 187 installed JARs found 14 empty recipe JSON placeholders in `mekanism_tfmg_compat-0.4-1.21.1.jar` shadowing valid Create, Mekanism, and TFMG resources. Recipe Integration 0.4.0 contains 216 `neoforge:mod_laoded` typos in 108 resource files.
-- A staged data pack outside every world's datapack folder now contains 131 JSON resources: 14 restored recipes, 108 corrected optional-mod conditions, two Mekanism Elements painting schema fixes, the methane oxidizing schema fix, three Create Factory optional-condition key fixes, and three Fishers Haven Aquaculture guards. Current ZIP SHA-256: `59081630d0d7465642ecd6d268db8c7c9b104d7da13feba01bbeb1c3886af3a2`. ZIP integrity and JSON parsing passed; it remains staged only and has not been activated or runtime-tested.
-- The installed Mekanism Elements JAR identifies author `Infernos`, version 3.0.18. Do not use the similarly named `fixdol/Mekanism-Elements` repository as its source. Recipes referring to unregistered zirconium/aqua-dye/dark-red-dye IDs remain intentionally unresolved until registrations or authoritative upstream resources can be verified.
-- A verified rollback archive of the current world exists: `username-admin-server-world-factor8-before-fresh-20261028-161756.tar.gz`, SHA-256 `f9191b54c77e0a87438df9cbc65bb9e819546ff5f074aada6af1cdf46dc3653c`.
+- Production instance: `/home/roaring/CrucibleServers/username-admin-server`; **left stopped**. There is no production tmux session or Minecraft JVM, and port 25566 is free.
+- `server.properties` now sets `level-name=world_fresh_20261028`. The target folder contains only `datapacks/fresh-world-launch-fixes/` and no `level.dat` yet, so the first Start creates a genuinely fresh world while `world` and both dated historical folders remain intact.
+- The actual Crucible `ServerInstance.readiness()` reports all seven checks OK, including `Server program is installed` and `Server settings are valid`. The real `TmuxManager.start()` was exercised on a disposable copy and returned success using the registered `-Xms8G -Xmx16G` heap settings. It reached `Done (3.589s)!`; the matching `TmuxManager.stop()` then stopped it gracefully.
+- The final datapack is deployed only under the new world. ZIP SHA-256: `e76ddbb936b502eb664388da8bd75372580e451d029c37e49f3c702f61e75e57`; 429 data JSON resources validate. `/datapack list enabled` in the final isolated test showed `file/fresh-world-launch-fixes (world)` among 20 packs.
+- Two local JAR hotfixes are deployed identically to the server and corresponding Prism client: `sablephysicscompat-1.3.0.jar` SHA-256 `a01586a6e74405b6690202fdc9b072028b057c42442aa9d82bdc7bb4df5c0578`, and `recipe_integration-0.4.0.jar` SHA-256 `f6cfe76956df1af5bacfc10fadebbaba9f85e88c380e3fc97b11348d6cded8b5`.
+- The final isolated start has zero recipe parser errors, zero loot-table parser errors, zero Sable malformed-resource errors, zero invalid Recipe Integration resource-path errors, and zero BCLib level-data errors. Seven ERROR-level log lines remain but are nonfatal: five client-only class probes, one Moonlight/Connector warning, and one HammerLib test-attachment message.
+- Terralith biome `terralith:blooming_valley` and ATi structure `ati_structures:lighthouse` were both registered/locatable in the test world. The verified ATi 1.4.7 JAR matches its published SHA-512; its earlier missing-pool error did not recur.
 
-The eventual launch should use a unique new level name such as `world_fresh_20261028`, leaving `world` and all older copies in place. No server properties, mods, active configs, or world data have been changed. The only host writes are the new rollback archive and inactive preparation files under `prepared-datapacks`.
+### Rollback points
+
+- Existing-world archive: `/home/roaring/.local/share/crucible-backups/username-admin-server-world-factor8-before-fresh-20261028-161756.tar.gz`, SHA-256 `f9191b54c77e0a87438df9cbc65bb9e819546ff5f074aada6af1cdf46dc3653c`.
+- Deployment backup directory: `/home/roaring/.local/share/crucible-backups/username-admin-server-fresh-world-deployment-20261028-171846/`.
+- Original server files backup SHA-256: `703b24d64f9404af2d77fbaceaefac61231b5b412c38a735da239254724a7acc`; original Prism-client JAR backup SHA-256: `787952d74e8f6decd4c2ccc9f4acf7fcffad066330b8ab7b1bcadde69ead3f59`.
+- `deployment-manifest.json` and `test-results.md` in that backup folder record the hashes and test state. The old active-world `level.dat` hash remains `091d4e46ff6980c931887ba66fd959712e57e211c83d6c929d0c7d086bf29482`.
+
+### Immediate next action
+
+No more pre-start mutation is needed. When the operator is ready, click Start in Crucible for `username admin server`; do not change the level name back to `world`. After the first production start, verify the Done marker, enabled datapack, fresh `world_fresh_20261028/level.dat` and region files, zero recipe/loot parser errors, and unchanged hash of the retained `world/level.dat`. Then do a short player playtest of biome/structure variety and normal modded recipes.
 
 ## Status and confidence
 
-This is a checkpoint for continuing the server audit when the NobaraSupervisor MCP connection is healthy again. It records the last confirmed state, not a claim about the host's current state after the connection failure. No host-side changes were made after Supervisor tools began returning `UNAVAILABLE: McpServerError: Connection failed`.
+This section began as a historical checkpoint from the earlier Supervisor outage. The connection has since recovered and the deployment actions above supersede the old checkpoint statements. The production server is still intentionally stopped; only the disposable test instance was started, and it has been stopped cleanly.
 
-**Do not wipe/reset the world again as a first response.** A new factor-8 world was already generated and reached the Minecraft ready marker. Preserve it for user testing; the older worlds and archives are retained for rollback/comparison.
+The final `TmuxManager.start()`/`stop()` smoke test, data-pack activation, recipe/loot/Sable validation, and worldgen locate checks have passed in the disposable copy. Production configuration and the matching Prism client have been prepared with rollback archives. Production has not yet generated or loaded the new world.
 
 ## Environment
 
@@ -105,14 +114,14 @@ A `/dumpstructuresets` output was saved on the host at:
 
 Sets observed include `dungeons_arise:major_structures`, `ati_structures:aboveground_large`, Terralith-associated sets, CTOV, and vanilla structures.
 
-## High-priority unresolved defects
+## Historical defects and current outcomes
 
 ### 1. ATi Structures version/hash and missing template pool
 
 Installed JAR path observed:
 `mods/ATi Structures Vanilla V1.4.7.jar`
 
-During startup, the update checker logged an internal status resembling “Current: 1.4.5, Target: 1.4.7”, despite the filename saying 1.4.7. This could be stale/mislabelled content or stale embedded metadata. **The installed JAR hash was not verified before Supervisor disconnected. Do not replace it based only on the filename or updater line.**
+During startup, the update checker logged an internal status resembling “Current: 1.4.5, Target: 1.4.7”, despite the filename saying 1.4.7. This could be stale/mislabelled content or stale embedded metadata. **Current outcome:** the installed ATi Structures 1.4.7 JAR SHA-512 was verified against the published artifact and matches exactly. The latest test log did not reproduce the missing-pool error and no active installed-JAR reference to `ati_structures:terrain` was found. Do not replace or patch this verified release unless the fresh production world reproduces the issue.
 
 Official Modrinth release page:
 https://modrinth.com/datapack/ati-structures-vanilla-edition/version/ivErXrfo
@@ -120,8 +129,7 @@ https://modrinth.com/datapack/ati-structures-vanilla-edition/version/ivErXrfo
 Published SHA-512 from the public PrismNix manifest:
 `4n6LESUh42huKv655i88MRrdkkFCr632C9oCYAWhZPC9tsG5MteYAv//k48muUIqKjvrm+JMjnaQ1TcQqUuVMw==`
 
-The installed JAR was inspected and contained `terrain_large.json` and `terrain_small.json`, but no `data/ati_structures/worldgen/template_pool/terrain.json`. During structure lookup/generation, the log repeatedly reported:
-`Couldn't find template pool reference: ati_structures:terrain`
+The installed JAR was inspected and contained `terrain_large.json` and `terrain_small.json`, but no `data/ati_structures/worldgen/template_pool/terrain.json`. Older logs repeatedly reported `Couldn't find template pool reference: ati_structures:terrain`; the current isolated startup no longer reproduced that message. The registered `ati_structures:lighthouse` structure is locatable in the test world.
 
 Observed sample coordinates included `[13592,73,-13384]`, `[-107400,78,147912]`, `[-13320,111,161352]`, `[-174616,61,72]`, and `[-174568,103,-241768]`.
 
@@ -133,19 +141,16 @@ A third-party modpack contains a pool file named `ati_structures:terrain` but us
 
 ### 2. First-start BCLib level.dat message
 
-Fresh-world first generation logged:
-`Failed fixing Level-Data in level.dat (./world/./level.dat)`
+The older first-generation logs contained `Failed fixing Level-Data in level.dat (./world/./level.dat)`. It did not recur in the later isolated startup tests, including the final test using the patched Sable JAR and final datapack. Do not remove mods or reset a world because of the historical first-create message alone.
 
-On the factor-4 world, the message did not recur after a second restart and the server reached ready normally. The factor-8 world received the same first-generation message, but a second-start verification had not happened before Supervisor disconnected. Once host access returns, perform a controlled second restart and inspect the log for repeat errors and the presence/integrity of `world/level.dat`. Do not remove mods or reset the world just because of this first-create message alone.
+### 3. Recipe Integration bad conditional identifiers — repaired in staged/deployed pack
 
-### 3. Recipe Integration bad conditional identifiers
-
-Installed Recipe Integration version: 0.4.0. Repeated load errors report unknown condition codec `neoforge:mod_laoded` (misspelling of `mod_loaded`) and missing `farm_and_charm:mincer` recipe serializer. The upstream repository contains many affected Farm & Charm mincer recipes.
+Installed Recipe Integration version: 0.4.0. Its resources contained `neoforge:mod_laoded` (misspelling of `mod_loaded`) in 108 recipes. The final world datapack fixes that token in place (216 replacements), removes unregistered optional condition codecs from optional recipes while retaining standard mod-loaded guards, and adds the absent Stellaris guard. The local prepared JAR hotfix also removes a single invalid filename containing a space, which Minecraft previously ignored anyway.
 
 Example upstream repository:
 https://github.com/Mogwump/recipe-integration-mod
 
-A sample current-main file uses `neoforge:mod_laoded` for Farm & Charm / TFMG condition checks. A likely repair is to correct only the affected recipe resources through a well-defined override or upstream fix, preserving the intended optional-mod checks. Do not perform a broad text replacement across unrelated mods or delete Recipe Integration without checking feature impact. Test recipe parsing and optional-mod behavior after the change.
+A sample current-main file uses `neoforge:mod_laoded` for Farm & Charm / TFMG condition checks. The final isolated startup confirms zero recipe parse errors. The upstream source remains worth reporting; do not broad-replace unrelated mods or remove Recipe Integration.
 
 ### 4. Mekanism Elements painting recipe mismatch
 
@@ -157,7 +162,7 @@ The upstream NeoForge 1.21.1 resource at the time of research had the valid fiel
 Upstream reference:
 https://github.com/fixdol/Mekanism-Elements/blob/Neo/1.21.1/src/generated/resources/data/mekanismelements/recipe/painting/powder_high_quality_concrete_aqua.json
 
-Before patching, inspect the actual JAR resource and every loaded datapack/KubeJS override for the same recipe ID.
+Current outcome: the final datapack repairs the two painting schemas and methane oxidizing schema based on the installed Mekanism serializer; four resources that require absent registry IDs/serializers are explicitly disabled with `neoforge:false` rather than inventing unregistered IDs. This was validated in the isolated startup with zero recipe parse errors. An upstream fix is still needed to restore those disabled recipes.
 
 ### 5. Empty/bad recipe JSON that differs from upstream
 
@@ -172,13 +177,13 @@ Upstream references:
 - https://github.com/DrMango14/Create-The_Factory_Must_Grow/blob/1.21.1/src/generated/resources/data/tfmg/recipe/crafting/materials/steel_axe.json
 - Mekanism upstream repository: https://github.com/mekanism/Mekanism
 
-First determine the actual runtime source (JAR, built-in data, datapack, or KubeJS), then fix the smallest verified source and test reload/startup.
+Current outcome: a complete installed-JAR scan located the empty placeholders in `mekanism_tfmg_compat-0.4-1.21.1.jar`; 14 valid duplicates are restored by the datapack from the base Create/Mekanism/TFMG resources. The final isolated test has zero recipe parse errors.
 
 ## Other log noise to triage after the blockers
 
 - A factor-4 test log snapshot contained 439 ERROR/FATAL lines; ~412 were repeated Railways optional-integration loot-table errors for items from absent BYG, TFC, Biomes O' Plenty, Twilight Forest, and other mods. These appear to be optional compatibility data errors and were nonfatal in the tested startup. Do not install a large list of extra mods just to silence optional loot-table errors.
-- `sablephysicscompat-1.3.0.jar` tag parse error involving `sable:bouncy`.
-- Invalid Recipe Integration path: `immersiveengineering/sawmill/aoa3/haunted_purpling_log copy.json`.
+- **Resolved in local hotfix:** `sablephysicscompat-1.3.0.jar` had an invalid trailing comma in `sable:bouncy` and an array where the loader expects one physics-property object per resource. A two-entry local JAR repair preserves the bouncy tag values and the supported Quark Gravisand float property; no Sable parser/property errors remain in the final test.
+- **Resolved in local hotfix:** the invalid whitespace-containing Recipe Integration path `immersiveengineering/sawmill/aoa3/haunted_purpling_log copy.json` was removed from the patched JAR; no invalid-path error remains.
 - HammerLib registers `org.zeith.hammerlib.core.test.HammerLibRecipeExtension` as an attachment and emits an error.
 - Moonlight warns that Forgified Fabric API/Connector on NeoForge can affect compatibility.
 - Five dedicated-server/client-only class reference errors mention `RenderSystem` and `net.minecraft.client.main.Main`; map each error to the responsible mod/mixin before acting.
@@ -188,16 +193,14 @@ First determine the actual runtime source (JAR, built-in data, datapack, or Kube
 
 These findings need prioritization based on user-visible impact, not a goal of getting a perfectly silent log at any cost.
 
-## Exact next actions after Supervisor reconnects
+## Exact next actions after deployment
 
-1. Start with read-only status checks: session state, player list, `latest.log` tail, active config, world folder/level.dat, running process, and disk/backup availability. Confirm whether the current factor-8 server is still online before restarting.
-2. Preserve the active factor-8 world and both older copies. Do not wipe again without an actual world corruption diagnosis or explicit user request.
-3. Verify the installed ATi JAR SHA-512 against the official artifact. If mismatched, stop server, backup/hash the old JAR, replace only that JAR, run appropriate validation, and restart. If correct, investigate the missing pool carefully rather than applying a third-party pack's processor IDs.
-4. Restart once under controlled conditions to determine whether the BCLib message is first-creation-only.
-5. Find the exact loaded source of the Recipe Integration, Mekanism Elements, TFMG, and Mekanism recipe JSON errors. Compare JAR resources with any override.
-6. Patch the narrowest defective resource, retain backup/diff/hash, and test both server startup and recipes. Avoid unnecessary client-pack downloads if the fix is server-side.
-7. Have the operator explore the factor-8 terrain and report whether the density/variety feels right. Only then consider another density change.
-8. After changes, update this handoff with exact command results, hashes, backup paths relative to the instance, startup marker, and any remaining warnings.
+1. Wait for the operator's chosen launch time; do not start production automatically.
+2. On the user's Crucible Start click, verify the registered JVM arguments are `-Xms8G -Xmx16G` and wait for `Done`.
+3. Confirm `file/fresh-world-launch-fixes (world)` is enabled, the new `world_fresh_20261028/level.dat`/region files are created, and the retained `world/level.dat` hash stays `091d4e46ff6980c931887ba66fd959712e57e211c83d6c929d0c7d086bf29482`.
+4. Confirm recipe/loot parser errors remain zero; then playtest a small selection of worldgen structures and common modded recipe/machine workflows.
+5. Triage the seven remaining nonfatal ERROR-level startup messages only after the first live-world smoke test, without removing Connector or client-compatible mods blindly.
+6. Continue recording exact log results and hashes in the fresh-world preflight document.
 
 ## Supervisor incident
 
