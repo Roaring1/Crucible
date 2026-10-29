@@ -1,6 +1,6 @@
 # UI Design and Interaction Workstream
 
-**Status:** PRs #37–#41 are implemented in focused open PRs. A disposable combined tree applied their exact heads with no changed-file overlap; integrated validation is green (631 passed, 74 subtests; all five PRs have green Python 3.11/3.13 CI; wheel verified). One small-window issue remains: Setup at 640×420 has reproducible horizontal overflow and right-edge clipping. PRs #34/#35 remain integration gates for broader Add Mod/provider work.  
+**Status:** PRs #37-#41 retain their verified implementation status. The pre-existing Setup horizontal overflow found in the combined audit is now fixed in [PR #42](https://github.com/Roaring1/Crucible/pull/42), with a new responsive-layout test file, 611 passing tests plus 74 subtests, and hosted CI pending. PRs #34/#35 remain integration gates for broader Add Mod/provider work.  
 **Prepared:** 2026-10-29  
 **Initial reference commit:** `34ca28fd8f989fe3eb98b90c81012d141684f4c9`  
 **Workstream:** Chat 3 — whole-app UX, local SVG icons, loading skeletons, restrained transitions.
@@ -161,15 +161,16 @@ Evidence file examples (all below the audit root unless a path is shown explicit
 - **Proposed change:** add brief inline empty states: “No backups yet. Select Backup Now to create one.” and “No saved world slots yet. Create a backup to make one available.” Keep these messages near the relevant table and avoid a large decorative illustration.
 - **Repeatable test:** render empty and populated fixture states side by side; assert the empty message disappears once a row exists, and that the Backup Now / world-backup actions remain reachable and functional with temporary data.
 
-#### 7. Pre-existing narrow-width horizontal overflow; PR #41 guards vertical focus
+#### 7. Responsive Setup fix implemented in PR #42
 
-- **Screen/state and exact widgets:** Setup tab at 900×600 and 640×420; readiness action buttons, “Save memory settings”, and “Apply suggested”.
-- **Vertical-focus regression guard:** PR #41 adds tests/test_setup_scroll_keyboard_qt.py. At 900×600, its synthetic fixture records 14 content controls in the Tab traversal, zero focused controls outside the viewport, maximum scroll 348px, and a visible bottom “Update from a link or file…” action. PageUp scrolls back.
-- **Combined-tree small-window observation:** at 640×420, content width is 684px and viewport width is 633px; horizontal scroll range is 51px with horizontal value 0 in the inspected state. “Accept EULA” and “Install server now” extend to x=649; “Save memory settings” and “Apply suggested” extend to x=663, exceeding the initial viewport’s right edge.
-- **Baseline comparison:** the same geometry and right-side control positions were measured in pristine main at 34ca28fd8f989fe3eb98b90c81012d141684f4c9. Therefore this is a **pre-existing narrow-width layout issue, not a regression introduced by PRs #37–#41**. PR #41’s 900×600 test does not claim to cover the horizontal overflow.
-- **Follow-up after this integration cycle:** verify on the real desktop, then make the quick-action, readiness-button, and memory-control rows wrap/stack at narrow widths. Do not reduce text size. No new feature PR was opened during this integration audit.
-- **Evidence:** combined screenshots /tmp/crucible-pr37-41-integration-audit-20261029/visual-audit/setup/setup-bottom-standard.png and setup-bottom-small.png; combined metrics /tmp/crucible-pr37-41-integration-audit-20261029/visual-audit/setup-small-overflow.json; pristine-main comparison /tmp/crucible-pr37-41-integration-audit-20261029/visual-audit/setup-main-baseline-geometry.json.
-- **Limits:** this is an offscreen Qt result, not proof of pixel-identical behavior across all desktop compositors or screen-reader accessibility.
+- **Screen/state and exact widgets:** Setup tab at 640x420 and 900x600; the memory-editor Xms/Xmx fields and Save memory settings action, readiness card buttons, and modpack version actions.
+- **Original evidence:** pristine main had 684px content against a 633px viewport at 640x420, with horizontal scroll range 51px. The same geometry existed in the PR #37-#41 combined tree, proving the issue was pre-existing.
+- **Fix:** Save memory settings now sits in its own right-aligned row rather than sharing one wide row with all four Xms/Xmx controls. Font size and control sizing are unchanged.
+- **Repeatable regression:** new file tests/test_setup_responsive_layout_qt.py checks horizontal scroll maximum equals zero, content width does not exceed the viewport, visible controls remain within the horizontal viewport, and forward and reverse Tab traversal keeps each focused content widget fully visible at both 640x420 and 900x600.
+- **Final observed geometry:** at 640x420 content and viewport are both 633px wide, horizontal scroll maximum is zero, 16 controls fit, and both forward and reverse focus passes record zero targets outside the viewport. At 900x600 content and viewport are both 893px wide and vertical scroll remains available.
+- **Validation on PR #42 commit 69511cf4c922ca3cd8e339180ed24ded16e04fbf:** focused responsive tests 4 passed; full suite 611 passed and 74 subtests passed; compileall and git diff --check passed. Hosted Python 3.11/3.13 checks were still in progress at the time this note was written.
+- **Visual evidence:** /tmp/crucible-setup-responsive-evidence-20261029/setup-responsive-before-after.jpg, setup-after-standard.png, setup-after-small.png, responsive-report.json, and SHA256SUMS.txt. Before and after images were opened and inspected.
+- **Limits:** evidence uses offscreen Qt and synthetic server data. Real desktop compositor/platform-theme and screen-reader validation remain separate follow-ups. PR #42 was tested on main and has not yet been overlaid with PRs #37-#41.
 
 #### 8. Low / source-level — sidebar context menu colors are hard-coded outside the theme
 
@@ -336,7 +337,7 @@ All five branches are based on the same main commit and their changed filenames 
 Pause new UI scope until PRs #37–#41 have been reviewed and integrated in the order proposed above. The combined audit confirmed a pre-existing Setup horizontal overflow at 640×420; keep it explicitly open, but do not start another feature PR during this integration cycle. After integration, address that narrow-width layout first, then revisit the More-tabs selected-label truncation (finding #3), stopped-state contrast/non-color status (finding #4), empty-backup next-step guidance (finding #6), and the sidebar context-menu palette (finding #8). Keep each fix focused, rechecking changed-file overlap against the refreshed main and any still-open PRs. For future animated transitions, first define a real reduced-motion policy and test loading/success/empty/error/cancel/close plus stale-result cleanup. Do not add animation to the avatar placeholders.
 ## Implementation sequence after the integration gate
 
-1. Integrate the existing focused PRs in this order, one at a time: #37 (shared focus/Create Server DPI), #38 (World wipe confirmation), #39 (local SVG/license/package data), #40 (PlayersTab avatar lifecycle), and #41 (test-only Setup vertical-scroll guard). Wait for hosted CI after each merge and fetch the updated main before the next.
+1. Integrate the existing focused PRs in this order, one at a time: #37 (shared focus/Create Server DPI), #38 (World wipe confirmation), #39 (local SVG/license/package data), #40 (PlayersTab avatar lifecycle), #41 (test-only Setup vertical-scroll guard), then #42 (responsive Setup width). Wait for hosted CI after each merge and fetch the updated main before the next.
 2. Do not add new UI feature branches during that merge sequence. Record the Setup horizontal overflow at 640×420 as pre-existing layout debt, not a regression from these PRs.
 3. After integration, address that narrow-width Setup overflow first, then the remaining ranked audit findings in focused branches after rechecking changed filenames and current main.
 4. Perform real-desktop focus/scaling/keyboard checks and available assistive-technology review; keep the offscreen Qt limitations explicit in the evidence.
