@@ -322,7 +322,7 @@ All five branches are based on the same main commit and their changed filenames 
 ### Remaining audit findings vs. desktop validation
 
 **Remaining implementation findings after the current set:**
-- **Setup narrow width:** horizontal overflow at 640×420 is reproduced in the combined offscreen capture; a responsive row/layout fix remains outstanding.
+- **Setup narrow width:** horizontal overflow at 640×420 is reproduced in the combined tree and in pristine main; it is a pre-existing issue, not a regression from PRs #37–#41. A responsive row/layout fix remains outstanding for a later focused change.
 - **More button:** secondary tab title truncation remains from finding #3; revisit after PR #37 integrates so it does not overlap the current focus/theme change.
 - **Stopped status:** strengthen the dim stopped marker and improve non-color-only inline status communication from finding #4 after rechecking the merged sidebar/theme code.
 - **Empty backups:** add short next-step guidance to empty Backup and saved-world tables from finding #6 after PR #39 integrates.
@@ -333,12 +333,12 @@ All five branches are based on the same main commit and their changed filenames 
 
 ### Next independent UI task
 
-Pause new UI scope until PRs #37–#41 have been reviewed and integrated in the order proposed above. The combined audit uncovered the Setup horizontal overflow at 640×420; keep it explicitly open, but do not start another feature PR during this integration cycle. After integration, address that narrow-width layout first, then revisit the More-tabs selected-label truncation (finding #3), stopped-state contrast/non-color status (finding #4), empty-backup next-step guidance (finding #6), and the sidebar context-menu palette (finding #8). Keep each fix focused, rechecking changed-file overlap against the refreshed main and any still-open PRs. For future animated transitions, first define a real reduced-motion policy and test loading/success/empty/error/cancel/close plus stale-result cleanup. Do not add animation to the avatar placeholders.
+Pause new UI scope until PRs #37–#41 have been reviewed and integrated in the order proposed above. The combined audit confirmed a pre-existing Setup horizontal overflow at 640×420; keep it explicitly open, but do not start another feature PR during this integration cycle. After integration, address that narrow-width layout first, then revisit the More-tabs selected-label truncation (finding #3), stopped-state contrast/non-color status (finding #4), empty-backup next-step guidance (finding #6), and the sidebar context-menu palette (finding #8). Keep each fix focused, rechecking changed-file overlap against the refreshed main and any still-open PRs. For future animated transitions, first define a real reduced-motion policy and test loading/success/empty/error/cancel/close plus stale-result cleanup. Do not add animation to the avatar placeholders.
 ## Implementation sequence after the integration gate
 
 1. Integrate the existing focused PRs in this order, one at a time: #37 (shared focus/Create Server DPI), #38 (World wipe confirmation), #39 (local SVG/license/package data), #40 (PlayersTab avatar lifecycle), and #41 (test-only Setup vertical-scroll guard). Wait for hosted CI after each merge and fetch the updated main before the next.
-2. Do not add new UI feature branches during that merge sequence. Record the combined-audit Setup horizontal overflow at 640×420 as the next implementation target once the existing branches have integrated.
-3. After integration, address the new narrow-width Setup overflow first, then the remaining ranked audit findings in focused branches after rechecking changed filenames and current main.
+2. Do not add new UI feature branches during that merge sequence. Record the Setup horizontal overflow at 640×420 as pre-existing layout debt, not a regression from these PRs.
+3. After integration, address that narrow-width Setup overflow first, then the remaining ranked audit findings in focused branches after rechecking changed filenames and current main.
 4. Perform real-desktop focus/scaling/keyboard checks and available assistive-technology review; keep the offscreen Qt limitations explicit in the evidence.
 5. Define a reliable reduced-motion policy before adding transitions. Transitions must never hide status, delay interaction, or revive a closed/stale view. Keep the current avatar placeholders static.
 6. Continue running the unit suite, real Qt interaction checks, keyboard-only checks, focus/contrast, scaling/clipping review, and wheel/package validation for the affected areas. Do not bump release version or deploy.
