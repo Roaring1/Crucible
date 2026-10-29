@@ -453,6 +453,37 @@ def test_identify_files_keeps_modrinth_available_without_curseforge_key(tmp_path
     assert found['old.jar']['project_id'] == 'mr-project'
 
 
+def test_identify_files_keeps_modrinth_exact_matches_when_curseforge_lookup_fails(tmp_path, monkeypatch):
+    server(tmp_path)
+    digest = hashlib.sha1(b'old').hexdigest()
+    version = {'project_id': 'mr-project', 'id': 'mr-version', 'version_number': '1',
+               'files': [{'hashes': {'sha1': digest}}]}
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kw: io.BytesIO(json.dumps({digest: version}).encode()))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    monkeypatch.setattr(cf, 'identify_fingerprints', lambda mapping: (_ for _ in ()).throw(mr.ModrinthError('CurseForge key rejected (HTTP 403).')))
+
+    found = v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+
+    assert found['old.jar']['identity'] == 'exact-sha1'
+    assert found['old.jar']['project_id'] == 'mr-project'
+    assert 'CurseForge key rejected' in found.warning
+    record = json.loads((tmp_path/'.crucible/added-mods.json').read_text())
+    assert record['old.jar']['project_id'] == 'mr-project'
+
+
+def test_identify_files_still_surfaces_curseforge_error_without_any_modrinth_match(tmp_path, monkeypatch):
+    server(tmp_path)
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kw: io.BytesIO(b'{}'))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    monkeypatch.setattr(cf, 'identify_fingerprints', lambda mapping: (_ for _ in ()).throw(mr.ModrinthError('CurseForge key rejected (HTTP 403).')))
+
+    with pytest.raises(mr.ModrinthError, match='key rejected'):
+        v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+    assert not (tmp_path/'.crucible/added-mods.json').exists()
+
+
 def test_curseforge_file_replace_records_namespaced_identity_and_can_list_versions(tmp_path, monkeypatch):
     server(tmp_path)
     data = b'curseforge jar bytes'

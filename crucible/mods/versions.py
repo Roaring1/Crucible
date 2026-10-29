@@ -9,6 +9,12 @@ from pathlib import Path
 from . import modrinth as mr
 
 
+class IdentityMatches(dict):
+    """Exact identity matches, with an optional provider-degradation warning."""
+
+    warning = None
+
+
 def identify_files(server_path, paths):
     """Identify installed JARs by exact Modrinth SHA-1 and CurseForge fingerprint.
 
@@ -24,7 +30,7 @@ def identify_files(server_path, paths):
     by_sha1 = {}
     for path in files:
         by_sha1.setdefault(mr._sha1(path), []).append(path)
-    found = {}
+    found = IdentityMatches()
     items = list(by_sha1)
     for offset in range(0, len(items), 100):
         batch = items[offset:offset + 100]
@@ -59,24 +65,35 @@ def identify_files(server_path, paths):
 
     # CurseForge fingerprints are a different algorithm from SHA-1. Compute
     # and query them only when the user has configured a private API key.
-    if cf.has_api_key():
-        by_fingerprint = {}
-        for path in files:
-            fingerprint = cf.fingerprint_file(path)
-            by_fingerprint.setdefault(fingerprint, []).append(path)
-        cf_matches = cf.identify_fingerprints(by_fingerprint)
-        for fingerprint, meta in cf_matches.items():
-            for path in by_fingerprint.get(fingerprint, []):
-                # Prefer an already-found Modrinth exact match deterministically
-                # if the same artifact is published on both providers. Existing
-                # provider identity is retained when it remains an exact match.
-                prior = found.get(path.name, {})
-                existing = record.get(path.name, {})
-                existing_project = existing.get('project_id', '')
-                if prior and existing_project == meta['project_id']:
-                    found[path.name] = dict(meta)
-                elif not prior:
-                    found[path.name] = dict(meta)
+    # A broken/expired key or failed CurseForge request must not discard valid
+    # Modrinth exact matches. If Modrinth found nothing, retain the provider
+    # error so the UI can explain why identity lookup could not be completed.
+    try:
+        if cf.has_api_key():
+            by_fingerprint = {}
+            for path in files:
+                fingerprint = cf.fingerprint_file(path)
+                by_fingerprint.setdefault(fingerprint, []).append(path)
+            cf_matches = cf.identify_fingerprints(by_fingerprint)
+            for fingerprint, meta in cf_matches.items():
+                for path in by_fingerprint.get(fingerprint, []):
+                    # Prefer an already-found Modrinth exact match deterministically
+                    # if the same artifact is published on both providers. Existing
+                    # provider identity is retained when it remains an exact match.
+                    prior = found.get(path.name, {})
+                    existing = record.get(path.name, {})
+                    existing_project = existing.get('project_id', '')
+                    if prior and existing_project == meta['project_id']:
+                        found[path.name] = dict(meta)
+                    elif not prior:
+                        found[path.name] = dict(meta)
+    except (mr.ModrinthError, OSError) as exc:
+        if not found:
+            raise
+        found.warning = (
+            'CurseForge could not be checked; only exact Modrinth matches are shown. '
+            + str(exc)
+        )
 
     for filename, meta in found.items():
         record[filename] = {**record.get(filename, {}), **meta}

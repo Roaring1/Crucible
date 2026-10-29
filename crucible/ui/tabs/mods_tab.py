@@ -558,7 +558,12 @@ class ModsTab(QWidget):
         paths = [m.path for m in self._mods if not m.bundled]
         path = inst.path
         def done(found):
-            QMessageBox.information(self, "Online identity", f"{len(found)} exact file match(es). Custom builds without an exact match remain unlinked; name similarity is not proof of identity.")
+            warning = getattr(found, "warning", None)
+            message = f"{len(found)} exact file match(es). Custom builds without an exact match remain unlinked; name similarity is not proof of identity."
+            if warning:
+                QMessageBox.warning(self, "Partial online identity", message + "\n\n" + warning)
+            else:
+                QMessageBox.information(self, "Online identity", message)
             self.refresh()
         self._run_net(lambda: identify_files(path, paths), done, busy="Matching file hashes…")
 
