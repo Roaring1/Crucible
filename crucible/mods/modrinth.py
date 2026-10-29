@@ -20,6 +20,8 @@ import urllib.parse
 import urllib.error
 import tempfile
 import os
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -83,9 +85,52 @@ class ModHit:
         return ""
 
     def page_url(self) -> str:
-        if self.project_id.startswith("cf:"):
-            return "https://www.curseforge.com/minecraft/mc-mods/" + (self.slug or self.project_id[3:])
-        return "https://modrinth.com/mod/" + (self.slug or self.project_id)
+        """Return a safely encoded official project URL, or an empty string.
+
+        CurseForge requires its provider-returned slug. Never substitute its
+        numeric project ID into the slug position when that metadata is absent.
+        """
+        project_id = self.project_id
+        if not isinstance(project_id, str) or not project_id:
+            return ""
+        if project_id != project_id.strip() or any(ch.isspace() for ch in project_id):
+            return ""
+        if any(unicodedata.category(ch) in {"Cc", "Cf", "Cs"} for ch in project_id):
+            return ""
+
+        if project_id.startswith("cf:"):
+            # CurseForge project IDs are numeric and namespaced by the adapter.
+            if not re.fullmatch(r"[0-9]+", project_id[3:]):
+                return ""
+            slug = self.slug
+            if not isinstance(slug, str):
+                return ""
+            if (
+                not slug
+                or slug != slug.strip()
+                or slug in (".", "..")
+                or any(unicodedata.category(ch) in {"Cc", "Cf", "Cs"} for ch in slug)
+            ):
+                return ""
+            return "https://www.curseforge.com/minecraft/mc-mods/" + urllib.parse.quote(slug, safe="")
+
+        # A Modrinth project ID is a safe fallback when no slug was returned;
+        # never accept path separators or control/whitespace in the ID itself.
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", project_id):
+            return ""
+        slug = self.slug
+        if slug is None or slug == "":
+            slug = project_id
+        elif not isinstance(slug, str):
+            return ""
+        if (
+            not slug
+            or slug != slug.strip()
+            or slug in (".", "..")
+            or any(unicodedata.category(ch) in {"Cc", "Cf", "Cs"} for ch in slug)
+        ):
+            return ""
+        return "https://modrinth.com/mod/" + urllib.parse.quote(slug, safe="")
 
     def human_downloads(self) -> str:
         return humanize_count(self.downloads)
