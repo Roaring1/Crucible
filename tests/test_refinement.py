@@ -266,9 +266,13 @@ def test_latest_log_not_permanently_shadowed_by_old_crash(tmp_path):
     assert latest_crash_text(tmp_path)==('current',str(latest))
 
 
-def test_real_qt_interaction_smoke():
+def test_real_qt_interaction_smoke(tmp_path):
     script=Path(__file__).with_name('qt_refinement_smoke.py')
-    env={**os.environ,'QT_QPA_PLATFORM':'offscreen','PYTHONPATH':str(Path(__file__).resolve().parents[1])}
+    # Tests must not consume a developer's real API key or depend on online
+    # CurseForge responses; API integration is tested explicitly elsewhere.
+    env={**os.environ,'QT_QPA_PLATFORM':'offscreen','PYTHONPATH':str(Path(__file__).resolve().parents[1]),
+         'CURSEFORGE_API_KEY_FILE':str(tmp_path/'no-curseforge-key')}
+    env.pop('CURSEFORGE_API_KEY', None)
     result=subprocess.run([sys.executable,str(script)],env=env,capture_output=True,text=True,timeout=25)
     assert result.returncode==0,result.stdout+result.stderr
 

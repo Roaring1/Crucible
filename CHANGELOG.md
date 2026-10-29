@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fix the Add Mod dialog startup race: deferred initial search is now owned by the dialog and cannot launch a background request after early close. The Qt smoke regression verifies that close-before-startup launches no worker.
+- Isolate Qt smoke tests from the developer's real CurseForge key and live CurseForge API so ordinary tests are deterministic and never consume personal credentials.
+
 ## v0.8.0 — Server-manager refinement
 
 - Pack update/rollback safety: recheck that the server is stopped and its configured IPv4 port is free immediately before swapping directories. Reject unsafe `level-name` paths, symlinked world roots, and nested symlinks or special files in preserved trees rather than following external paths.
