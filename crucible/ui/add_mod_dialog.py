@@ -601,9 +601,12 @@ class AddModDialog(QDialog):
             image = reader.read()
             if image.isNull():
                 return None
-            if image.width() > 128 or image.height() > 128:
+            # The largest UI target is the 64px detail thumbnail; keeping
+            # each result-row icon at this resolution limits retained image
+            # data even though QListWidgetItem also owns a QIcon reference.
+            if image.width() > 64 or image.height() > 64:
                 image = image.scaled(
-                    128, 128, Qt.AspectRatioMode.KeepAspectRatio,
+                    64, 64, Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation)
             return QPixmap.fromImage(image)
         finally:
