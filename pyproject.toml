@@ -18,7 +18,7 @@ where = ["."]
 include = ["crucible*"]
 
 [tool.setuptools.package-data]
-crucible = ["assets/*.png", "data/*.json"]
+crucible = ["assets/*.png", "assets/icons/*.svg", "assets/icons/LICENSES/*.txt", "data/*.json"]
 
 [tool.setuptools.dynamic]
 version = {attr = "crucible.__version__"}

@@ -155,7 +155,11 @@ class ReleaseScriptTests(unittest.TestCase):
     def test_wheel_declares_icon_and_distribution_catalog_package_data(self):
         text = (ROOT / "pyproject.toml").read_text()
         self.assertIn('[tool.setuptools.package-data]', text)
-        self.assertIn('crucible = ["assets/*.png", "data/*.json"]', text)
+        self.assertIn(
+            'crucible = ["assets/*.png", "assets/icons/*.svg", '
+            '"assets/icons/LICENSES/*.txt", "data/*.json"]',
+            text,
+        )
         catalog = ROOT / "crucible" / "data" / "mod_distribution_catalog.json"
         self.assertTrue(catalog.is_file())
 
