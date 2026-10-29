@@ -7,13 +7,25 @@
 
 ## Latest deployment update
 
-The final isolated test was launched through Crucible's own `TmuxManager.start()` path with the registered `-Xms8G -Xmx16G` heap settings. Crucible returned success; the server reached `Done (3.589s)!`; `/datapack list enabled` showed `file/fresh-world-launch-fixes (world)` among 20 enabled packs. Crucible's matching graceful-stop helper then stopped the test cleanly.
+The final first-generation test used the exact final production-equivalent server JARs and datapack. It started through Crucible's own `TmuxManager.start()` path with `-Xms8G -Xmx16G` from a brand-new world folder with no `level.dat`; reached `Done (5.687s)!`; enabled `file/fresh-world-launch-fixes (world)`; wrote `level.dat`, dimension folders, and four region files; and logged the `wover:normal` preset with 95 Terralith biomes in the Overworld source.
 
-The final test had zero recipe parse errors, zero loot-table parse errors, zero Sable malformed-resource errors, zero invalid Recipe Integration resource-path errors, and zero BCLib level-data errors. Seven nonfatal ERROR-level log lines remain: five client-only class probes during mixin scanning, a Moonlight/Connector mixed Fabric API warning, and HammerLib's `HammerLibRecipeExtension` attachment message. These did not prevent the server from reaching ready.
+A second Crucible-manager restart of that same fresh test world reached `Done (6.319s)!`. The BCLib `Failed fixing Level-Data` message appeared twice only during first-generation initialization before `level.dat` existed, then disappeared completely on the second restart. It is not a recurring startup blocker.
 
-Production is **not running**. `server.properties` now sets `level-name=world_fresh_20261028`, leaves `level-seed` blank, and retains `level-type=wover:normal` and `generate-structures=true`. The target folder contains the repair datapack but has no `level.dat` yet, so the first production Start creates it as a fresh world.
+The final second start had zero recipe parse errors, zero loot-table parse errors, zero Sable resource errors, zero invalid Recipe Integration path errors, zero dedicated-server client-class probes, and zero BCLib errors. The only two ERROR-level log families still present are Moonlight's warning about Fabric API via Connector on NeoForge and HammerLib's `HammerLibRecipeExtension` test attachment. Startup completed successfully with both.
 
-The validated JAR hotfixes are deployed identically to the server and matching Prism client. Original server/client JARs and `server.properties` are archived at `/home/roaring/.local/share/crucible-backups/username-admin-server-fresh-world-deployment-20261028-171846/`. The existing `world/level.dat` hash remains `091d4e46ff6980c931887ba66fd959712e57e211c83d6c929d0c7d086bf29482`.
+The compatibility fixes deployed to production are:
+- Recipe/loot data pack at `world_fresh_20261028/datapacks/fresh-world-launch-fixes/`, ZIP SHA-256 `e76ddbb936b502eb664388da8bd75372580e451d029c37e49f3c702f61e75e57` (429 JSON resources; ZIP and JSON validation pass).
+- `sablephysicscompat-1.3.0.jar` SHA-256 `a01586a6e74405b6690202fdc9b072028b057c42442aa9d82bdc7bb4df5c0578`, deployed identically to server and Prism client. The patch fixes the malformed `sable:bouncy` JSON and side-compatible physics-property data.
+- `recipe_integration-0.4.0.jar` SHA-256 `f6cfe76956df1af5bacfc10fadebbaba9f85e88c380e3fc97b11348d6cded8b5`, deployed identically to server and Prism client; removes the invalid filename that Minecraft previously ignored.
+- `struts-1.3.1.jar` SHA-256 `1a85201a919bd69c9036849a3175432ab0b1054717a51e661382139202e770db`, deployed identically to server and Prism client; `StrutRenderSystemAccessor` is now client-only.
+- `ConnectorExtras-1.12.1+1.21.1.jar` SHA-256 `5427041ec1dda48994ab9fdc5ec20f76819e825111d4e15888919be7c2c62a83` on the **server only**. Its nested EMI Bridge main-entrypoint mixin is now side-specific and only targets `net.minecraft.server.Main` on the dedicated server. The Prism client retains its original ConnectorExtras JAR, where the client entrypoint still must work.
+
+Production remains **stopped**. Crucible readiness passes all seven checks; there is no production tmux session/JVM and port 25566 is free. The production `level-name` remains `world_fresh_20261028` with blank/random seed and `wover:normal`; the new folder has only the datapack and no `level.dat` yet. Existing `world` and both dated prior worlds are untouched; the old `world/level.dat` SHA-256 remains `091d4e46ff6980c931887ba66fd959712e57e211c83d6c929d0c7d086bf29482`.
+
+Rollback directories:
+- Initial deployment originals: `/home/roaring/.local/share/crucible-backups/username-admin-server-fresh-world-deployment-20261028-171846/`.
+- Round-two originals (Struts and ConnectorExtras before the side fixes): `/home/roaring/.local/share/crucible-backups/username-admin-server-compatibility-round2-20261028-172940/`.
+- Full original world archive: `/home/roaring/.local/share/crucible-backups/username-admin-server-world-factor8-before-fresh-20261028-161756.tar.gz`.
 
 ## Executive decision
 
@@ -102,12 +114,12 @@ Recipe Integration JAR SHA-256: `4e41f8dcf06ba21e0e494ccee30ece2c3c8e7094cf863d4
 
 The latest tested start has **zero recipe parser errors and zero loot-table parser errors**. It also has no Sable malformed-tag/property errors, no invalid Recipe Integration resource path, and no BCLib first-world level-data error. These large parser-error families were resolved in the isolated startup, and the same tested artifacts are now deployed for the next production launch.
 
-Seven ERROR-level entries remain in the latest successful test, none of which stopped startup:
-- Five NeoForge `RuntimeDistCleaner` probes for client-only classes: one `RenderSystem` reference nearest to `struts.mixins.json` and four `net.minecraft.client.main.Main` probes encountered during mixin scanning. They appear to be nonfatal client-side mixin/Connector lookups, but should be mapped/upstream-reported rather than blindly disabling mods.
+Two ERROR-level message families remain in the final successful second-start test, neither of which stopped startup:
+- **Resolved:** The Struts `RenderSystem` accessor is now placed in the client-only mixin list, and the nested EMI Bridge `MainEntrypointMixin` is side-specific and targets `net.minecraft.server.Main` on the server. The final dedicated-server startup has zero client-class probes. The ConnectorExtras server patch is deliberately not installed in the client instance.
 - Moonlight's warning that Fabric API is detected in a NeoForge instance using Connector. Connector is part of this mixed modpack environment; do not remove it without proving which Fabric-compatible mod depends on it.
 - HammerLib's `RegisterRecipesEvent` attachment log for `org.zeith.hammerlib.core.test.HammerLibRecipeExtension`. The server reached ready, but this remains an upstream bug-report candidate.
 
-Other warnings remain, including Quark entity-category mismatches for some Terralith biomes, voice-chat's offline-encryption warning during non-player startup, and Biolith notices about temporary test dimensions created by Sable. None prevented the tested world from reaching ready. The goal is a stable, complete modpack—not zero log text at any cost.
+The first-ever test-world startup still emits the BCLib `Failed fixing Level-Data` message twice while the fresh `level.dat` does not yet exist. That message does not recur on the second start. Other warnings remain, including Quark entity-category mismatches for some Terralith biomes, voice-chat's offline-encryption warning during non-player startup, and Biolith notices about temporary test dimensions created by Sable. None prevented the tested world from reaching ready. The goal is a stable, complete modpack—not zero log text at any cost.
 
 ### Verify the exact Mekanism Elements project before patching/upgrading
 
