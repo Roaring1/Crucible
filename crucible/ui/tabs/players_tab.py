@@ -431,7 +431,9 @@ class PlayersTab(QWidget):
             painter.drawRoundedRect(5, 5, 10, 3, 1.5, 1.5)
             painter.drawRoundedRect(5, 11, 7, 3, 1.5, 1.5)
         else:
-            painter.setPen(QColor(theme.SURFACE2))
+            # The error state is semantically important; use the existing alert
+            # token rather than the low-contrast SURFACE2 used for secondary text.
+            painter.setPen(QColor(theme.RED))
             painter.setFont(QFont("sans-serif", 10, QFont.Weight.Bold))
             painter.drawEllipse(2, 2, 16, 16)
             painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "!")
