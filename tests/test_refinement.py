@@ -453,6 +453,29 @@ def test_identify_files_keeps_modrinth_available_without_curseforge_key(tmp_path
     assert found['old.jar']['project_id'] == 'mr-project'
 
 
+def test_curseforge_file_replace_records_namespaced_identity_and_can_list_versions(tmp_path, monkeypatch):
+    server(tmp_path)
+    data = b'curseforge jar bytes'
+    digest = hashlib.sha1(data).hexdigest()
+    file = mr.ModFile('cf:321', 'Example', '654', 'Example release', 'example.jar',
+                      'https://edge.forgecdn.net/files/example.jar', digest, len(data))
+    monkeypatch.setattr(mr, '_download', lambda url, dest: (dest.write_bytes(data) and len(data)))
+    result = v.replace_files(tmp_path, None, [file])
+    assert not result.failed
+    record = mr.added_mods(tmp_path)['example.jar']
+    assert record['project_id'] == 'cf:321' and record['version_id'] == '654'
+
+    routes = []
+    monkeypatch.setattr(cf, '_get', lambda route: routes.append(route) or [{
+        'id': 654, 'fileName': 'example.jar', 'displayName': 'Example release',
+        'downloadUrl': 'https://edge.forgecdn.net/files/example.jar',
+        'gameVersions': ['1.20.1'], 'hashes': [{'algo': 1, 'value': digest}],
+    }])
+    versions = v.list_versions(record['project_id'], loader='forge', mc_version='1.20.1')
+    assert versions[0].project_id == 'cf:321' and versions[0].version_id == '654'
+    assert routes and '/mods/321/files?' in routes[0]
+
+
 def test_same_downloaded_jar_links_without_redownload(tmp_path,monkeypatch):
     server(tmp_path)
     file=mf('old.jar',b'old');file.url=''
