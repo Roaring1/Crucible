@@ -194,6 +194,7 @@ def capture_previews(output: Path) -> list[Path]:
         first_page = [
             PreviewModHit("preview-top-1", "Amber Toolkit", "https://cdn.modrinth.com/preview/amber.png", "#c8903a"),
             PreviewModHit("preview-top-2", "Copper Utilities", "https://cdn.modrinth.com/preview/copper.png", "#d9a048"),
+            PreviewModHit("preview-missing", "No Icon Provided", "", "#545460"),
         ]
         later_page = [
             PreviewModHit("preview-later-1", "Foundry Extras", "https://cdn.modrinth.com/preview/foundry.png", "#a6e3a1"),
@@ -230,8 +231,14 @@ def capture_previews(output: Path) -> list[Path]:
                     missing = sorted(project_ids - set(add_mod._pixmaps))
                     raise RuntimeError(f"Add Mod icon screenshot timed out waiting for {missing}")
 
-                wait_for_icons({hit.project_id for hit in first_page})
+                wait_for_icons({hit.project_id for hit in first_page if hit.icon_url})
                 save(add_mod, "add-mod-icons-first-page.png", 960, 640)
+
+                add_mod._results.setCurrentRow(2)
+                QTest.qWait(20)
+                if add_mod._d_icon_status.text() != "No icon provided":
+                    raise RuntimeError("Add Mod missing-icon detail state did not render deliberately")
+                save(add_mod, "add-mod-icons-missing-detail.png", 960, 640)
 
                 add_mod._all_hits.extend(later_page)
                 add_mod._rebuild_view()

@@ -17,7 +17,7 @@ from collections import OrderedDict, deque
 from threading import Lock
 
 from PyQt6.QtCore import (
-    QObject, QThread, pyqtSignal, Qt, QSize, QUrl, QTimer,
+    QObject, QThread, pyqtSignal, Qt, QSize, QUrl, QTimer, QPoint,
     QByteArray, QBuffer, QIODevice,
 )
 from PyQt6.QtGui import (
@@ -64,31 +64,83 @@ class _SearchWorker(QObject):
             self.failed.emit(str(e))
 
 
+_MAX_QUEUED_ICON_JOBS = 48
+
+
 class _IconWorker(QObject):
-    """Drain a bounded, appendable queue of independent provider icon jobs."""
+    """Drain one bounded, appendable queue; visible/selected jobs can jump ahead."""
     icon = pyqtSignal(str, object)   # project_id, image bytes
     failed = pyqtSignal(str)         # project_id; never include an untrusted URL
     done = pyqtSignal()
 
-    def __init__(self, jobs):
+    def __init__(self, jobs=()):
         super().__init__()
         self._jobs = deque()
         self._pending_ids = set()
+        self._active_pid = None
         self._lock = Lock()
         self._cancelled = False
         self._accepting = True
+        self._rejected = []
         self.add_jobs(jobs)
 
-    def add_jobs(self, jobs):
-        """Append jobs while active. Return false once this worker is retiring."""
+    def add_jobs(self, jobs, *, priority=False):
+        """Queue unique jobs up to the hard cap; promote visible work when asked."""
+        jobs = [(pid, url) for pid, url in jobs if pid and url]
         with self._lock:
             if self._cancelled or not self._accepting:
+                self._rejected.extend(pid for pid, _url in jobs)
                 return False
+
+            unique = []
+            seen = set()
             for pid, url in jobs:
-                if pid and url and pid not in self._pending_ids:
+                if pid not in seen:
+                    unique.append((pid, url))
+                    seen.add(pid)
+
+            if priority:
+                # Promote already-queued visible jobs as well as adding new
+                # ones. The in-flight request is intentionally not interrupted.
+                promoted = []
+                for pid, url in unique:
+                    if pid == self._active_pid:
+                        continue
+                    old = next((job for job in self._jobs if job[0] == pid), None)
+                    if old is not None:
+                        self._jobs.remove(old)
+                        promoted.append((pid, url))
+                    elif pid not in self._pending_ids:
+                        promoted.append((pid, url))
+
+                # Keep priority jobs in their supplied order, never exceeding
+                # the queue cap. Oldest lowest-priority tail entries are shed.
+                if len(promoted) > _MAX_QUEUED_ICON_JOBS:
+                    self._rejected.extend(pid for pid, _url in promoted[_MAX_QUEUED_ICON_JOBS:])
+                    promoted = promoted[:_MAX_QUEUED_ICON_JOBS]
+                while len(self._jobs) + len(promoted) > _MAX_QUEUED_ICON_JOBS:
+                    dropped_pid, _dropped_url = self._jobs.pop()
+                    self._pending_ids.discard(dropped_pid)
+                    self._rejected.append(dropped_pid)
+                for pid, _url in reversed(promoted):
+                    self._jobs.appendleft((pid, _url))
+                    self._pending_ids.add(pid)
+            else:
+                for pid, url in unique:
+                    if pid in self._pending_ids:
+                        continue
+                    if len(self._jobs) >= _MAX_QUEUED_ICON_JOBS:
+                        self._rejected.append(pid)
+                        continue
                     self._jobs.append((pid, url))
                     self._pending_ids.add(pid)
             return True
+
+    def take_rejected(self):
+        """Return and clear job IDs rejected by the queue capacity policy."""
+        with self._lock:
+            rejected, self._rejected = self._rejected, []
+            return rejected
 
     def discard_queued(self):
         """Drop obsolete queued work on a new search, but let an active fetch finish."""
@@ -108,6 +160,7 @@ class _IconWorker(QObject):
             self._accepting = False
             self._jobs.clear()
             self._pending_ids.clear()
+            self._rejected.clear()
 
     def run(self):
         while True:
@@ -120,17 +173,19 @@ class _IconWorker(QObject):
                     self._accepting = False
                     break
                 pid, url = self._jobs.popleft()
+                self._active_pid = pid
 
             provider = "curseforge" if pid.startswith("cf:") else "modrinth"
             data = None
             failed = False
             try:
                 data = icon_fetch.fetch_icon_bytes(url, provider=provider)
-            except Exception:  # noqa: BLE001 - icon failures never block browsing
+            except Exception:  # noqa: BLE001 - icon failures are best-effort
                 failed = True
 
             with self._lock:
                 self._pending_ids.discard(pid)
+                self._active_pid = None
                 cancelled = self._cancelled
             if not cancelled:
                 if failed:
@@ -195,7 +250,7 @@ class AddModDialog(QDialog):
         self._view = []                  # filtered subset shown in the list
         self._item_by_pid = {}           # project_id -> QListWidgetItem
         self._pixmaps = OrderedDict()     # bounded project_id -> small QPixmap LRU
-        self._icon_states = {}            # project_id -> loading/missing/failed/loaded/idle
+        self._icon_states = OrderedDict()  # bounded project_id -> recent icon state
         self._placeholder_icons = {}      # state -> locally painted placeholder QIcon
         self._threads = []               # [(QThread, worker), ...]
         self._close_requested = False
@@ -297,7 +352,7 @@ class AddModDialog(QDialog):
         self._results.currentRowChanged.connect(self._on_sel)
         self._results.itemDoubleClicked.connect(lambda *_: self._do_install())
         self._results.verticalScrollBar().valueChanged.connect(
-            self._maybe_load_more)
+            self._on_results_scrolled)
         split.addWidget(self._results)
 
         # right: detail panel
@@ -413,7 +468,7 @@ class AddModDialog(QDialog):
         if self._icon_worker is not None:
             for pid in self._icon_worker.discard_queued():
                 if pid not in self._pixmaps:
-                    self._icon_states[pid] = "idle"
+                    self._set_icon_state(pid, "idle")
                     self._update_item_icon(pid)
         self._key_btn.setVisible(self._provider.currentText() == "CurseForge")
         self._view = []
@@ -426,6 +481,9 @@ class AddModDialog(QDialog):
         self._offset = 0
         self._has_more = True
         self._loading_more = True
+        for old_hit in self._all_hits:
+            if old_hit.project_id not in self._pixmaps:
+                self._icon_states.pop(old_hit.project_id, None)
         self._all_hits = []
         self._resolved.clear()
         self._sel_pid = None
@@ -485,9 +543,9 @@ class AddModDialog(QDialog):
         self._all_hits.extend(new_hits)
         for hit in new_hits:
             if hit.project_id in self._pixmaps:
-                self._icon_states[hit.project_id] = "loaded"
+                self._set_icon_state(hit.project_id, "loaded")
             elif not hit.icon_url:
-                self._icon_states[hit.project_id] = "missing"
+                self._set_icon_state(hit.project_id, "missing")
         self._offset = offset + len(hits)
         self._has_more = len(hits) >= self._page
         self._rebuild_view()
@@ -529,7 +587,7 @@ class AddModDialog(QDialog):
                     self._results.setCurrentRow(i)
                     break
         self._update_status()
-        self._start_icons(self._view)
+        self._queue_visible_icons(priority=True)
 
     def _update_status(self):
         total = len(self._all_hits)
@@ -545,21 +603,73 @@ class AddModDialog(QDialog):
             msg += " · scroll for more"
         self._status.setText(msg)
 
-    def _start_icons(self, hits):
+    def _on_results_scrolled(self, *_args):
+        # Prioritize newly visible rows before kicking off another page request.
+        self._queue_visible_icons(priority=True)
+        self._maybe_load_more()
+
+    def _visible_icon_hits(self):
+        """Return a small viewport window, never the entire accumulated catalog."""
+        if not self._view:
+            return []
+
+        viewport = self._results.viewport()
+        top_index = self._results.indexAt(QPoint(2, 2))
+        bottom_index = self._results.indexAt(
+            QPoint(2, max(2, viewport.height() - 2)))
+        top = top_index.row() if top_index.isValid() else self._results.currentRow()
+        if top < 0:
+            top = 0
+        bottom = bottom_index.row() if bottom_index.isValid() else top + 8
+        bottom = max(top, bottom)
+        # Strictly visible rows go first; then prefetch just below the fold,
+        # and finally keep two rows above the viewport warm for small reversals.
+        visible = self._view[top:min(len(self._view), bottom + 1)]
+        after = self._view[bottom + 1:min(len(self._view), bottom + 4)]
+        before = self._view[max(0, top - 2):top]
+        return visible + after + before
+
+    def _queue_visible_icons(self, *, priority=False):
+        hits = self._visible_icon_hits()
+        selected_row = self._results.currentRow()
+        if 0 <= selected_row < len(self._view):
+            selected = self._view[selected_row]
+            hits = [selected] + [hit for hit in hits if hit.project_id != selected.project_id]
+        self._start_icons(hits, priority=priority)
+
+    def _set_icon_state(self, pid, state):
+        self._icon_states[pid] = state
+        self._icon_states.move_to_end(pid)
+        while len(self._icon_states) > 1024:
+            self._icon_states.popitem(last=False)
+
+    def _reset_rejected_icon_jobs(self, pids):
+        for pid in pids:
+            if pid not in self._pixmaps and self._icon_states.get(pid) == "loading":
+                self._set_icon_state(pid, "idle")
+                self._update_item_icon(pid)
+                if pid == self._sel_pid:
+                    self._set_detail_icon_state(pid)
+
+    def _start_icons(self, hits, *, priority=False):
         jobs = []
         for hit in hits:
             pid, url = hit.project_id, hit.icon_url
             if pid in self._pixmaps:
-                self._icon_states[pid] = "loaded"
+                self._set_icon_state(pid, "loaded")
+                self._pixmaps.move_to_end(pid)
                 self._update_item_icon(pid)
                 continue
             if not url:
-                self._icon_states[pid] = "missing"
+                self._set_icon_state(pid, "missing")
                 self._update_item_icon(pid)
                 continue
-            if self._icon_states.get(pid) == "loading":
+            state = self._icon_states.get(pid)
+            if state in {"missing", "failed"}:
                 continue
-            self._icon_states[pid] = "loading"
+            if state == "loading" and not priority:
+                continue
+            self._set_icon_state(pid, "loading")
             self._update_item_icon(pid)
             jobs.append((pid, url))
 
@@ -567,10 +677,19 @@ class AddModDialog(QDialog):
             return
 
         worker = self._icon_worker
-        if worker is not None and worker.add_jobs(jobs):
+        if worker is not None:
+            accepting = worker.add_jobs(jobs, priority=priority)
+            self._reset_rejected_icon_jobs(worker.take_rejected())
+            # A retiring worker remains authoritative until QThread.finished.
+            # Its finish callback queues current visible work after retirement.
             return
 
-        worker = _IconWorker(jobs)
+        worker = _IconWorker()
+        accepting = worker.add_jobs(jobs, priority=priority)
+        self._reset_rejected_icon_jobs(worker.take_rejected())
+        if not accepting or not worker._jobs:
+            return
+
         self._icon_worker = worker
         # Connect every callback before starting the thread: a fast cache/CDN
         # response must not beat the icon signal connection.
@@ -618,21 +737,24 @@ class AddModDialog(QDialog):
             self._on_icon_failed(pid)
             return
 
-        self._icon_states[pid] = "loaded"
+        self._set_icon_state(pid, "loaded")
         self._pixmaps[pid] = pix
         self._pixmaps.move_to_end(pid)
         while len(self._pixmaps) > 256:
             evicted_pid, _pixmap = self._pixmaps.popitem(last=False)
-            self._icon_states[evicted_pid] = "idle"
+            self._set_icon_state(evicted_pid, "idle")
+            # QListWidgetItem owns a QIcon reference independently of the
+            # decoded-image LRU; replace it too or row icons keep old pixels.
+            self._update_item_icon(evicted_pid)
         self._update_item_icon(pid)
         if pid == self._sel_pid:
             self._set_detail_icon(pix)
 
     def _on_icon_failed(self, pid):
         if pid in self._pixmaps:
-            self._icon_states[pid] = "loaded"
+            self._set_icon_state(pid, "loaded")
             return
-        self._icon_states[pid] = "failed"
+        self._set_icon_state(pid, "failed")
         self._update_item_icon(pid)
         if pid == self._sel_pid:
             self._set_detail_icon_state(pid)
@@ -641,11 +763,15 @@ class AddModDialog(QDialog):
         worker = self.sender()
         if self._icon_worker is not worker:
             return
-        self._icon_worker = None
-        # Do not leave a broken/retired worker's jobs stuck in "loading".
+        # Keep the worker registered until QThread.finished confirms the native
+        # thread has stopped. This prevents overlapping icon workers during
+        # the small interval between worker.done and thread retirement.
         for pid, state in tuple(self._icon_states.items()):
             if state == "loading" and pid not in self._pixmaps:
-                self._on_icon_failed(pid)
+                self._set_icon_state(pid, "idle")
+                self._update_item_icon(pid)
+                if pid == self._sel_pid:
+                    self._set_detail_icon_state(pid)
 
     def _update_item_icon(self, pid):
         item = self._item_by_pid.get(pid)
@@ -659,7 +785,7 @@ class AddModDialog(QDialog):
 
     def _placeholder_icon(self, state):
         """Return a small locally painted placeholder, never a remote asset."""
-        kind = state if state in {"loading", "failed"} else "missing"
+        kind = "failed" if state == "failed" else "missing" if state == "missing" else "loading"
         cached = self._placeholder_icons.get(kind)
         if cached is not None:
             return cached
@@ -761,8 +887,8 @@ class AddModDialog(QDialog):
             # The small LRU may have evicted an older icon from decoded-memory
             # cache while its result-row QIcon remains valid. Fetch it again
             # only when that result is selected, not for the whole old catalog.
-            if hit.icon_url and self._icon_states.get(hit.project_id) == "idle":
-                self._start_icons([hit])
+            if hit.icon_url and self._icon_states.get(hit.project_id) not in {"failed", "missing"}:
+                self._start_icons([hit], priority=True)
                 self._set_detail_icon_state(hit.project_id)
 
         # resolve dependencies for the preview (and to pre-stage the install)
@@ -866,8 +992,15 @@ class AddModDialog(QDialog):
         return QIcon(pix)
 
     def _thread_finished(self, pair) -> None:
+        worker = pair[1]
+        is_icon_worker = worker is self._icon_worker
         if pair in self._threads:
             self._threads.remove(pair)
+        if is_icon_worker:
+            # connect_thread_cleanup invokes this only after native thread exit.
+            self._icon_worker = None
+            if not self._close_requested and self.isVisible():
+                self._queue_visible_icons(priority=True)
         self._finish_requested_close()
 
     def _workers_running(self) -> bool:

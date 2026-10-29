@@ -26,6 +26,7 @@ def qapp():
 class _Response:
     def __init__(self, data=b"icon", content_length=None):
         self._data = data
+        self._offset = 0
         self.read_size = None
         self.headers = {}
         if content_length is not None:
@@ -39,7 +40,9 @@ class _Response:
 
     def read(self, size):
         self.read_size = size
-        return self._data[:size]
+        chunk = self._data[self._offset:self._offset + size]
+        self._offset += len(chunk)
+        return chunk
 
 
 class _Opener:
@@ -226,7 +229,7 @@ def test_icon_fetch_uses_timeout_byte_limit_and_no_api_key(monkeypatch):
 
     assert result == b"abc"
     assert opener.timeout == icon_fetch._DEFAULT_TIMEOUT
-    assert response.read_size == icon_fetch._MAX_ICON_BYTES + 1
+    assert response.read_size == icon_fetch._READ_CHUNK_BYTES
     assert opener.request.get_header("User-agent")
     assert opener.request.get_header("X-api-key") is None
     assert opener.request.get_header("Authorization") is None
@@ -302,3 +305,79 @@ def test_add_mod_detail_icon_states_replace_permanent_ellipsis(qapp):
     dialog.reject()
     dialog.deleteLater()
     qapp.processEvents()
+
+
+def test_icon_queue_has_hard_cap_and_promotes_selected_visible_jobs(monkeypatch):
+    import threading
+    from crucible.ui import add_mod_dialog
+
+    monkeypatch.setattr(add_mod_dialog, "_MAX_QUEUED_ICON_JOBS", 3)
+    entered = threading.Event()
+    release = threading.Event()
+    done = threading.Event()
+    fetched = []
+
+    def fake_fetch(url, *, provider):
+        fetched.append(url.rsplit("/", 1)[-1])
+        if url.endswith("/in-flight"):
+            entered.set()
+            assert release.wait(3), "test did not release the in-flight icon"
+        return b"icon"
+
+    monkeypatch.setattr(icon_fetch, "fetch_icon_bytes", fake_fetch)
+    worker = _IconWorker([("in-flight", "https://cdn.modrinth.com/in-flight")])
+    worker.done.connect(done.set, Qt.ConnectionType.DirectConnection)
+    thread = threading.Thread(target=worker.run, daemon=True)
+    thread.start()
+    assert entered.wait(3), "the first icon did not enter its controlled delay"
+
+    assert worker.add_jobs([
+        (f"queued-{i}", f"https://cdn.modrinth.com/queued-{i}")
+        for i in range(1, 6)
+    ])
+    assert len(worker._jobs) == 3
+    assert worker.take_rejected() == ["queued-4", "queued-5"]
+
+    # Mimic a scroll/selection event: promote a queued visible row and place
+    # the selected mod ahead of other off-screen entries without exceeding cap.
+    assert worker.add_jobs([
+        ("queued-3", "https://cdn.modrinth.com/queued-3"),
+        ("selected", "https://cdn.modrinth.com/selected"),
+    ], priority=True)
+    assert [pid for pid, _url in worker._jobs] == ["queued-3", "selected", "queued-1"]
+    assert len(worker._jobs) == 3
+    assert worker.take_rejected() == ["queued-2"]
+
+    release.set()
+    assert done.wait(4), "bounded priority queue did not drain"
+    thread.join(1)
+    assert not thread.is_alive()
+    assert fetched == ["in-flight", "queued-3", "selected", "queued-1"]
+
+
+def test_icon_fetch_enforces_absolute_deadline_during_slow_drip(monkeypatch):
+    import time
+
+    class SlowResponse(_Response):
+        def read1(self, _size):
+            time.sleep(0.03)
+            return b"x"
+
+    response = SlowResponse()
+    opener = _Opener(response)
+    monkeypatch.setattr(
+        icon_fetch.urllib.request, "build_opener", lambda *_args: opener
+    )
+
+    with pytest.raises(icon_fetch.IconFetchError, match="timed out"):
+        icon_fetch.fetch_icon_bytes(
+            "https://cdn.modrinth.com/icon.png", provider="modrinth", timeout=0.01
+        )
+
+
+@pytest.mark.parametrize("timeout", [float("nan"), float("inf"), 0, -1])
+def test_icon_fetch_rejects_unbounded_or_nonpositive_timeouts(timeout):
+    with pytest.raises(icon_fetch.IconFetchError, match="timeout"):
+        icon_fetch.fetch_icon_bytes(
+            "https://cdn.modrinth.com/icon.png", provider="modrinth", timeout=timeout
+        )

@@ -8,7 +8,9 @@ It is separate from mod downloads and CurseForge's authenticated request path.
 from __future__ import annotations
 
 import http.client
+import math
 import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +20,8 @@ from crucible import __version__
 _USER_AGENT = f"Crucible/{__version__} (mod icon)"
 _MAX_ICON_BYTES = 8 * 1024 * 1024
 _DEFAULT_TIMEOUT = 8.0
+_MAX_ICON_TIMEOUT = 8.0
+_READ_CHUNK_BYTES = 64 * 1024
 
 _PROVIDER_HOSTS = {
     "modrinth": frozenset({"cdn.modrinth.com"}),
@@ -80,14 +84,23 @@ class _SafeIconRedirectHandler(urllib.request.HTTPRedirectHandler):
 def fetch_icon_bytes(url: str, *, provider: str, timeout: float = _DEFAULT_TIMEOUT) -> bytes:
     """Fetch bounded icon bytes from an approved provider CDN.
 
-    The provider value is either modrinth or curseforge. Errors do not include
-    the URL, response headers, or any credentials in their user-visible text.
+    Socket waits are capped at eight seconds. The body reader also checks a
+    monotonic deadline between non-filling reads. urllib parses response
+    headers internally, so that phase is bounded per socket wait rather than
+    by a strict end-to-end wall-clock deadline. Errors never include the URL,
+    response headers, or credentials in user-visible text.
     """
     allowed_hosts = _allowed_hosts(provider)
     _validate_url(url, allowed_hosts)
 
-    if not isinstance(timeout, (int, float)) or timeout <= 0:
+    if (
+        not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
         raise IconFetchError("Invalid icon request timeout.")
+    timeout = min(float(timeout), _MAX_ICON_TIMEOUT)
+    deadline = time.monotonic() + timeout
 
     request = urllib.request.Request(
         url,
@@ -100,7 +113,7 @@ def fetch_icon_bytes(url: str, *, provider: str, timeout: float = _DEFAULT_TIMEO
     )
 
     try:
-        with opener.open(request, timeout=float(timeout)) as response:
+        with opener.open(request, timeout=timeout) as response:
             declared_length = response.headers.get("Content-Length", "")
             try:
                 declared_length = int(declared_length)
@@ -111,13 +124,46 @@ def fetch_icon_bytes(url: str, *, provider: str, timeout: float = _DEFAULT_TIMEO
             ):
                 raise IconFetchError("Icon response is too large.")
 
-            data = response.read(_MAX_ICON_BYTES + 1)
-            if len(data) > _MAX_ICON_BYTES:
-                raise IconFetchError("Icon response is too large.")
+            # read1 returns currently available bytes rather than waiting to
+            # fill a chunk. Recompute the deadline so a slow-drip response
+            # cannot extend the total transfer time.
+            reader = getattr(response, "read1", None) or response.read
+            sock = getattr(
+                getattr(getattr(response, "fp", None), "raw", None),
+                "_sock",
+                None,
+            )
+            chunks = []
+            total = 0
+            while total <= _MAX_ICON_BYTES:
+                remaining_time = deadline - time.monotonic()
+                if remaining_time <= 0:
+                    raise IconFetchError("Icon request timed out.")
+                # urllib can expose a SocketIO wrapper whose SSLSocket is
+                # already marked closed after headers are parsed. In that
+                # case read1 still owns a readable buffer, but settimeout on
+                # the stale socket wrapper raises EBADF; opener's socket
+                # timeout plus the monotonic checks remain in force.
+                if sock is not None and not getattr(sock, "_closed", False):
+                    sock.settimeout(remaining_time)
+
+                chunk = reader(min(_READ_CHUNK_BYTES, _MAX_ICON_BYTES + 1 - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > _MAX_ICON_BYTES:
+                    raise IconFetchError("Icon response is too large.")
+                if time.monotonic() >= deadline:
+                    raise IconFetchError("Icon request timed out.")
+
+            data = b"".join(chunks)
             if not data:
                 raise IconFetchError("Icon response was empty.")
             return data
     except IconFetchError:
         raise
-    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as exc:
+    except TimeoutError as exc:
+        raise IconFetchError("Icon request timed out.") from exc
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
         raise IconFetchError("Icon request failed.") from exc
