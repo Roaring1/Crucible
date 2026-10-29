@@ -7,38 +7,18 @@
 
 ## Latest deployment update
 
-The definitive isolated test now uses the exact deployed server JAR set and the repair datapack. It started from a brand-new level folder with no `level.dat` through Crucible's actual `TmuxManager.start()` path using `-Xms8G -Xmx16G`, reached `Done (3.887s)!`, and created `level.dat` plus four region files. It logged WorldWeaver's `wover:normal` preset with 95 Terralith biomes and automatically enabled `file/fresh-world-launch-fixes (world)` among 20 data packs. A second manager restart reached `Done (3.561s)!`.
+The final validated repair pack is deployed only under `world_fresh_20261028/datapacks/fresh-world-launch-fixes/`.
 
-**Final tested startup outcome:** zero ERROR-level log lines; zero recipe parse errors; zero loot-table parse errors; zero BCLib level-data errors; zero Sable malformed-resource errors; zero invalid Recipe Integration path errors; zero dedicated-server client-class probes. Moonlight's entire Fabric API/Connector compatibility advisory is still printed, now at WARN rather than ERROR. No message was hidden.
+- Pack ZIP SHA-256: `3fda93a9d6f182b0553be124d192554abcefbfa8ebe3bb60906fb53a9631cf33`.
+- Data resources: 436 valid JSON files; ZIP integrity and JSON parsing pass.
+- Five global-loot-modifier decode errors are fixed: three old `lootTable` keys converted to the codec's `table` field, Miner's Delight knifeless bat drop changed to the registered smoked-wing item, and its obsolete NeoForge tool-action condition migrated to the 1.21.1 item-ability condition.
+- Two Dungeons Arise advancements with a missing parent now point to the existing `dungeons_arise:wda_root`, retaining their triggers, criteria, rewards, and display.
+- Isolated first-generation test using original Quark reached `Done (3.315s)!`; zero ERROR-level lines, zero recipe and loot-table parse errors, zero global-loot-modifier decode warnings, zero advancement-parent warnings, zero BCLib/Sable/path/dedicated-class errors.
+- Quark Stoneling/Toretoise spawn-category warnings are deliberately retained. Upstream Quark maintainer confirms their use of the `MONSTER` spawn category is intentional. An experimental category patch was discarded; production uses the original Quark JAR. Reference: https://github.com/VazkiiMods/Quark/issues/5386.
 
-## Deployed server/client repairs
+Production remains **stopped**. Crucible readiness is 7/7, no production JVM/tmux session exists, and port 25566 is free. `server.properties` selects `world_fresh_20261028`, blank/random seed, `wover:normal`, and structure generation enabled. The new target has the pack but no `level.dat`; the next Start creates the world. The original `world/level.dat` SHA-256 remains `091d4e46ff6980c931887ba66fd959712e57e211c83d6c929d0c7d086bf29482`.
 
-- Repair datapack: `world_fresh_20261028/datapacks/fresh-world-launch-fixes/`; ZIP SHA-256 `e76ddbb936b502eb664388da8bd75372580e451d029c37e49f3c702f61e75e57`; 429 JSON data resources; archive/JSON integrity checks pass.
-- `bclib-21.0.28.jar`: SHA-256 `abf6e81ecaa1aafe945bd351e49fa9627c4ba351aeeba81ec50393be99fff80b`. A small guard returns from `DataFixerAPI.fixLevel` only when `worldDir/level.dat` is missing, avoiding a false first-generation error while preserving normal migration for an existing level. This was tested on a truly new world and a subsequent restart; BCLib errors were zero both times.
-- `moonlight-1.21.1-3.7.2-neoforge.jar`: SHA-256 `7c7e8ff34976c2a47850cf6090d4c643d7aa38a3e49a11e415fdcbad65aa9e80`. Only its explicit Fabric API/Connector advisory call changed from ERROR to WARN; the full warning remains visible.
-- `sablephysicscompat-1.3.0.jar`: SHA-256 `a01586a6e74405b6690202fdc9b072028b057c42442aa9d82bdc7bb4df5c0578`.
-- `recipe_integration-0.4.0.jar`: SHA-256 `f6cfe76956df1af5bacfc10fadebbaba9f85e88c380e3fc97b11348d6cded8b5`.
-- `struts-1.3.1.jar`: SHA-256 `1a85201a919bd69c9036849a3175432ab0b1054717a51e661382139202e770db`.
-- `HammerLib-1.21-21.0.17.jar`: SHA-256 `c4b48f2f6a13110e1804a8b05c3c5f2858d2646410931673b0bb1ab47f384563`; only the log severity for the successful recipe-extension attachment was lowered to INFO. The extension remains registered and HammerLib still injects 43 recipes.
-- `ConnectorExtras-1.12.1+1.21.1.jar`: server-only SHA-256 `5427041ec1dda48994ab9fdc5ec20f76819e825111d4e15888919be7c2c62a83`. The EMI Bridge entrypoint mixin is server-only and targets `net.minecraft.server.Main`; the Prism client retains its original ConnectorExtras JAR so its client entrypoint still works.
-
-All six matching server/client JARs match by hash; ConnectorExtras is intentionally the sole server/client hash difference.
-
-## Production status and rollback
-
-Production is **stopped**. Crucible's authoritative `ServerInstance.readiness()` passes all seven checks: folder, Java, EULA, launcher, mods, properties, and settings. Its registered Start path points to `/home/roaring/CrucibleServers/username-admin-server/start.sh`, passes `-Xms8G -Xmx16G`, and reports world root `/home/roaring/CrucibleServers/username-admin-server/world_fresh_20261028`. Port 25566 has no listener.
-
-Production `server.properties` selects `level-name=world_fresh_20261028`, leaves the seed blank/random, retains `level-type=wover:normal` and `generate-structures=true`. The target folder currently has the data pack but no `level.dat` yet. The next production Start creates the world. The old `world` and both dated prior worlds remain untouched; the old `world/level.dat` SHA-256 is still `091d4e46ff6980c931887ba66fd959712e57e211c83d6c929d0c7d086bf29482`.
-
-Verified original JAR/settings archives are stored in:
-- `/home/roaring/.local/share/crucible-backups/username-admin-server-fresh-world-deployment-20261028-171846/`
-- `/home/roaring/.local/share/crucible-backups/username-admin-server-compatibility-round2-20261028-172940/`
-- `/home/roaring/.local/share/crucible-backups/username-admin-server-hammerlib-log-fix-20261028-173507/`
-- `/home/roaring/.local/share/crucible-backups/username-admin-server-bclib-firstgen-fix-20261028-174136/`
-- `/home/roaring/.local/share/crucible-backups/username-admin-server-moonlight-warning-level-20261028-174408/`
-- Full existing-world archive: `/home/roaring/.local/share/crucible-backups/username-admin-server-world-factor8-before-fresh-20261028-161756.tar.gz`.
-
-All 10 current original-JAR/settings tar archives passed integrity checks. Detailed checksums and final first/second-start counts are in the primary `deployment-manifest.json` and `test-results.md` under the first directory above. No production startup has occurred.
+Rollback: previous deployed datapack tree and ZIP under `/home/roaring/.local/share/crucible-backups/username-admin-server-final-pack-deploy-*`; 434-resource ZIP under `/home/roaring/.local/share/crucible-backups/username-admin-server-quark-advancement-fix-*`; 429-resource ZIP under `/home/roaring/.local/share/crucible-backups/username-admin-server-loot-modifier-fix-*`. Older server/client JAR, server-properties, and world rollback folders remain referenced in `deployment-manifest.json` and `test-results.md`.
 
 ## Executive decision
 
@@ -95,18 +75,14 @@ The server filesystem had about 551 GB available when checked.
 
 ## Deployed launch-fix datapack
 
-The tested pack is installed only under the new world, not in the retained worlds:
+- Location: `world_fresh_20261028/datapacks/fresh-world-launch-fixes/`.
+- ZIP path: `prepared-datapacks/fresh-world-launch-fixes-20261028.zip`.
+- SHA-256: `3fda93a9d6f182b0553be124d192554abcefbfa8ebe3bb60906fb53a9631cf33`.
+- 436 JSON data resources; archive and every JSON payload validated.
+- Latest candidate includes five global loot modifier fixes and two Dungeons Arise advancement-parent fixes; all seven warnings disappeared in isolated startup.
+- Test: `Done (3.315s)!` on a new level, zero ERROR-level lines, zero recipe/loot parser errors, zero global loot modifier decode warnings, zero orphan advancement-parent warnings, and zero BCLib/Sable/path/class-probe errors.
+- Quark category mismatch warnings remain by explicit upstream design; no Quark binary patch is deployed.
 
-- Source directory: `prepared-datapacks/fresh-world-launch-fixes-20261028/`
-- ZIP: `prepared-datapacks/fresh-world-launch-fixes-20261028.zip`
-- ZIP SHA-256: `e76ddbb936b502eb664388da8bd75372580e451d029c37e49f3c702f61e75e57`
-- Data-pack format: 48 (Minecraft 1.21.1).
-- Deployed path: `world_fresh_20261028/datapacks/fresh-world-launch-fixes/`
-- Integrity: ZIP passes integrity test; all 429 data JSON resources parse.
-- Confirmed active in test: `/datapack list enabled` reported `file/fresh-world-launch-fixes (world)` among 20 enabled packs.
-- Final isolated launch through Crucible's manager reached `Done (3.589s)!`; recipe parse errors 0, loot-table parse errors 0, Sable resource errors 0, invalid resource-path errors 0, BCLib level-data errors 0.
-
-The datapack contains 14 restored compatibility recipes, 108 corrected Recipe Integration condition files, schema/optional-mod recipe repairs, 267 Railways optional-track loot conditions, seven invalid loot-table suppressions, and traceable manifest/reason/hash metadata. The two JAR hotfixes below are deployed separately because those resource defects cannot all be corrected from the world datapack alone.
 ### Fix A: 14 empty compatibility resources shadowing valid recipes
 
 A read-only scan of all 187 installed JARs found 14 resource paths where `mekanism_tfmg_compat-0.4-1.21.1.jar` supplies an empty JSON object `{}`, while another installed JAR supplies a valid recipe at exactly the same path. This directly explains errors such as missing recipe key `type` for TFMG steel tools, Mekanism infused control circuits, Mekanism lead/steel conversions, and Create's Mekanism lead recipes.
