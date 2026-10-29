@@ -1,6 +1,6 @@
 # UI Design and Interaction Workstream
 
-**Status:** Evidence-based audit findings #1 and #2 are implemented in [PR #37](https://github.com/Roaring1/Crucible/pull/37), World wipe finding #5 is implemented in [PR #38](https://github.com/Roaring1/Crucible/pull/38), and a restrained local SVG icon subset is implemented in [PR #39](https://github.com/Roaring1/Crucible/pull/39). Each is a separate, focused branch based on pinned main 34ca28fd8f989fe3eb98b90c81012d141684f4c9; broader provider/Add Mod work remains gated on PRs #34 and #35.  
+**Status:** Audit findings #1/#2 are implemented in [PR #37](https://github.com/Roaring1/Crucible/pull/37), World wipe finding #5 in [PR #38](https://github.com/Roaring1/Crucible/pull/38), a restrained local SVG subset in [PR #39](https://github.com/Roaring1/Crucible/pull/39), and PlayersTab avatar loading/failure lifecycle in [PR #40](https://github.com/Roaring1/Crucible/pull/40). Each is isolated from active provider/Add Mod code; PR #34 and #35 remain integration gates for overlapping work.  
 **Prepared:** 2026-10-29  
 **Initial reference commit:** `34ca28fd8f989fe3eb98b90c81012d141684f4c9`  
 **Workstream:** Chat 3 — whole-app UX, local SVG icons, loading skeletons, restrained transitions.
@@ -256,22 +256,24 @@ The small local icon family is implemented in [PR #39 — Add a small licensed l
 - Validation: the final full suite passes with 611 tests and 74 subtests. Python 3.11 and 3.13 CI checks pass after the wheel test was changed to use ordinary PEP 517 build isolation. The wheel test confirms all three SVGs, the license, and the helper are inside the built wheel.
 - Opened and inspected the actual Backup and Config after screenshots at 1040×560. Evidence on the supervised Nobara machine: /tmp/crucible-svg-icons-evidence-20261029/backup-actions.png, config-actions.png, backup-config-icon-review.jpg, render-measurements.json, and SHA256SUMS.txt.
 
-### Next focused state-lifecycle implementation — Player avatar loading and failure
+## Implementation evidence — PlayersTab avatar lifecycle
 
-Do not combine this with the icon PR. Implement one focused state flow in PlayersTab and its dedicated Qt tests; the current open PR file lists were rechecked, and no open PR #34–#39 changes players_tab.py.
+The first stateful loading-UI slice is implemented in [PR #40 — Make player avatar loading and failure states reliable](https://github.com/Roaring1/Crucible/pull/40).
 
-The current avatar worker emits only its success signal, and thread.quit is connected to that signal. A fetch failure without a valid stale-cache image can therefore leave no completion signal to retire the thread. The UI also has no explicit loading or unavailable-avatar state; a player appears without an icon until a fetch succeeds.
+- **Branch / base / commit:** feat/player-avatar-load-states-20261029 / 34ca28fd8f989fe3eb98b90c81012d141684f4c9 / ef9d5def1f2399fe39aa8d0778cfeb54f3903e00.
+- **Changed paths:** only crucible/ui/tabs/players_tab.py and tests/test_player_avatar_states_qt.py. Changed-file lists for every open PR #34–#39 were rechecked directly before opening #40; no overlap.
+- **Loading:** a static local 20×20 skeleton is shown with a short tooltip while the avatar is requested. The player name and contextual actions remain present.
+- **Success:** image bytes are validated/cached in the worker, and QPixmap creation happens in the GUI thread. A valid stale cache remains available when an offline refresh fails.
+- **Error:** the worker always emits its completion signal, even when the cache and network both fail. Pending state clears, a local fallback icon appears, and a tooltip says the avatar is unavailable while the player remains online/actionable.
+- **Empty / reduced motion:** the actual empty row remains “No players online”; no placeholder rows are emitted. This initial implementation has no animation objects and performs immediate state replacement, so it remains motion-free without relying on an unimplemented OS motion preference.
+- **Switch / close safety:** generation tokens prevent a late result from an old server or closed widget from changing the current UI. A module-level owner retains the worker and native QThread if the widget is destroyed during a request; cleanup releases it only after the thread stops. The network request remains bounded to 8 seconds rather than being forcibly interrupted inside urllib.
+- **Validation:** full suite 613 passed, 74 subtests passed; 14 focused avatar/log-watcher/Qt-slot tests passed in the adjacent subset. compileall and git diff --check passed. The Qt suite includes mocked success, offline failure, stale cache, stale completion after server switch, close/delete with the worker actually blocked in a mocked request, and loading/success/error/empty captures.
+- **Visual evidence:** screenshots at standard 1040×560 and small 640×420 sizes were opened and inspected. Real worker success, offline error, and stale-cache fallback captures were opened as well. Evidence files are on the supervised Nobara host in /tmp/crucible-player-avatar-evidence-20261029/: players-avatar-states-standard-contact.jpg, players-avatar-states-small-contact.jpg, players-avatar-worker-and-state-review.jpg, measurements JSON files, and SHA256SUMS.txt.
+- **Limits:** these are offscreen Qt renderings and deterministic mocked network outcomes. They confirm widget state and thread cleanup but are not physical-desktop or screen-reader verification.
 
-The first pass should use a **static, motion-free skeleton** for the 20×20 avatar slot while fetching, then make an immediate state replacement:
-- **Loading:** keep the player name/actionability available; show a restrained skeleton in the avatar slot.
-- **Success:** replace the skeleton with the cached/fetched avatar.
-- **Error/offline:** always complete the worker, retire the thread, replace the skeleton with a deterministic local fallback, and expose a concise tooltip without marking the player offline.
-- **Empty:** preserve “No players online” as the actual empty state; do not show skeleton rows when there are no players.
-- **Cancel/switch/close:** associate requests with a generation token so a slow completion from a prior server cannot mutate the new server's view. Disconnect/close must not let stale results revive a closed UI; errors still complete and release their worker.
-- **Reduced motion:** this first pass uses no animation at all, so reduced-motion users get the same immediate state replacement. Do not add pulsing/fading until a real reduced-motion policy is available and tested.
+### Next independent UI task
 
-Add Qt tests with all network and avatar-worker outcomes controlled by test fixtures: successful cached/downloaded pixmap, empty/no-player state, error with no cache, stale completion after server switch, thread completion on the failure branch, and reduced-motion/no-animation behavior. Capture the loading, success, error, and empty states at standard and small sizes; open and inspect those images. This is an explicit first slice of stateful loading UI, not a general motion system; later transitions should be separate and must cover loading/success/empty/error/cancel-close/reduced-motion before being applied broadly.
-
+Keep the remaining visual audit moving as focused slices. After PR #37 integrates, revisit the More-tabs selected-label truncation finding without mixing with active focus/theme work. After PR #39 integrates, add brief empty-state next-step guidance to the empty backup tables. For future animated transitions, first define a real reduced-motion policy and then test loading/success/empty/error/cancel/close plus stale-result cleanup. Do not add animation to the avatar placeholders as part of this PR.
 ## Implementation sequence after the integration gate
 
 1. Fetch current `main`; record its commit and inspect the merged PRs plus current design files.
