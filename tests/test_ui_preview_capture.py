@@ -30,6 +30,9 @@ def test_capture_ui_previews_writes_expected_pngs(tmp_path):
         "create-server.png",
         "import-files.png",
         "install-modpack.png",
+        "add-mod-icons-first-page.png",
+        "add-mod-icons-later-page.png",
+        "add-mod-icons-selected-detail.png",
     )
     for filename in expected:
         path = tmp_path / filename
@@ -37,4 +40,4 @@ def test_capture_ui_previews_writes_expected_pngs(tmp_path):
         data = path.read_bytes()
         assert data.startswith(b"\x89PNG\r\n\x1a\n"), filename
         assert len(data) > 1_000, filename
-    assert "Captured 6 UI previews" in result.stdout
+    assert "Captured 9 UI previews" in result.stdout
