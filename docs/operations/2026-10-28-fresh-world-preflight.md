@@ -5,6 +5,18 @@
 **Target instance:** `username-admin-server`  
 **Host path:** `/home/roaring/CrucibleServers/username-admin-server`
 
+## Live filesystem recheck — 2026-10-28 18:20 PDT
+
+Retried direct read-only inspection successfully after an earlier tool-call block. This was a verification-only pass; it did not launch production or change server files.
+
+- `server.properties` still selects `world_fresh_20261028`, blank/random seed, `wover:normal`, structures enabled, and port `25566`.
+- The production datapack ZIP hash is still `3fda93a9d6f182b0553be124d192554abcefbfa8ebe3bb60906fb53a9631cf33`.
+- Re-count clarified the earlier apparent 436/437 discrepancy: there are **436 JSON resources under `data/` plus one root `manifest.json`**. The ZIP has 439 files total (those 437 JSON files, `pack.mcmeta`, and `README.md`); it passes ZIP integrity validation.
+- The installed datapack directory and prepared ZIP have the same file set and byte-identical contents. All installed JSON payloads parse successfully.
+- `world_fresh_20261028/level.dat` is still absent; existing `world/level.dat` still hashes to `091d4e46ff6980c931887ba66fd959712e57e211c83d6c929d0c7d086bf29482`.
+- Port `25566` has no listener, and no Minecraft Java server process was found (the only Java process found belonged to UniFi).
+- The previous Crucible-manager readiness result is recorded above; this pass did not re-run Crucible's readiness API.
+
 ## Latest deployment update
 
 The final validated repair pack is deployed only under `world_fresh_20261028/datapacks/fresh-world-launch-fixes/`.
