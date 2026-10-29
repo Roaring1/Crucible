@@ -37,6 +37,29 @@ Files inspected on the initial base:
 6. Transitions should be brief and explain a state change. Never make important information or actions depend on animation. Respect reduced-motion preferences when the platform exposes them, and provide a non-animated fallback.
 7. Preserve keyboard navigation, native control affordances, resizing, text legibility, and existing safe server-management workflows.
 
+## Candidate icon inventory (validate before adoption)
+
+The initial source read found repeated control meanings that currently use a mix of Unicode/emoji glyphs and plain text. This is a **candidate semantic inventory**, not a mandate to put an icon on every control. Final inclusion and sizing depend on baseline screenshots and keyboard/accessibility checks.
+
+| Meaning / current example | Candidate local SVG | Rule |
+|---|---|---|
+| Add server / add item | `plus` | Reserve the prominent treatment for the primary Add server action; ordinary add controls stay secondary. |
+| Start / stop / restart | `play`, `square`, `rotate-cw` | Keep the text labels and distinct primary/danger/secondary button treatments. Never rely on icon color alone. |
+| Console | `terminal` | Use consistently for navigation or opening a console; do not use it for unrelated actions. |
+| Mods / package | `package` | Use only where it helps identify the Mods area, not as decoration on each table row. |
+| World / dimensions | `globe` | A candidate for the World section; avoid repeating the same decorative glyph in every world-related label. |
+| Backups / archive | `archive` | Reuse for backup/archive concepts; distinguish destructive deletion with label and danger treatment. |
+| Configuration | `sliders-horizontal` | Keep distinct from general-purpose more/options menus. |
+| Players | `users` | Candidate for the Players section; player actions still need explicit text. |
+| Notes / information | `notebook-pen`, `info` | Use only if the icon improves navigation scanning at the actual tab size. |
+| Copy / open folder / refresh / save | `copy`, `folder-open`, `refresh-cw`, `save` | Icon-only compact buttons require accessible names and useful tooltips; preserve text labels in normal layouts. |
+| Download / upload / external link | `download`, `upload`, `external-link` | Keep the action direction and destination clear in text. Sharing can use a dedicated `share-2` icon only if user testing/rendered review finds it clearer. |
+| Delete / warning / success / failure | `trash-2`, `triangle-alert`, `check`, `x` | Pair status symbols with readable words where ambiguity matters; never make color the sole signal. |
+
+Do not automatically add status icons to every row or iconize native widgets that already communicate their role. One meaning should use one icon consistently. Keep the brand PNG as-is unless the separate branding task calls for a change.
+
+Implementation should start with a small, reviewed subset of frequent actions and navigation. The accepted set, SVG attribution, and packaging/test decisions must be documented in the implementation PR.
+
 ## Review coverage
 
 | Area | User task / states | Evidence required |
