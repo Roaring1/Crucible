@@ -462,4 +462,72 @@ QProgressBar::chunk {{
     background-color: {ACCENT};
     border-radius: 2px;
 }}
+
+/* Keyboard focus -- visible without hover; keep selected and disabled states intact. */
+QPushButton:focus {{
+    border: 2px solid {ACCENT};
+    padding: 3px 11px;
+}}
+QPushButton#PrimaryButton:focus {{
+    /* Dark ring remains visible against the amber fill without changing its size. */
+    border: 2px solid {CRUST};
+    padding: 2px 12px;
+}}
+QPushButton#SidebarAddButton:focus {{
+    border: 2px solid {CRUST};
+    padding: 6px;
+}}
+QToolButton:focus {{
+    border: 2px solid {ACCENT};
+    padding: 3px 7px;
+}}
+QComboBox:focus {{
+    border: 2px solid {ACCENT};
+    padding: 3px 7px;
+}}
+QLineEdit:focus {{
+    border: 2px solid {ACCENT};
+    padding: 4px 7px;
+}}
+QTextEdit:focus,
+QPlainTextEdit:focus {{
+    border: 2px solid {ACCENT};
+    padding: 5px;
+}}
+QCheckBox:focus,
+QRadioButton:focus {{
+    border: 2px solid {ACCENT};
+    border-radius: 3px;
+    padding: 1px 3px;
+}}
+QSpinBox:focus,
+QDoubleSpinBox:focus {{
+    border: 2px solid {ACCENT};
+    padding: 2px 5px;
+}}
+QTabBar::tab:focus {{
+    border: 1px solid {ACCENT};
+    padding: 6px 15px;
+}}
+QTabBar::tab:selected:focus {{
+    /* Keep the selected tab's amber top edge and add a clear focus boundary. */
+    border: 1px solid {ACCENT};
+    border-top: 2px solid {ACCENT};
+    padding: 6px 15px;
+}}
+QListWidget:focus,
+QTreeWidget:focus,
+QTableWidget:focus,
+QTableView:focus {{
+    border: 1px solid {ACCENT};
+}}
+QListWidget::item:selected:focus {{
+    border: 1px solid {ACCENT};
+}}
+QMenu::item:selected {{
+    /* Keyboard-active QMenu items are selected even without mouse hover. */
+    border: 1px solid {ACCENT};
+    padding: 5px 19px 5px 11px;
+}}
+
 """
