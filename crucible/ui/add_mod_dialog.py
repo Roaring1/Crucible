@@ -154,8 +154,17 @@ class AddModDialog(QDialog):
         self.setWindowTitle("Add a mod")
         self.resize(900, 600)
         self._build_ui()
-        # Kick off the popular list as soon as the dialog opens.
-        QTimer.singleShot(0, lambda: self._do_search(initial=True))
+        # Parent the deferred startup to the dialog. An unowned singleShot
+        # lambda can outlive a dialog that was closed before the event loop
+        # runs, then start network work against deleted Qt widgets.
+        self._initial_search_timer = QTimer(self)
+        self._initial_search_timer.setSingleShot(True)
+        self._initial_search_timer.timeout.connect(self._start_initial_search)
+        self._initial_search_timer.start(0)
+
+    def _start_initial_search(self):
+        if self.isVisible() and not self._close_requested:
+            self._do_search(initial=True)
 
     # --- server context helpers ---
     def _loader(self):

@@ -17,7 +17,7 @@ from crucible.ui.tabs.console_tab import ConsoleTab
 from crucible.ui.tabs.players_tab import PlayersTab
 from crucible.ui.tabs.mods_tab import ModsTab
 from crucible.ui.tabs.system_tab import SystemTab
-from crucible.ui.add_mod_dialog import AddModDialog
+from crucible.ui.add_mod_dialog import AddModDialog, _SearchWorker
 from crucible.ui.add_dialog import AddInstanceDialog
 from crucible.ui.new_server_dialog import NewServerDialog
 from crucible.ui.modpack_dialog import ModpackDialog, _PackInstallWorker
@@ -79,9 +79,19 @@ while (len(seen)<2 or mods.has_active_operation()) and time.monotonic()<deadline
 assert seen==['first','second'],seen
 mods.close()
 
-with patch.object(AddModDialog,'_do_search',lambda *args,**kw:None):
- browser=AddModDialog(inst);assert browser._provider.count()==2
- browser._provider.setCurrentText('CurseForge');assert browser._provider.currentText()=='CurseForge';browser.reject()
+# Closing before the deferred initial search runs must not launch a worker
+# against a deleted dialog. Stub the worker so this lifecycle regression never
+# accesses the live network or the user's configured CurseForge credential.
+search_started=[]
+def unexpected_search(worker):
+ search_started.append(worker._provider)
+ worker.done.emit(worker._offset, [])
+with patch.object(_SearchWorker,'run',unexpected_search):
+ with patch.object(AddModDialog,'_do_search',lambda *args,**kw:None):
+  browser=AddModDialog(inst);assert browser._provider.count()==2
+  browser._provider.setCurrentText('CurseForge');assert browser._provider.currentText()=='CurseForge';browser.reject()
+ QTest.qWait(40)
+assert search_started==[], f'closed Add Mod dialog unexpectedly launched a search: {search_started}'
 
 m=InstanceManager(root/'registry');m.load();(root/'server').mkdir()
 empty_manager=InstanceManager(root/'empty-registry');empty_manager.load()

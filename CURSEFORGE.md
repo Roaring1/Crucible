@@ -6,7 +6,7 @@ Reviewed 2026-10-27. This is implementation guidance, not legal advice or a clai
 
 Crucible has its own Python provider adapter; it does not incorporate Prism Launcher source or its application key. Local JAR inspection needs no API. Optional online support covers mod searches filtered by Minecraft/loader, project summaries and website links, compatible release selection, required-dependency resolution, and staged verified installs/downgrades. Online modpack browsing and a full HTML-description viewer are outside this release.
 
-No shared API key is bundled. Authentication and failure behavior are regression-tested with synthetic credentials. Live CurseForge access/installations have NOT been validated with an approved Crucible key. Modrinth and local imports remain usable without one.
+No shared API key is bundled. Authentication and failure behavior are regression-tested with synthetic credentials. **Local live API-key validation was completed on 2026-10-29**: authenticated `GET /v1/games` returned Minecraft, a Sodium/Fabric/1.21.1 search returned results, compatible file metadata and the official per-file download-URL endpoint succeeded, and the approved CDN returned HTTP 200 to an authenticated GET (the response was closed after reading only its first byte; no mod was downloaded). This confirms the configured key works for these read-only local probes, but does not constitute formal approval for Crucible as a distributed third-party app or settle the open distribution/retention terms below. Modrinth and local imports remain usable without a key.
 
 ## Approval remains open
 
