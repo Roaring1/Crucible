@@ -8,8 +8,9 @@ Top:    Online Now  — live from LogWatcher signals, with 20×20 player-head
 Bottom: Sub-tabs    — Whitelist | Ops | Banned
 
 Avatar cache: fetched from minotar.net on first join, stored as PNG.
-Re-fetched if older than 7 days.  Network failures silently fall back
-to stale cache, or show no icon if no cache exists.
+Re-fetched if older than 7 days. Loading and failure states use static local
+20×20 placeholders; network failures use a valid stale cache when available,
+or a deterministic fallback icon and tooltip when no cache is available.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import time
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QObject, QSize, QThread, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QIcon, QPixmap
+from PyQt6.QtGui import QColor, QIcon, QPixmap, QImage, QPainter, QFont
 from PyQt6.QtWidgets import (
     QWidget, QSplitter, QVBoxLayout, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem,
@@ -56,56 +57,75 @@ def _read_json_file(path: Path):
 # Avatar fetcher
 
 class _AvatarFetcher(QObject):
-    """
-    Loads a player-head PNG.  Checks disk cache first; only hits minotar.net
-    if the cached file is missing or older than 7 days.
-    """
-    fetched = pyqtSignal(str, QPixmap)
+    """Fetch/validate one avatar off-thread and always report completion."""
 
-    def __init__(self, name: str, parent=None):
+    completed = pyqtSignal(str, object, int)  # player name, PNG bytes or None, generation
+
+    def __init__(self, name: str, generation: int, parent=None):
         super().__init__(parent)
         self._name = name
+        self._generation = generation
 
     def _cache_path(self) -> Path:
         _AVATAR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         return _AVATAR_CACHE_DIR / f"{self._name}.png"
 
+    @staticmethod
+    def _valid_png(data: bytes | None) -> bool:
+        if not data or len(data) > _MAX_AVATAR_BYTES:
+            return False
+        return not QImage.fromData(data).isNull()
+
     def run(self) -> None:
-        cache = self._cache_path()
-
-        # Fresh disk cache -- no network needed
-        if cache.exists():
-            age = time.time() - cache.stat().st_mtime
-            if age < _AVATAR_MAX_AGE_S:
-                pix = QPixmap(str(cache))
-                if not pix.isNull():
-                    self.fetched.emit(self._name, pix)
-                    return
-
-        # Fetch from network
+        """Always emit completed, including for invalid cache and network failures."""
+        cache: Path | None = None
+        data: bytes | None = None
         try:
-            import urllib.request
-            url = "https://minotar.net/avatar/%s/20" % self._name
-            with urllib.request.urlopen(url, timeout=8) as resp:
-                data = resp.read(_MAX_AVATAR_BYTES + 1)
-            if len(data) > _MAX_AVATAR_BYTES:
-                raise ValueError("avatar response exceeded 2 MiB")
-            pix = QPixmap()
-            pix.loadFromData(data)
-            if not pix.isNull():
+            cache = self._cache_path()
+            if cache.exists():
+                age = time.time() - cache.stat().st_mtime
+                if age < _AVATAR_MAX_AGE_S:
+                    candidate = cache.read_bytes()
+                    if self._valid_png(candidate):
+                        data = candidate
+
+            if data is None:
+                import urllib.request
+
+                url = "https://minotar.net/avatar/%s/20" % self._name
+                with urllib.request.urlopen(url, timeout=8) as response:
+                    candidate = response.read(_MAX_AVATAR_BYTES + 1)
+                if not self._valid_png(candidate):
+                    raise ValueError("avatar response was empty, invalid, or exceeded 2 MiB")
+
                 partial = cache.with_suffix(cache.suffix + ".partial")
                 try:
-                    partial.write_bytes(data)
+                    partial.write_bytes(candidate)
                     partial.replace(cache)
                 finally:
                     partial.unlink(missing_ok=True)
-                self.fetched.emit(self._name, pix)
+                data = candidate
         except Exception:
-            # Offline / minotar down -- try stale cache
-            if cache.exists():
-                pix = QPixmap(str(cache))
-                if not pix.isNull():
-                    self.fetched.emit(self._name, pix)
+            # If the network or cache path fails, try one last time to read a
+            # valid stale cache. A missing/invalid stale cache is still a result.
+            try:
+                if cache is None:
+                    cache = self._cache_path()
+                if cache.exists():
+                    candidate = cache.read_bytes()
+                    if self._valid_png(candidate):
+                        data = candidate
+            except Exception:
+                data = None
+        finally:
+            # This signal is the lifecycle boundary: the UI can settle the
+            # loading slot and the QThread can always stop on every outcome.
+            self.completed.emit(self._name, data, self._generation)
+
+
+# Keep a worker alive until its native QThread has fully stopped, even if the
+# PlayersTab is closed or its parent window is destroyed mid-request.
+_ACTIVE_AVATAR_WORKERS: dict[QThread, _AvatarFetcher] = {}
 
 
 # Teleport dialog
@@ -218,8 +238,12 @@ class PlayersTab(QWidget):
         self._seen:     dict[str, dict]       = {}     # name -> {first_seen,last_seen,…}
         self._seen_path: Path | None          = None
         self._join_times: dict[str, float]    = {}     # name -> join epoch (this run)
-        self._avatars:  dict[str, QPixmap]    = {}
-        self._avatar_threads:  list[QThread]        = []
+        self._avatars: dict[str, QPixmap] = {}
+        self._avatar_pending: set[str] = set()
+        self._avatar_errors: set[str] = set()
+        self._avatar_generation = 0
+        self._avatar_placeholders: dict[str, QPixmap] = {}
+        self._avatar_threads: list[QThread] = []
         self._avatar_fetchers: list[_AvatarFetcher] = []
         self._tmux = TmuxManager()
         self._build_ui()
@@ -278,6 +302,8 @@ class PlayersTab(QWidget):
     # Public API
 
     def load(self, instance: ServerInstance) -> None:
+        # Invalidate avatar work from the previous server before replacing state.
+        self._invalidate_avatar_requests()
         self._instance = instance
         self._online.clear()
         self._join_times.clear()
@@ -313,9 +339,10 @@ class PlayersTab(QWidget):
         self._online.add(name)
         self._join_times[name] = time.time()
         self._record_seen(name, joined=True)
-        self._refresh_online_list()
-        if name not in self._avatars:
+        if name not in self._avatars and name not in self._avatar_pending:
+            self._avatar_errors.discard(name)
             self._fetch_avatar(name)
+        self._refresh_online_list()
 
     @pyqtSlot(str)
     def _on_left(self, name: str) -> None:
@@ -379,11 +406,51 @@ class PlayersTab(QWidget):
             return pix
         cache = _AVATAR_CACHE_DIR / f"{name}.png"
         if cache.exists():
-            p = QPixmap(str(cache))
-            if not p.isNull():
-                self._avatars[name] = p
-                return p
+            try:
+                p = QPixmap(str(cache))
+                if not p.isNull():
+                    self._avatars[name] = p
+                    return p
+            except Exception:
+                pass
         return None
+
+    def _avatar_placeholder(self, state: str) -> QPixmap:
+        """Create a small, local static avatar placeholder; no animation/network."""
+        if state in self._avatar_placeholders:
+            return self._avatar_placeholders[state]
+        pixmap = QPixmap(20, 20)
+        pixmap.fill(QColor(theme.SURFACE0))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if state == "loading":
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(theme.SURFACE1))
+            painter.drawRoundedRect(2, 2, 16, 16, 3, 3)
+            painter.setBrush(QColor(theme.SURFACE2))
+            painter.drawRoundedRect(5, 5, 10, 3, 1.5, 1.5)
+            painter.drawRoundedRect(5, 11, 7, 3, 1.5, 1.5)
+        else:
+            # The error state is semantically important; use the existing alert
+            # token rather than the low-contrast SURFACE2 used for secondary text.
+            painter.setPen(QColor(theme.RED))
+            painter.setFont(QFont("sans-serif", 10, QFont.Weight.Bold))
+            painter.drawEllipse(2, 2, 16, 16)
+            painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "!")
+        painter.end()
+        self._avatar_placeholders[state] = pixmap
+        return pixmap
+
+    def _invalidate_avatar_requests(self) -> None:
+        """Ignore late avatar results when changing server or closing the view."""
+        self._avatar_generation += 1
+        self._avatar_pending.clear()
+        self._avatar_errors.clear()
+
+    def closeEvent(self, event) -> None:
+        self._invalidate_avatar_requests()
+        self.detach_watcher()
+        super().closeEvent(event)
 
     @staticmethod
     def _ago(ts) -> str:
@@ -420,28 +487,47 @@ class PlayersTab(QWidget):
     # Avatar fetching
 
     def _fetch_avatar(self, name: str) -> None:
-        thread  = QThread()
-        fetcher = _AvatarFetcher(name)
+        if name in self._avatar_pending or name in self._avatars:
+            return
+        self._avatar_pending.add(name)
+        generation = self._avatar_generation
+        thread = QThread()
+        fetcher = _AvatarFetcher(name, generation)
         fetcher.moveToThread(thread)
         thread.started.connect(fetcher.run)
-        fetcher.fetched.connect(self._on_avatar_fetched)
-        fetcher.fetched.connect(thread.quit)
+        fetcher.completed.connect(self._on_avatar_completed)
+        fetcher.completed.connect(thread.quit)
+        thread.finished.connect(fetcher.deleteLater)
 
         def _cleanup():
+            _ACTIVE_AVATAR_WORKERS.pop(thread, None)
             if thread in self._avatar_threads:
                 self._avatar_threads.remove(thread)
             if fetcher in self._avatar_fetchers:
                 self._avatar_fetchers.remove(fetcher)
 
         connect_thread_cleanup(thread, _cleanup)
+        _ACTIVE_AVATAR_WORKERS[thread] = fetcher
         self._avatar_threads.append(thread)
         self._avatar_fetchers.append(fetcher)
+        self._refresh_online_list()
         thread.start()
 
-    @pyqtSlot(str, QPixmap)
-    def _on_avatar_fetched(self, name: str, pix: QPixmap) -> None:
-        self._avatars[name] = pix
-        if name in self._online:
+    @pyqtSlot(str, object, int)
+    def _on_avatar_completed(self, name: str, data: object, generation: int) -> None:
+        # The worker still completes/retires if stale, but stale generations
+        # cannot revive or mutate the current server's player list.
+        if generation != self._avatar_generation:
+            return
+        self._avatar_pending.discard(name)
+        pix = QPixmap()
+        if isinstance(data, (bytes, bytearray)) and pix.loadFromData(bytes(data)) and not pix.isNull():
+            self._avatars[name] = pix
+            self._avatar_errors.discard(name)
+        else:
+            self._avatar_errors.add(name)
+            self._avatars.pop(name, None)
+        if name in self._online or name in self._seen:
             self._refresh_online_list()
 
     # List rendering
@@ -658,6 +744,12 @@ class PlayersTab(QWidget):
                 pix = self._avatar_for(name)
                 if pix is not None:
                     item.setIcon(QIcon(pix))
+                elif name in self._avatar_pending:
+                    item.setIcon(QIcon(self._avatar_placeholder("loading")))
+                    item.setToolTip("Loading avatar; player actions remain available.")
+                elif name in self._avatar_errors:
+                    item.setIcon(QIcon(self._avatar_placeholder("error")))
+                    item.setToolTip("Avatar unavailable; player actions remain available.")
                 self._online_list.addItem(item)
         else:
             empty = QListWidgetItem("  No players online")
@@ -682,6 +774,12 @@ class PlayersTab(QWidget):
                 pix = self._avatar_for(name)
                 if pix is not None:
                     item.setIcon(QIcon(pix))
+                elif name in self._avatar_pending:
+                    item.setIcon(QIcon(self._avatar_placeholder("loading")))
+                    item.setToolTip("Loading avatar; player actions remain available.")
+                elif name in self._avatar_errors:
+                    item.setIcon(QIcon(self._avatar_placeholder("error")))
+                    item.setToolTip("Avatar unavailable; player actions remain available.")
                 self._online_list.addItem(item)
 
 
