@@ -27,6 +27,17 @@ Files inspected on the initial base:
 - `scripts/capture_ui_previews.py`: the existing helper renders six states offscreen using temporary data. Its current test primarily verifies expected image files/PNG headers/size; it does not by itself establish visual quality or prove real pointer/keyboard journeys.
 - `docs/development/ux-audit.md`: provides a useful, existing record of first-run, import, and selected-server workflow reasoning. Update it only when new evidence justifies changing those conclusions; do not silently rewrite its historical scope.
 
+## Focused source observations to verify in the rendered app
+
+These are reproducible code/palette observations, not a claim of a completed visual or assistive-technology audit:
+
+- **Primary navigation mixes symbol styles.** Setup, World, and Backups use emoji in their labels, while Console and Mods are text-only. Less-frequent tabs hidden behind More also mix emoji and text. Evaluate a consistent approach at actual tab widths; uniform text-only navigation may be better than adding icons everywhere.
+- **Context-menu palette bypasses the theme.** The sidebar context menu embeds colors and radius values directly rather than reusing `theme.py` tokens. It visibly risks drifting from the rest of the interface as the palette evolves.
+- **Sidebar status is visually represented by a dot.** The status word is in the row tooltip, while the selected-server header shows a text label. Verify keyboard and assistive-technology discoverability; consider an accessible description and whether a clearer non-color-only cue is needed without cluttering every row.
+- **Stopped-state dot may be too dim.** Simple WCAG-style sRGB calculations from the current palette give `SURFACE2 (#545460)` against `BASE (#1c1c1e)` about **2.28:1**. If that dot alone communicates state, it falls below the 3:1 non-text contrast reference. Confirm its actual rendering and strengthen the marker or expose status through a clearer textual/accessibility channel.
+- **Main text contrast is strong in the base palette.** `TEXT (#dddad0)` against `BASE (#1c1c1e)` calculates to about **12.16:1**; `SUBTEXT (#96929e)` against `SURFACE0 (#2c2c30)` calculates to about **4.57:1**. This is not a complete contrast audit: inline widget styles, disabled states, selected/hover states, status colors, and actual rendered backgrounds still need inspection.
+- **Focus is an explicit test target.** The shared stylesheet contains a global `outline: none` rule and styles focus borders on line edits. Test every interactive control with keyboard navigation before deciding whether any native focus treatment is suppressed or missing.
+
 ## Design guardrails
 
 1. Preserve Crucible's warm dark/amber identity. Prefer better hierarchy, spacing, focus visibility, text, and state communication over a wholesale redesign.
