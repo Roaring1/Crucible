@@ -1,6 +1,6 @@
 # UI Design and Interaction Workstream
 
-**Status:** The first two high-priority audit fixes are implemented in [PR #37](https://github.com/Roaring1/Crucible/pull/37), and the destructive World wipe confirmation finding is implemented in [PR #38](https://github.com/Roaring1/Crucible/pull/38), both based on pinned main `34ca28fd8f989fe3eb98b90c81012d141684f4c9`. Broader Add Mod/provider work remains gated on PRs #34 and #35.  
+**Status:** Evidence-based audit findings #1 and #2 are implemented in [PR #37](https://github.com/Roaring1/Crucible/pull/37), World wipe finding #5 is implemented in [PR #38](https://github.com/Roaring1/Crucible/pull/38), and a restrained local SVG icon subset is implemented in [PR #39](https://github.com/Roaring1/Crucible/pull/39). Each is a separate, focused branch based on pinned main 34ca28fd8f989fe3eb98b90c81012d141684f4c9; broader provider/Add Mod work remains gated on PRs #34 and #35.  
 **Prepared:** 2026-10-29  
 **Initial reference commit:** `34ca28fd8f989fe3eb98b90c81012d141684f4c9`  
 **Workstream:** Chat 3 — whole-app UX, local SVG icons, loading skeletons, restrained transitions.
@@ -245,21 +245,43 @@ The separate implementation is in [PR #38 — Make World wipe confirmation bound
 - **Artifacts:** the PNGs, measurements.json, contact sheet, and SHA256SUMS.txt are under /tmp/crucible-world-wipe-evidence-20261029/final/ on the supervised Nobara machine. Tests use synthetic server data and mock the dispatch boundary; no actual wipe operation runs.
 - **Limits:** screenshot and widget-pixel checks use offscreen Qt. Physical desktop styling and screen-reader behavior remain to be verified manually.
 
-### Next independent design implementation
+## Implementation evidence — local SVG icon family
 
-Keep the next work out of this destructive-dialog PR. First choose a small SVG set that materially improves scanning, bundle the original local SVG paths, and record exact upstream version/commit, icons used, file hashes/edits, and applicable license notices (including distinct upstream notices when required). Add a package/build test that confirms the assets ship. Do not decorate every button.
+The small local icon family is implemented in [PR #39 — Add a small licensed local SVG icon family](https://github.com/Roaring1/Crucible/pull/39).
 
-After that, implement loading skeletons/transitions in focused state-specific changes. Each relevant flow must test loading, success, empty, error, cancel/close, stale-result cleanup, and reduced-motion behavior. Avoid broad motion changes until lifecycle and cancellation guarantees are proven.
+- Branch/commit/base: feat/local-svg-icon-family-20261029 / d932b5b24ca7228ebe5dcbd37c980106f3f660a9 / 34ca28fd8f989fe3eb98b90c81012d141684f4c9.
+- The three local Lucide-derived SVGs are folder-open, archive, and refresh-cw. They are used only next to the existing Open Folder, Backup Now, and Reload labels. Backup Now's icon uses dark ink against the amber-filled primary button; the other two are amber on dark surfaces.
+- Exact upstream Lucide commit is 81875c8c42d2320fa5123b37fee3554f4ca2bddc. ICON_SOURCES.md lists upstream blob IDs, source SHA-256, packaged-file SHA-256, the single per-file stroke-color customization, and license notes. The full upstream license is included in the package with its ISC and Feather/MIT notices preserved.
+- The icon helper uses a three-name allow-list and only local package files; unrecognized names return an empty icon. The setuptools package-data and the existing release-script assertion now include SVGs and the packaged license.
+- Validation: the final full suite passes with 611 tests and 74 subtests. Python 3.11 and 3.13 CI checks pass after the wheel test was changed to use ordinary PEP 517 build isolation. The wheel test confirms all three SVGs, the license, and the helper are inside the built wheel.
+- Opened and inspected the actual Backup and Config after screenshots at 1040×560. Evidence on the supervised Nobara machine: /tmp/crucible-svg-icons-evidence-20261029/backup-actions.png, config-actions.png, backup-config-icon-review.jpg, render-measurements.json, and SHA256SUMS.txt.
+
+### Next focused state-lifecycle implementation — Player avatar loading and failure
+
+Do not combine this with the icon PR. Implement one focused state flow in PlayersTab and its dedicated Qt tests; the current open PR file lists were rechecked, and no open PR #34–#39 changes players_tab.py.
+
+The current avatar worker emits only its success signal, and thread.quit is connected to that signal. A fetch failure without a valid stale-cache image can therefore leave no completion signal to retire the thread. The UI also has no explicit loading or unavailable-avatar state; a player appears without an icon until a fetch succeeds.
+
+The first pass should use a **static, motion-free skeleton** for the 20×20 avatar slot while fetching, then make an immediate state replacement:
+- **Loading:** keep the player name/actionability available; show a restrained skeleton in the avatar slot.
+- **Success:** replace the skeleton with the cached/fetched avatar.
+- **Error/offline:** always complete the worker, retire the thread, replace the skeleton with a deterministic local fallback, and expose a concise tooltip without marking the player offline.
+- **Empty:** preserve “No players online” as the actual empty state; do not show skeleton rows when there are no players.
+- **Cancel/switch/close:** associate requests with a generation token so a slow completion from a prior server cannot mutate the new server's view. Disconnect/close must not let stale results revive a closed UI; errors still complete and release their worker.
+- **Reduced motion:** this first pass uses no animation at all, so reduced-motion users get the same immediate state replacement. Do not add pulsing/fading until a real reduced-motion policy is available and tested.
+
+Add Qt tests with all network and avatar-worker outcomes controlled by test fixtures: successful cached/downloaded pixmap, empty/no-player state, error with no cache, stale completion after server switch, thread completion on the failure branch, and reduced-motion/no-animation behavior. Capture the loading, success, error, and empty states at standard and small sizes; open and inspect those images. This is an explicit first slice of stateful loading UI, not a general motion system; later transitions should be separate and must cover loading/success/empty/error/cancel-close/reduced-motion before being applied broadly.
+
 ## Implementation sequence after the integration gate
 
 1. Fetch current `main`; record its commit and inspect the merged PRs plus current design files.
 2. Capture and inspect the integrated baseline screenshots. Do not treat the existence of PNGs as a visual pass.
-3. Add a small token layer and bundled SVG assets, package-data coverage, source/license notes, and focused tests.
-4. Apply tokens and icons to a limited group of shared controls/screens first; inspect the screenshots before extending the pattern.
-5. Introduce loading/empty/error/success states where they meaningfully reduce uncertainty. Start with static skeletons; animate only where helpful and safe.
-6. Add restrained state transitions and reduced-motion fallback without delaying input or affecting server operations.
-7. Run the unit suite, real Qt interaction checks, keyboard-only checks, focus visibility/contrast review, and scaling/clipping review. Capture before/after states and document remaining gaps.
-8. Update changelog and design docs; open a focused PR. Do not auto-deploy or change the release version.
+3. The locally bundled SVG family and per-asset source/license notes are implemented in PR #39; keep icons adjacent to meaningful labels and extend the family only when a repeated action warrants it.
+4. Implement the Player avatar loading/failure lifecycle as one stateful slice: static skeleton, success pixmap, deterministic error fallback, true empty state, safe worker completion, and stale-result cancellation when the server changes.
+5. Test loading/success/empty/error/cancel-close and reduced-motion behavior with deterministic Qt fixtures; capture and inspect before/after screenshots at normal and small sizes.
+6. Add animated transitions only after a reliable reduced-motion policy is identified. A transition must never hide status, delay interaction, or revive a closed/stale view.
+7. Continue the remaining ranked audit items in small branches after rechecking changed paths. Run the unit suite, real Qt interaction checks, keyboard-only checks, focus/contrast, and scaling/clipping review for each affected area.
+8. Update design evidence and open focused PRs. Do not bump release version or deploy.
 
 ## Icon provenance and licensing requirement
 
