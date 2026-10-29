@@ -36,13 +36,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QObject, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QEvent, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QFileDialog,
     QFrame,
+    QDialog,
+    QLineEdit,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -310,6 +312,166 @@ class _FleetWorldActionWorker(QObject):
             raise ValueError(f"Unsupported fleet world action: {self._action}")
         except Exception as exc:  # noqa: BLE001 - worker boundary must report every failure through its Qt signal.
             self.failed.emit(str(exc))
+
+
+class _WipeWorldConfirmDialog(QDialog):
+    """Bounded, case-sensitive confirmation gate for the irreversible world wipe."""
+
+    def __init__(self, world_name: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("WipeWorldConfirmDialog")
+        self.setWindowTitle("Confirm world wipe")
+        self.setModal(True)
+        self.setSizeGripEnabled(False)
+        if parent is not None:
+            available_width = max(420, parent.width() - 48)
+            dialog_width = min(560, available_width)
+        else:
+            dialog_width = 560
+        self.setFixedWidth(dialog_width)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("Permanently delete this world?")
+        title.setObjectName("WipeDialogTitle")
+        title.setStyleSheet(
+            f"font-size: 16px; font-weight: 700; color: {theme.TEXT};"
+        )
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        world_label = QLabel(f"World folder: {world_name}")
+        world_label.setObjectName("WipeWorldName")
+        world_label.setWordWrap(True)
+        world_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        world_label.setStyleSheet(f"color: {theme.SUBTEXT};")
+        layout.addWidget(world_label)
+
+        warning = QFrame()
+        warning.setObjectName("WipeWarningPanel")
+        warning.setStyleSheet(
+            f"QFrame#WipeWarningPanel {{ background-color: {theme.MANTLE}; "
+            f"border: 1px solid {theme.SURFACE1}; border-left: 3px solid {theme.RED}; "
+            "border-radius: 4px; }"
+            "QFrame#WipeWarningPanel QLabel { border: none; background: transparent; }"
+        )
+        warning_layout = QVBoxLayout(warning)
+        warning_layout.setContentsMargins(12, 10, 12, 10)
+        warning_layout.setSpacing(5)
+
+        warning_title = QLabel("A complete fleet backup is created first")
+        warning_title.setStyleSheet(
+            f"color: {theme.RED}; font-weight: 700; border: none;"
+        )
+        warning_title.setWordWrap(True)
+        warning_layout.addWidget(warning_title)
+
+        warning_body = QLabel(
+            "Crucible creates and verifies a complete fleet backup before deleting "
+            "the world folder, including every dimension and its saved data. "
+            "If backup creation or verification fails, the wipe does not start."
+        )
+        warning_body.setObjectName("WipeWarningBody")
+        warning_body.setWordWrap(True)
+        warning_body.setMinimumWidth(0)
+        warning_layout.addWidget(warning_body)
+        layout.addWidget(warning)
+
+        instruction = QLabel("Type exactly WIPE to enable permanent deletion:")
+        instruction.setObjectName("WipeConfirmationInstruction")
+        instruction.setWordWrap(True)
+        instruction.setStyleSheet(f"color: {theme.TEXT}; font-weight: 600;")
+        layout.addWidget(instruction)
+
+        self._confirmation_edit = QLineEdit()
+        self._confirmation_edit.setObjectName("WipeConfirmationInput")
+        self._confirmation_edit.setAccessibleName("Type WIPE to confirm world deletion")
+        self._confirmation_edit.setPlaceholderText("WIPE")
+        self._confirmation_edit.setClearButtonEnabled(True)
+        self._confirmation_edit.setStyleSheet(
+            f"QLineEdit#WipeConfirmationInput:focus {{ border: 2px solid {theme.ACCENT}; "
+            "padding: 4px 7px; }"
+        )
+        layout.addWidget(self._confirmation_edit)
+
+        self._validation_label = QLabel("Enter the exact uppercase text WIPE.")
+        self._validation_label.setObjectName("WipeConfirmationValidation")
+        self._validation_label.setStyleSheet(f"color: {theme.RED}; font-size: 11px;")
+        self._validation_label.setWordWrap(True)
+        self._validation_label.hide()
+        layout.addWidget(self._validation_label)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        self._cancel_button = QPushButton("Cancel")
+        self._cancel_button.setObjectName("WipeCancelButton")
+        self._cancel_button.setDefault(True)
+        self._cancel_button.setAutoDefault(True)
+        self._cancel_button.setStyleSheet(
+            f"QPushButton#WipeCancelButton:focus {{ border: 2px solid {theme.ACCENT}; "
+            "padding: 3px 11px; }"
+        )
+        self._cancel_button.clicked.connect(self.reject)
+        buttons.addWidget(self._cancel_button)
+
+        self._confirm_button = QPushButton("Permanently delete world")
+        self._confirm_button.setObjectName("DangerButton")
+        self._confirm_button.setEnabled(False)
+        self._confirm_button.setDefault(False)
+        self._confirm_button.setAutoDefault(False)
+        self._confirm_button.setStyleSheet(
+            f"QPushButton#DangerButton:focus {{ border: 2px solid {theme.ACCENT}; "
+            "padding: 3px 11px; }"
+        )
+        self._confirm_button.clicked.connect(self._try_accept)
+        buttons.addWidget(self._confirm_button)
+        layout.addLayout(buttons)
+
+        # Compute height after all wrapped labels and layouts are present. This
+        # ensures the warning body is not clipped at either dialog width.
+        self.adjustSize()
+
+        # Make the safe action the initial focus and define a stable keyboard route.
+        self.setTabOrder(self._cancel_button, self._confirmation_edit)
+        self.setTabOrder(self._confirmation_edit, self._confirm_button)
+        self.setTabOrder(self._confirm_button, self._cancel_button)
+        self._cancel_button.setFocus(Qt.FocusReason.OtherFocusReason)
+        self._confirmation_edit.textChanged.connect(self._on_confirmation_changed)
+        self._confirmation_edit.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:
+        if (
+            watched is self._confirmation_edit
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        ):
+            # Never let Return leak to QDialog's default Cancel button while the
+            # user is typing. Exact WIPE accepts; any other text stays in place.
+            self._try_accept()
+            return True
+        return super().eventFilter(watched, event)
+
+    @property
+    def confirmation_text(self) -> str:
+        return self._confirmation_edit.text()
+
+    def _on_confirmation_changed(self, value: str) -> None:
+        exact = value == "WIPE"
+        self._confirm_button.setEnabled(exact)
+        self._validation_label.setVisible(bool(value) and not exact)
+
+    def _try_accept(self) -> None:
+        if self._confirmation_edit.text() != "WIPE":
+            self._validation_label.show()
+            self._confirmation_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+            return
+        super().accept()
+
+    def accept(self) -> None:
+        # Guard every accept path, not only clicks on the destructive button.
+        self._try_accept()
 
 
 class WorldTab(QWidget):
@@ -1628,31 +1790,15 @@ class WorldTab(QWidget):
             QMessageBox.information(self, "Wipe World", "There is no world folder to wipe.")
             return
 
-        reply = QMessageBox.warning(
-            self,
-            "Back up and permanently wipe this world?",
-            f"Crucible will first create a complete fleet generation. Only after "
-            f"that generation is verified will it permanently delete '{world_root.name}'. "
-            "This cannot be undone from the live server folder; recovery requires "
-            "restoring the fleet generation to a separate location.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        confirmation = _WipeWorldConfirmDialog(world_root.name, self)
+        if confirmation.exec() != QDialog.DialogCode.Accepted:
             return
-        text, ok = QInputDialog.getText(
-            self, "Confirm permanent world deletion",
-            f"Type WIPE to confirm deleting '{world_root.name}':",
-        )
-        if not ok:
-            return
-        if text.strip().upper() != "WIPE":
-            QMessageBox.information(
-                self, "Wipe cancelled",
-                "Confirmation text did not match -- nothing was deleted.",
-            )
+        if confirmation.confirmation_text != "WIPE":
+            # Defence in depth at the destructive action boundary.
             return
 
+        # The existing worker creates and verifies the complete fleet snapshot
+        # before it removes the active world. Never bypass that path here.
         self._start_fleet_action("wipe")
 
     def _on_wipe_done(self, result: SwapResult) -> None:
