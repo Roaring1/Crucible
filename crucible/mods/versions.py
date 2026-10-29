@@ -127,7 +127,14 @@ def identify_files(server_path, paths):
         )
 
     for filename, meta in found.items():
-        record[filename] = {**record.get(filename, {}), **meta}
+        prior = record.get(filename, {})
+        merged = {**prior, **meta}
+        if prior.get('identity') != meta.get('identity') and meta.get('identity') == 'exact-sha1':
+            # Provider-specific data must not leak across a provider identity
+            # change: a Modrinth SHA-1 record is not a CurseForge fingerprint.
+            merged.pop('fingerprint', None)
+            merged.pop('filename', None)
+        record[filename] = merged
     if found:
         _write_record(record_path, record)
     return found
@@ -153,21 +160,28 @@ def verified_identity_for_file(server_path, filename, file_path):
         return None
 
     recorded_sha1 = meta.get('sha1', '')
-    if (isinstance(recorded_sha1, str) and len(recorded_sha1) == 40
-            and all(ch in '0123456789abcdefABCDEF' for ch in recorded_sha1)):
-        try:
-            return meta if mr._sha1(path).lower() == recorded_sha1.lower() else None
-        except OSError:
-            return None
+    valid_sha1 = (
+        isinstance(recorded_sha1, str) and len(recorded_sha1) == 40
+        and all(ch in '0123456789abcdefABCDEF' for ch in recorded_sha1)
+    )
 
-    # CurseForge API matches may not include SHA-1; in that case their exact
-    # normalized fingerprint is the provider's identity proof. Don't reuse a
-    # stray fingerprint field from a different identity type.
+    # A fingerprint-identified record must continue to prove that fingerprint;
+    # if the API also supplied SHA-1, require both provider hash fields to agree.
     recorded_fingerprint = meta.get('fingerprint')
     if meta.get('identity') == 'exact-curseforge-fingerprint' and isinstance(recorded_fingerprint, int):
         from . import curseforge as cf
         try:
-            return meta if cf.fingerprint_file(path) == recorded_fingerprint else None
+            if cf.fingerprint_file(path) != recorded_fingerprint:
+                return None
+            if valid_sha1 and mr._sha1(path).lower() != recorded_sha1.lower():
+                return None
+            return meta
+        except OSError:
+            return None
+
+    if valid_sha1:
+        try:
+            return meta if mr._sha1(path).lower() == recorded_sha1.lower() else None
         except OSError:
             return None
     return None

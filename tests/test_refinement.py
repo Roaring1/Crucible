@@ -595,6 +595,29 @@ def test_verified_identity_accepts_current_exact_hashes_and_curseforge_fingerpri
     assert v.verified_identity_for_file(tmp_path, 'old.jar', tmp_path/'mods'/'old.jar') is None
 
 
+def test_switching_provider_identity_does_not_keep_foreign_fingerprint_fields(tmp_path, monkeypatch):
+    server(tmp_path)
+    digest = hashlib.sha1(b'old').hexdigest()
+    record_path = tmp_path/'.crucible'/'added-mods.json'
+    record_path.parent.mkdir(exist_ok=True)
+    record_path.write_text(json.dumps({
+        'old.jar': {'project_id':'cf:321','version_id':'654','identity':'exact-curseforge-fingerprint',
+                    'fingerprint':1234,'sha1':''}
+    }))
+    version = {'project_id':'mr-project','id':'mr-version','version_number':'1',
+               'files':[{'hashes':{'sha1':digest}}]}
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kw: io.BytesIO(json.dumps({digest:version}).encode()))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: False)
+
+    found = v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+    saved = json.loads(record_path.read_text())['old.jar']
+
+    assert found['old.jar']['identity'] == 'exact-sha1'
+    assert saved['project_id'] == 'mr-project'
+    assert saved['sha1'] == digest
+    assert 'fingerprint' not in saved
+
+
 def test_identify_files_keeps_modrinth_available_without_curseforge_key(tmp_path, monkeypatch):
     server(tmp_path)
     digest = hashlib.sha1(b'old').hexdigest()

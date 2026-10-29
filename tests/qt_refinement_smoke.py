@@ -166,6 +166,32 @@ with patch.object(mod_versions,'identify_files',return_value=partial_matches), \
  assert not mods.has_active_operation(), 'identity worker should retire after delivering the warning'
 mods.close()
 
+# Change version's fallback path must surface the same partial-provider warning
+# across the actual worker signal, rather than silently using the surviving hit.
+mods=ModsTab();mods._instance=inst
+selected_mod=ModEntry('identified.jar',identified_path,True,10)
+with (
+ patch.object(mod_versions,'verified_identity_for_file',return_value=None),
+ patch.object(mod_versions,'identify_files',return_value=partial_matches),
+ patch.object(mod_versions,'list_versions',return_value=[]),
+ patch.object(ModsTab,'_require_stopped',return_value=True),
+ patch('PyQt6.QtWidgets.QMessageBox.warning') as change_warning,
+ patch('PyQt6.QtWidgets.QMessageBox.information') as no_release,
+):
+ mods._change_version(selected_mod)
+ deadline=time.monotonic()+4
+ while not change_warning.called and time.monotonic()<deadline:
+  QTest.qWait(10)
+ change_warning.assert_called_once()
+ assert change_warning.call_args.args[1]=='Partial online identity'
+ assert 'HTTP 403' in change_warning.call_args.args[2]
+ no_release.assert_called_once()
+ deadline=time.monotonic()+4
+ while mods.has_active_operation() and time.monotonic()<deadline:
+  QTest.qWait(10)
+ assert not mods.has_active_operation(), 'Change version identity worker should retire cleanly'
+mods.close()
+
 m=InstanceManager(root/'registry');m.load();(root/'server').mkdir(exist_ok=True)
 empty_manager=InstanceManager(root/'empty-registry');empty_manager.load()
 empty_panel=InstancePanel(empty_manager);empty_panel.resize(900,560);empty_panel.show();QTest.qWait(20)

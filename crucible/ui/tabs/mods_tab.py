@@ -576,13 +576,19 @@ class ModsTab(QWidget):
         def work():
             # A saved project/version record is usable only if the installed
             # JAR still matches its exact SHA-1 or CurseForge fingerprint.
+            warning = None
             meta = verified_identity_for_file(path, mod.filename, mod.path)
             if not meta:
-                meta = identify_files(path, [mod.path]).get(mod.filename)
+                matches = identify_files(path, [mod.path])
+                meta = matches.get(mod.filename)
+                warning = getattr(matches, "warning", None)
             if not meta:
-                return []
-            return list_versions(meta["project_id"], loader=loader, mc_version=mc)
-        def choose(options):
+                return [], warning
+            return list_versions(meta["project_id"], loader=loader, mc_version=mc), warning
+        def choose(outcome):
+            options, warning = outcome
+            if warning:
+                QMessageBox.warning(self, "Partial online identity", warning)
             if not options:
                 QMessageBox.information(self, "No compatible releases", "No exact online identity or compatible release was found. Custom builds are never replaced with a similarly named project. Use Add .jar for a manually obtained version.")
                 return
