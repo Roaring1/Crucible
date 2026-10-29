@@ -1,6 +1,6 @@
 # UI Design and Interaction Workstream
 
-**Status:** Evidence-only visual audit completed on pinned main snapshot; UI implementation not started while prerequisite PRs #34 and #35 remain open.  
+**Status:** High-priority keyboard-focus and Create Server DPI fixes implemented in [PR #37](https://github.com/Roaring1/Crucible/pull/37) from the pinned main baseline; broader UI work remains staged and the Add Mod/provider files remain off-limits while PRs #34 and #35 are active.  
 **Prepared:** 2026-10-29  
 **Initial reference commit:** `34ca28fd8f989fe3eb98b90c81012d141684f4c9`  
 **Workstream:** Chat 3 — whole-app UX, local SVG icons, loading skeletons, restrained transitions.
@@ -13,7 +13,7 @@ The provider-identity work in PR [#34](https://github.com/Roaring1/Crucible/pull
 
 - Do not edit `crucible/ui/add_mod_dialog.py`, `scripts/capture_ui_previews.py`, or their tests while PR #35 remains active.
 - Do not edit provider identity, download, or related behavior from PR #34.
-- Begin implementation against a fresh `main` only after both dependencies are integrated, recording the exact base commit. If either PR changes its scope, re-check changed filenames before proceeding.
+- Broader design work touching Add Mod/provider code remains gated on both dependencies integrating. The independent keyboard-focus/Create Server DPI fixes are implemented separately in [PR #37](https://github.com/Roaring1/Crucible/pull/37), based on exact main SHA `34ca28fd8f989fe3eb98b90c81012d141684f4c9`; the active PR changed-file sets were rechecked and do not overlap. If either dependency changes scope, re-check changed filenames before more UI work.
 - Keep visual changes in one focused branch/PR. Do not bump the release version. Keep all visual assets local; no AI-generated images, generated raster illustrations, or external runtime image requests for decoration.
 - Test with synthetic server instances, temporary registries, and fake APIs. Never modify real server/world data, read or print a live CurseForge secret, or include secrets in screenshots, fixtures, logs, or reports.
 
@@ -192,6 +192,45 @@ Evidence file examples (all below the audit root unless a path is shown explicit
 - The synthetic server's mods directory was deliberately absent in these fixtures (some startup/log messages note that); the review is not a claim about a fully installed server state.
 - The temporary scripts and screenshots are not part of PR #36. The document records findings and exact local evidence paths; it does not claim that visual or accessibility fixes have already been implemented.
 - The six standard preview captures do not include the Mod tab's Add Mod UI because that is covered by active PR #35. Do not modify the active Add Mod/provider files until those changes integrate.
+
+## Implementation evidence — keyboard focus and Create Server DPI (2026-10-29)
+
+### Implementation branch and scope
+
+The independent fixes are in [PR #37 — Improve keyboard focus and Create Server DPI sizing](https://github.com/Roaring1/Crucible/pull/37).
+
+- Branch: \`fix/ui-focus-dpi-20261029\`
+- Base: \`34ca28fd8f989fe3eb98b90c81012d141684f4c9\`
+- Implementation commit: \`eece818439b752ac274f87f16b421bdfc84c2d09\`
+- Modified paths are limited to \`crucible/ui/theme.py\`, \`crucible/ui/new_server_dialog.py\`, \`crucible/ui/instance_panel.py\`, \`crucible/ui/sidebar.py\`, and the new \`tests/test_ui_focus_dpi.py\`.
+- The current changed-file lists for PRs #34 and #35 were inspected before branching. No provider/download files, \`crucible/ui/add_mod_dialog.py\`, \`scripts/capture_ui_previews.py\`, or their tests were changed.
+- No release-version bump, deployment, SVG addition, AI-generated image, or runtime remote-image request was made.
+
+### Fix 1 — visible keyboard focus
+
+The shared Qt stylesheet now applies an explicit focus state independently of hover to buttons, tool buttons, combo boxes, line edits, multi-line text inputs, checkboxes/radio buttons, spinboxes, tab bars, list/tree/table views, selected list items, and selected menu items. Amber-filled primary actions use a dark ring so the indicator remains visible on the amber fill. The More-tabs corner button, sidebar context menu, Create Server advanced-options toggle, and EULA checkbox also have treatment for their local stylesheets, which otherwise override parts of the shared theme.
+
+The regression test renders and pixel-checks 12 shared control types plus the two dialog-local controls at Qt scale factors 1.0, 1.25, and 1.5. In all three final runs, no focus target failed its focus-color assertion. It also asserts the test disabled button remains disabled and the selected tab stays selected. Focused screenshots were opened and inspected, including the selected tab (with the focus check deliberately ignoring the pre-existing amber top stripe), list border, menu item, primary button, advanced toggle, and EULA row.
+
+### Fix 2 — Create Server fields at high DPI
+
+The Name, Server folder, and optional Loader version inputs now get a minimum height derived from their actual font metrics, existing vertical padding, focus-border width, and a small Qt layout/font-polish allowance. The font size is not reduced. The editable Minecraft version combo also gets a font-metric-derived minimum height.
+
+For each of Qt scale factors 1.0, 1.25, and 1.5, the final rendered run measured all three visible line edits at 33 logical pixels high for 18-pixel font metrics; the test's computed minimum was 32 logical pixels. Each field passed the fit assertion. The original baseline captures at 1.25 and 1.5 visibly clip the name/path text; the after captures show both values completely legible. The expanded advanced state selects NeoForge, making the optional Loader version field visible for the same check.
+
+### Test and screenshot evidence
+
+- Final full suite on the implementation commit: **610 passed, 74 subtests passed**.
+- Targeted focus/DPI test: **3 scale-factor cases passed**.
+- \`compileall\` on the four modified UI modules plus the new test passed; \`git diff --check\` passed.
+- Baseline screenshots opened: \`/tmp/crucible-ui-audit-20261029.bQJK3g/previews/create-server.png\`, \`previews-sf1.25/create-server.png\`, and \`previews-sf1.5/create-server.png\`.
+- Final screenshots opened: \`/tmp/crucible-ui-audit-20261029.bQJK3g/implementation-after/scale-1.0/create-server-after.png\`, equivalent \`scale-1.25/create-server-after.png\` and \`scale-1.5/create-server-after.png\`, the focused-name and advanced-state captures at all three scales, and focus contact sheets for each scale.
+- The full evidence root is \`/tmp/crucible-ui-audit-20261029.bQJK3g/implementation-after/\`. It contains scale-specific screenshots, \`measurements.json\` files, three Create Server scaling contact sheets, focus contact sheets, and \`SHA256SUMS-implementation.txt\` (39 selected evidence hashes at the final capture).
+- All evidence was generated using the pinned source worktree, offscreen Qt, temporary registries, and disabled version/network lookup. No live server/world/provider operation was performed.
+
+### Remaining validation limits
+
+This confirms focus-border visibility and line-edit sizing in the offscreen Qt renderer. It is not proof of identical behavior on every real desktop compositor/platform style, at other display scales, or with screen readers. Manual desktop focus/keyboard and assistive-technology verification remain before treating accessibility as complete. The SVG provenance/licensing inventory remains a plan in this workstream; this focused fix intentionally did not add icons or begin ghost UI/transitions.
 
 ## Implementation sequence after the integration gate
 
