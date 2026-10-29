@@ -46,6 +46,7 @@ def test_capture_ui_previews_writes_expected_pngs(tmp_path):
         "import-files.png",
         "install-modpack.png",
         "add-mod-icons-first-page.png",
+        "add-mod-icons-missing-detail.png",
         "add-mod-icons-later-page.png",
         "add-mod-icons-selected-detail.png",
     )
@@ -55,4 +56,6 @@ def test_capture_ui_previews_writes_expected_pngs(tmp_path):
         data = path.read_bytes()
         assert data.startswith(b"\x89PNG\r\n\x1a\n"), filename
         assert len(data) > 1_000, filename
+
     assert "Captured 20 UI previews" in result.stdout
+
