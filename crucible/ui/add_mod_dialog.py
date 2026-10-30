@@ -578,7 +578,14 @@ class AddModDialog(QDialog):
     def _open_page(self):
         row = self._results.currentRow()
         if 0 <= row < len(self._view):
-            QDesktopServices.openUrl(QUrl(self._view[row].page_url()))
+            url = self._view[row].page_url()
+            if not url:
+                QMessageBox.information(
+                    self, "Project page unavailable",
+                    "The provider did not return a valid project URL. No guessed URL was opened.",
+                )
+                return
+            QDesktopServices.openUrl(QUrl(url))
 
     # --- install ---
     def _do_install(self):

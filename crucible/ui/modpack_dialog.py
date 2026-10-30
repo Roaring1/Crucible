@@ -20,7 +20,7 @@ from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal, QSize, QUrl
 from PyQt6.QtGui import QPixmap, QIcon, QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QListWidget, QListWidgetItem, QFileDialog, QCheckBox,
+    QListWidget, QListWidgetItem, QFileDialog, QCheckBox, QMessageBox,
     QPlainTextEdit, QProgressBar,
 )
 
@@ -338,7 +338,14 @@ class ModpackDialog(QDialog):
     def _open_page(self):
         hit = self._selected_hit()
         if hit is not None:
-            QDesktopServices.openUrl(QUrl(hit.page_url()))
+            url = hit.page_url()
+            if not url:
+                QMessageBox.information(
+                    self, "Project page unavailable",
+                    "The provider did not return a valid project URL. No guessed URL was opened.",
+                )
+                return
+            QDesktopServices.openUrl(QUrl(url))
 
     # --- install ---
     def _choose_install_target(self, hit) -> str:
