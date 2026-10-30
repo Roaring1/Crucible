@@ -50,6 +50,160 @@ def get_api_key():
 def has_api_key():
     return bool(get_api_key())
 
+
+def _is_fingerprint_whitespace(byte):
+    return byte in (9, 10, 13, 32)
+
+
+def fingerprint_bytes(data: bytes) -> int:
+    """Compute CurseForge's file fingerprint (Murmur2 variant, seed 1).
+
+    CurseForge normalizes by removing TAB, LF, CR and ASCII space before
+    hashing. This is not SHA-1 and must only be used with its fingerprint API.
+    """
+    mask = 0xFFFFFFFF
+    multiplier = 1540483477
+    length = sum(not _is_fingerprint_whitespace(b) for b in data)
+    h = 1 ^ length
+    word = 0
+    shift = 0
+    for byte in data:
+        if _is_fingerprint_whitespace(byte):
+            continue
+        word |= byte << shift
+        shift += 8
+        if shift == 32:
+            mixed = (word * multiplier) & mask
+            mixed = (((mixed ^ (mixed >> 24)) * multiplier) & mask)
+            h = ((h * multiplier) ^ mixed) & mask
+            word = 0
+            shift = 0
+    if shift:
+        h = ((h ^ word) * multiplier) & mask
+    mixed = ((h ^ (h >> 13)) * multiplier) & mask
+    return (mixed ^ (mixed >> 15)) & mask
+
+
+def fingerprint_file(path, *, chunk_size=1024 * 1024) -> int:
+    """Fingerprint a file in two bounded-memory passes, including large JARs."""
+    path = Path(path)
+    normalized_length = 0
+    with path.open('rb') as source:
+        while True:
+            chunk = source.read(chunk_size)
+            if not chunk:
+                break
+            normalized_length += sum(not _is_fingerprint_whitespace(b) for b in chunk)
+    mask = 0xFFFFFFFF
+    multiplier = 1540483477
+    h = 1 ^ normalized_length
+    word = 0
+    shift = 0
+    with path.open('rb') as source:
+        while True:
+            chunk = source.read(chunk_size)
+            if not chunk:
+                break
+            for byte in chunk:
+                if _is_fingerprint_whitespace(byte):
+                    continue
+                word |= byte << shift
+                shift += 8
+                if shift == 32:
+                    mixed = (word * multiplier) & mask
+                    mixed = (((mixed ^ (mixed >> 24)) * multiplier) & mask)
+                    h = ((h * multiplier) ^ mixed) & mask
+                    word = 0
+                    shift = 0
+    if shift:
+        h = ((h ^ word) * multiplier) & mask
+    mixed = ((h ^ (h >> 13)) * multiplier) & mask
+    return (mixed ^ (mixed >> 15)) & mask
+
+
+
+class FingerprintMatches(dict):
+    """Unambiguous exact matches, plus fingerprints with conflicting file IDs."""
+
+    ambiguous_fingerprints = ()
+
+
+def identify_fingerprints(paths_by_fingerprint):
+    """Return exact CurseForge matches keyed by input fingerprint. No fuzzy hits."""
+    if not paths_by_fingerprint:
+        return {}
+    if not has_api_key():
+        return {}
+    from ..download_http import make_request, open_url, http_error_message
+    matches = FingerprintMatches()
+    candidates = {}
+    fingerprints = list(paths_by_fingerprint)
+    for offset in range(0, len(fingerprints), 100):
+        batch = fingerprints[offset:offset + 100]
+        body = json.dumps({'fingerprints': batch}).encode('utf-8')
+        request = make_request(_API + '/fingerprints/432', data=body, headers={
+            'Accept': 'application/json', 'Content-Type': 'application/json',
+            'User-Agent': mr._UA,
+        })
+        try:
+            with open_url(request, timeout=20) as response:
+                raw = response.read(mr._MAX_JSON_BYTES + 1)
+            if len(raw) > mr._MAX_JSON_BYTES:
+                raise mr.ModrinthError('CurseForge fingerprint response exceeded the size limit.')
+            envelope = json.loads(raw.decode('utf-8'))
+            payload = envelope.get('data') if isinstance(envelope, dict) else None
+            exact_matches = payload.get('exactMatches') if isinstance(payload, dict) else None
+            if not isinstance(exact_matches, list):
+                raise mr.ModrinthError('CurseForge fingerprint response had an unexpected format.')
+        except urllib.error.HTTPError as exc:
+            raise mr.ModrinthError(http_error_message(exc.code, curseforge=True)) from exc
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise mr.ModrinthError('Could not identify files through CurseForge. Modrinth matches may still be available.') from exc
+        requested = set(batch)
+        for item in exact_matches:
+            if not isinstance(item, dict) or not isinstance(item.get('file'), dict):
+                raise mr.ModrinthError('CurseForge fingerprint response contained a malformed exact match.')
+            try:
+                fingerprint = int(item['id'])
+                file_data = item['file']
+                file_fingerprint = int(file_data['fileFingerprint'])
+                project_id = int(file_data['modId'])
+                file_id = int(file_data['id'])
+                hashes = file_data.get('hashes', [])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise mr.ModrinthError('CurseForge fingerprint response contained invalid exact-match IDs or fingerprints.') from exc
+            if not isinstance(hashes, list) or any(not isinstance(h, dict) for h in hashes):
+                raise mr.ModrinthError('CurseForge fingerprint response contained malformed hash metadata.')
+            # Require both the exact-match bucket and the matched file's own
+            # fingerprint to agree with the submitted local fingerprint.
+            if fingerprint not in requested or file_fingerprint != fingerprint:
+                continue
+            if fingerprint < 0 or project_id <= 0 or file_id <= 0:
+                continue
+            sha1 = next((h.get('value', '') for h in hashes
+                         if h.get('algo') == 1 and isinstance(h.get('value'), str)), '')
+            if sha1 and (len(sha1) != 40 or any(ch not in '0123456789abcdefABCDEF' for ch in sha1)):
+                raise mr.ModrinthError('CurseForge fingerprint response contained an invalid SHA-1 hash.')
+            candidate = {
+                'project_id': f'cf:{project_id}', 'version_id': str(file_id),
+                'version': file_data.get('displayName', ''),
+                'filename': file_data.get('fileName', ''),
+                'fingerprint': fingerprint, 'identity': 'exact-curseforge-fingerprint',
+                'sha1': sha1,
+            }
+            # A fingerprint can be reported for more than one project/file.
+            # Never let response ordering choose an identity arbitrarily.
+            candidates.setdefault(fingerprint, {})[(project_id, file_id)] = candidate
+    ambiguous = []
+    for fingerprint, exact_candidates in candidates.items():
+        if len(exact_candidates) == 1:
+            matches[fingerprint] = next(iter(exact_candidates.values()))
+        else:
+            ambiguous.append(fingerprint)
+    matches.ambiguous_fingerprints = tuple(sorted(ambiguous))
+    return matches
+
+
 def _get(route):
     key = get_api_key()
     if not key:
@@ -71,11 +225,77 @@ def search(query='', *, loader='', mc_version='', limit=30, offset=0):
     args = {'gameId':432, 'classId':6, 'searchFilter':query, 'pageSize':min(50,limit), 'index':offset, 'sortField':2, 'sortOrder':'desc'}
     if loader in _LOADERS: args['modLoaderType'] = _LOADERS[loader]
     if mc_version: args['gameVersion'] = mc_version
-    return [mr.ModHit(project_id=f"cf:{m['id']}", slug=m.get('slug',''), title=m.get('name','?'), description=m.get('summary',''), downloads=int(m.get('downloadCount',0)), icon_url=(m.get('logo') or {}).get('thumbnailUrl',''), author=', '.join(a.get('name','') for a in m.get('authors',[]))) for m in _get('/mods/search?' + urllib.parse.urlencode(args))]
+    results = _get('/mods/search?' + urllib.parse.urlencode(args))
+    if not isinstance(results, list):
+        raise mr.ModrinthError('CurseForge returned an unexpected search-result format.')
+    hits=[]
+    for item in results:
+        if not isinstance(item, dict):
+            raise mr.ModrinthError('CurseForge returned malformed search metadata.')
+        try:
+            project_id = int(item['id'])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise mr.ModrinthError('CurseForge returned a project without a valid numeric ID.') from exc
+        if project_id <= 0:
+            raise mr.ModrinthError('CurseForge returned an invalid project ID.')
+        logo = item.get('logo') or {}
+        authors = item.get('authors', []) or []
+        if not isinstance(logo, dict) or not isinstance(authors, list) or any(not isinstance(a, dict) for a in authors):
+            raise mr.ModrinthError('CurseForge returned malformed project metadata.')
+        hits.append(mr.ModHit(
+            project_id=f'cf:{project_id}', slug=item.get('slug',''),
+            title=item.get('name','?'), description=item.get('summary',''),
+            downloads=int(item.get('downloadCount',0) or 0),
+            icon_url=logo.get('thumbnailUrl',''),
+            author=', '.join(a.get('name','') for a in authors),
+        ))
+    return hits
 
 def _file(pid, data):
-    sha1 = next((h['value'] for h in data.get('hashes',[]) if h.get('algo') == 1), '')
-    return mr.ModFile(project_id=f'cf:{pid}', title=data.get('displayName',''), version_id=str(data['id']), version_number=data.get('displayName',''), filename=data['fileName'], url=data.get('downloadUrl') or '', sha1=sha1, size=int(data.get('fileLength',0)), dependencies=[f"cf:{d['modId']}" for d in data.get('dependencies',[]) if d.get('relationType') == 3])
+    """Convert one official file record without guessing missing identity fields."""
+    if not isinstance(data, dict):
+        raise mr.ModrinthError('CurseForge returned malformed file metadata.')
+    try:
+        file_id = int(data['id'])
+        filename = data['fileName']
+        size = int(data.get('fileLength', 0) or 0)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise mr.ModrinthError('CurseForge file metadata is missing a valid file ID, name or size.') from exc
+    if file_id <= 0 or not isinstance(filename, str) or Path(filename).name != filename or '\\' in filename or not filename.endswith('.jar'):
+        raise mr.ModrinthError('CurseForge returned an unsafe or non-JAR filename; no release was selected.')
+    reported_project = data.get('modId')
+    if reported_project is not None and str(reported_project) != str(pid):
+        raise mr.ModrinthError('CurseForge file metadata belongs to a different project ID.')
+    if size < 0:
+        raise mr.ModrinthError('CurseForge returned an invalid file size.')
+    hashes = data.get('hashes', [])
+    if not isinstance(hashes, list) or any(not isinstance(h, dict) for h in hashes):
+        raise mr.ModrinthError('CurseForge returned malformed file hash metadata.')
+    sha1 = next((h.get('value', '') for h in hashes if h.get('algo') == 1 and isinstance(h.get('value'), str)), '')
+    if sha1 and (len(sha1) != 40 or any(ch not in '0123456789abcdefABCDEF' for ch in sha1)):
+        raise mr.ModrinthError('CurseForge returned an invalid SHA-1 hash.')
+    raw_dependencies = data.get('dependencies', [])
+    if not isinstance(raw_dependencies, list):
+        raise mr.ModrinthError('CurseForge returned malformed dependency metadata.')
+    dependencies = []
+    for dependency in raw_dependencies:
+        if not isinstance(dependency, dict):
+            raise mr.ModrinthError('CurseForge returned malformed dependency metadata.')
+        if dependency.get('relationType') != 3:
+            continue
+        try:
+            dependency_id = int(dependency['modId'])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise mr.ModrinthError('CurseForge returned a required dependency without a project ID.') from exc
+        if dependency_id <= 0:
+            raise mr.ModrinthError('CurseForge returned an invalid required dependency project ID.')
+        dependencies.append(f'cf:{dependency_id}')
+    return mr.ModFile(
+        project_id=f'cf:{pid}', title=data.get('displayName', ''),
+        version_id=str(file_id), version_number=data.get('displayName', ''),
+        filename=filename, url=data.get('downloadUrl') or '', sha1=sha1,
+        size=size, dependencies=dependencies,
+    )
 
 def list_versions(project_id, *, loader, mc_version):
     if not mc_version or loader not in _LOADERS:
@@ -86,9 +306,45 @@ def list_versions(project_id, *, loader, mc_version):
     for offset in range(0, 1000, 50):
         args=urllib.parse.urlencode({'gameVersion':mc_version,'modLoaderType':_LOADERS[loader],'pageSize':50,'index':offset})
         page=_get(f'/mods/{pid}/files?{args}')
-        files.extend(_file(pid,v) for v in page if v.get('isAvailable',True))
+        if not isinstance(page, list):
+            raise mr.ModrinthError('CurseForge returned an unexpected release-list format.')
+        # The API filters by loader, while this local guard verifies the
+        # requested Minecraft version before a file can be offered. Missing
+        # compatibility metadata is not proof of compatibility.
+        for data in page:
+            if not isinstance(data, dict):
+                raise mr.ModrinthError('CurseForge returned malformed release metadata.')
+            available = data.get('isAvailable')
+            if not isinstance(available, bool):
+                raise mr.ModrinthError('CurseForge omitted or malformed file-availability metadata; refusing to guess availability.')
+            if not available:
+                continue
+            game_versions = data.get('gameVersions', [])
+            if not isinstance(game_versions, list):
+                raise mr.ModrinthError('CurseForge returned malformed compatibility metadata.')
+            if mc_version not in game_versions:
+                continue
+            file_info = _file(pid, data)
+            # The safe installer needs a verifiable checksum. Do not offer an
+            # unverifiable release as though it can be safely replaced.
+            if file_info.sha1:
+                files.append(file_info)
         if len(page)<50: break
     return files
+
+def project_url(project_id):
+    """Resolve an identified CurseForge project ID to its official page URL."""
+    pid = str(project_id).removeprefix('cf:')
+    if not pid.isdigit():
+        raise mr.ModrinthError('Invalid CurseForge project ID; cannot open its source page.')
+    details = _get(f'/mods/{pid}')
+    if not isinstance(details, dict) or str(details.get('id', '')) != pid:
+        raise mr.ModrinthError('CurseForge project response did not match the requested project ID.')
+    slug = details.get('slug', '')
+    if not isinstance(slug, str) or not slug.strip() or slug.strip() in ('.', '..') or any(ord(ch) < 32 for ch in slug):
+        raise mr.ModrinthError('CurseForge did not provide a usable project slug. The exact file identity remains recorded.')
+    return 'https://www.curseforge.com/minecraft/mc-mods/' + urllib.parse.quote(slug.strip(), safe='')
+
 
 def resolve_with_deps(project_id, *, loader, mc_version, _seen=None):
     seen = set() if _seen is None else _seen

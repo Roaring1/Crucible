@@ -40,7 +40,7 @@ def _validate_url(url: str):
         raise DownloadRequestError('API keys in download URLs are not allowed; use the private key setting.')
 
 
-def make_request(url: str, *, headers=None) -> urllib.request.Request:
+def make_request(url: str, *, headers=None, data=None) -> urllib.request.Request:
     _validate_url(url)
     safe_headers = {k: v for k, v in (headers or {}).items() if k.lower() != 'x-api-key'}
     if is_curseforge_url(url):
@@ -49,7 +49,7 @@ def make_request(url: str, *, headers=None) -> urllib.request.Request:
         if not key:
             raise DownloadRequestError('CurseForge requires an approved API key for browsing and downloads. Configure your own key, or download on the website and use Add .jar / import an installed Prism instance.')
         safe_headers['x-api-key'] = key
-    return urllib.request.Request(url, headers=safe_headers)
+    return urllib.request.Request(url, data=data, headers=safe_headers)
 
 
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):

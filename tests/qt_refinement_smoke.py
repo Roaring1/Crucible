@@ -1,4 +1,5 @@
 """Real PyQt interaction checks, isolated from legacy tests' optional-module stubs."""
+import hashlib
 import json
 import tempfile
 import time
@@ -93,7 +94,152 @@ with patch.object(_SearchWorker,'run',unexpected_search):
  QTest.qWait(40)
 assert search_started==[], f'closed Add Mod dialog unexpectedly launched a search: {search_started}'
 
-m=InstanceManager(root/'registry');m.load();(root/'server').mkdir()
+# Add Mod must never turn a missing CurseForge slug into a guessed numeric URL.
+from crucible.mods.modrinth import ModHit
+with patch.object(AddModDialog,'_do_search',lambda *args,**kw:None):
+ browser=AddModDialog(inst)
+ browser._view=[ModHit('cf:123','','Example','',0)]
+ browser._results.addItem('Example')
+ browser._results.setCurrentRow(0)
+ with (
+  patch('PyQt6.QtWidgets.QMessageBox.information') as missing_slug,
+  patch('PyQt6.QtGui.QDesktopServices.openUrl') as guessed_open,
+ ):
+  browser._open_page()
+ missing_slug.assert_called_once()
+ assert missing_slug.call_args.args[1]=='Project page unavailable'
+ guessed_open.assert_not_called()
+ browser.reject()
+
+# The selected provider must route search to its own adapter, not silently
+# fall back to Modrinth. These calls use fixtures and never access the network.
+from crucible.mods import curseforge, modrinth
+with patch.object(curseforge, 'search', return_value=[]) as cf_search, \
+     patch.object(modrinth, 'search', return_value=[]) as mr_search:
+ worker=_SearchWorker('example','forge','1.20.1',provider='CurseForge')
+ worker.run()
+ cf_search.assert_called_once_with('example',loader='forge',mc_version='1.20.1',limit=30,offset=0)
+ assert not mr_search.called
+with patch.object(curseforge, 'search', return_value=[]) as cf_search, \
+     patch.object(modrinth, 'search', return_value=[]) as mr_search:
+ worker=_SearchWorker('example','forge','1.20.1',provider='Modrinth')
+ worker.run()
+ mr_search.assert_called_once_with('example',loader='forge',mc_version='1.20.1',limit=30,offset=0)
+ assert not cf_search.called
+
+# An identified CurseForge JAR opens its actual project page, resolving the
+# official slug asynchronously instead of opening a guessed Modrinth search.
+(root/'server').mkdir(exist_ok=True)
+(root/'server'/'.crucible').mkdir(exist_ok=True)
+(root/'server'/'mods').mkdir(exist_ok=True)
+identified_path=root/'server'/'mods'/'identified.jar'
+identified_bytes=b'identified test JAR bytes'
+identified_path.write_bytes(identified_bytes)
+(root/'server'/'.crucible'/'added-mods.json').write_text(json.dumps({
+ 'identified.jar': {'project_id':'cf:123','version_id':'456','sha1':hashlib.sha1(identified_bytes).hexdigest()}
+}))
+mods=ModsTab();mods._instance=inst
+identified=ModEntry('identified.jar',identified_path,True,10)
+with patch.object(ModsTab,'_run_net',lambda self,fn,on_done,busy:on_done(fn())), \
+     patch.object(curseforge,'project_url',return_value='https://www.curseforge.com/minecraft/mc-mods/example-mod') as project_url, \
+     patch('PyQt6.QtGui.QDesktopServices.openUrl') as open_url:
+ mods._open_mod_page(identified)
+ project_url.assert_called_once_with('cf:123')
+ assert open_url.call_count==1 and open_url.call_args.args[0].toString()=='https://www.curseforge.com/minecraft/mc-mods/example-mod'
+# Replacing the file manually must invalidate the saved project link; never
+# send the user to the old project's page based only on the stale filename.
+identified_path.write_bytes(b'manually replaced test bytes')
+with patch.object(curseforge,'project_url') as stale_project_url, \
+     patch('PyQt6.QtGui.QDesktopServices.openUrl') as stale_open_url:
+ mods._open_mod_page(identified)
+stale_project_url.assert_not_called()
+assert stale_open_url.call_count==1
+assert 'curseforge.com' not in stale_open_url.call_args.args[0].toString()
+mods.close()
+
+# Exact Modrinth hits survive a CurseForge auth failure, and the real Qt
+# completion callback communicates that the result is partial rather than full.
+from crucible.mods import versions as mod_versions
+partial_matches=mod_versions.IdentityMatches()
+partial_matches['identified.jar']={'project_id':'mr-project','identity':'exact-sha1'}
+partial_matches.warning='CurseForge could not be checked; only exact Modrinth matches are shown. HTTP 403.'
+mods=ModsTab();mods._instance=inst
+with patch.object(mod_versions,'identify_files',return_value=partial_matches), \
+     patch.object(ModsTab,'refresh'), \
+     patch('PyQt6.QtWidgets.QMessageBox.warning') as partial_warning, \
+     patch('PyQt6.QtWidgets.QMessageBox.information') as full_info:
+ mods._identify_online()
+ deadline=time.monotonic()+4
+ while not partial_warning.called and time.monotonic()<deadline:
+  QTest.qWait(10)
+ partial_warning.assert_called_once()
+ assert partial_warning.call_args.args[1]=='Partial online identity'
+ assert 'HTTP 403' in partial_warning.call_args.args[2]
+ assert not full_info.called
+ deadline=time.monotonic()+4
+ while mods.has_active_operation() and time.monotonic()<deadline:
+  QTest.qWait(10)
+ assert not mods.has_active_operation(), 'identity worker should retire after delivering the warning'
+mods.close()
+
+# Change version's fallback path must surface the same partial-provider warning
+# across the actual worker signal, rather than silently using the surviving hit.
+mods=ModsTab();mods._instance=inst
+selected_mod=ModEntry('identified.jar',identified_path,True,10)
+with (
+ patch.object(mod_versions,'verified_identity_for_file',return_value=None),
+ patch.object(mod_versions,'identify_files',return_value=partial_matches),
+ patch.object(mod_versions,'list_versions',return_value=[]),
+ patch.object(ModsTab,'_require_stopped',return_value=True),
+ patch('PyQt6.QtWidgets.QMessageBox.warning') as change_warning,
+ patch('PyQt6.QtWidgets.QMessageBox.information') as no_release,
+):
+ mods._change_version(selected_mod)
+ deadline=time.monotonic()+4
+ while not change_warning.called and time.monotonic()<deadline:
+  QTest.qWait(10)
+ change_warning.assert_called_once()
+ assert change_warning.call_args.args[1]=='Partial online identity'
+ assert 'HTTP 403' in change_warning.call_args.args[2]
+ no_release.assert_called_once()
+ deadline=time.monotonic()+4
+ while mods.has_active_operation() and time.monotonic()<deadline:
+  QTest.qWait(10)
+ assert not mods.has_active_operation(), 'Change version identity worker should retire cleanly'
+mods.close()
+
+# Dependency verification must report actual installation outcomes, and direct
+# installs with missing checksums are refused without changing existing mods.
+from crucible.mods.modrinth import ModFile, InstallResult
+mods=ModsTab();mods._instance=inst
+candidate=ModFile('mr-dependency','Dependency','v1','1.0','dependency.jar',
+                  'https://cdn.modrinth.com/dependency.jar','',4)
+with (
+ patch.object(ModsTab,'_require_stopped',return_value=True),
+ patch.object(modrinth,'verify_dependencies',return_value=([candidate],[])),
+ patch.object(modrinth,'install_files',return_value=InstallResult(failed=[
+     'dependency.jar (no valid SHA-1; download was not installed)'
+ ])),
+ patch.object(ModsTab,'_update_count'),
+ patch.object(ModsTab,'refresh'),
+ patch('PyQt6.QtWidgets.QMessageBox.information') as dep_result,
+):
+ mods._verify_deps()
+ deadline=time.monotonic()+4
+ while not dep_result.called and time.monotonic()<deadline:
+  QTest.qWait(10)
+ dep_result.assert_called_once()
+ dep_message=dep_result.call_args.args[2]
+ assert 'Found 1 missing dependency(ies) to install' in dep_message
+ assert '1 failed' in dep_message
+ assert 'Installed 1 missing dependency(ies)' not in dep_message
+ deadline=time.monotonic()+4
+ while mods.has_active_operation() and time.monotonic()<deadline:
+  QTest.qWait(10)
+ assert not mods.has_active_operation(), 'dependency verifier worker should retire cleanly'
+mods.close()
+
+m=InstanceManager(root/'registry');m.load();(root/'server').mkdir(exist_ok=True)
 empty_manager=InstanceManager(root/'empty-registry');empty_manager.load()
 empty_panel=InstancePanel(empty_manager);empty_panel.resize(900,560);empty_panel.show();QTest.qWait(20)
 assert empty_panel._empty_title.text()=='No servers yet'

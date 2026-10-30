@@ -111,10 +111,9 @@ class ModsTab(QWidget):
         platform_btn.clicked.connect(self._edit_platform)
         toolbar.addWidget(platform_btn)
 
-        # One-click "find and install a mod" (searches Modrinth automatically).
+        # One-click "find and install a mod" using the selected online provider.
         addmod_btn = QPushButton("✨ Add a mod")
-        addmod_btn.setToolTip("Search Modrinth and install a mod (with its "
-                              "dependencies) automatically.")
+        addmod_btn.setToolTip("Search the selected provider (Modrinth or CurseForge) and install a compatible mod with required dependencies.")
         addmod_btn.clicked.connect(self._open_add_mod)
         toolbar.addWidget(addmod_btn)
         layout.addLayout(toolbar)
@@ -124,7 +123,7 @@ class ModsTab(QWidget):
         version_btn.clicked.connect(self._change_selected_version)
         toolbar.addWidget(version_btn)
         identify_btn = QPushButton("Identify online")
-        identify_btn.setToolTip("Match installed JARs by exact file hash. Unmatched custom builds stay unlinked.")
+        identify_btn.setToolTip("Match installed JARs by exact Modrinth SHA-1 and, when configured, CurseForge fingerprints. No fuzzy matches.")
         identify_btn.clicked.connect(self._identify_online)
         toolbar.addWidget(identify_btn)
 
@@ -467,7 +466,7 @@ class ModsTab(QWidget):
             menu.addAction("Verify dependencies").triggered.connect(
                 lambda: self._verify_deps())
             menu.addSeparator()
-        menu.addAction("Open on Modrinth").triggered.connect(
+        menu.addAction("Open project page").triggered.connect(
             lambda: self._open_mod_page(mod))
         if not is_bundled:
             menu.addSeparator()
@@ -559,26 +558,37 @@ class ModsTab(QWidget):
         paths = [m.path for m in self._mods if not m.bundled]
         path = inst.path
         def done(found):
-            QMessageBox.information(self, "Online identity", f"{len(found)} exact file match(es). Custom builds without an exact match remain unlinked; name similarity is not proof of identity.")
+            warning = getattr(found, "warning", None)
+            message = f"{len(found)} exact file match(es). Custom builds without an exact match remain unlinked; name similarity is not proof of identity."
+            if warning:
+                QMessageBox.warning(self, "Partial online identity", message + "\n\n" + warning)
+            else:
+                QMessageBox.information(self, "Online identity", message)
             self.refresh()
         self._run_net(lambda: identify_files(path, paths), done, busy="Matching file hashes…")
 
     def _change_version(self, mod):
         if not self._require_stopped():
             return
-        from ...mods import modrinth
-        from ...mods.versions import identify_files, list_versions, resolve_selected, replace_files
+        from ...mods.versions import identify_files, list_versions, resolve_selected, replace_files, verified_identity_for_file
         inst = self._instance
         path, loader, mc = inst.path, inst.loader, inst.minecraft_version
         def work():
-            record = modrinth.added_mods(path)
-            meta = record.get(mod.filename) or record.get(mod.filename.removesuffix(".disabled"))
+            # A saved project/version record is usable only if the installed
+            # JAR still matches its exact SHA-1 or CurseForge fingerprint.
+            warning = None
+            meta = verified_identity_for_file(path, mod.filename, mod.path)
             if not meta:
-                meta = identify_files(path, [mod.path]).get(mod.filename)
+                matches = identify_files(path, [mod.path])
+                meta = matches.get(mod.filename)
+                warning = getattr(matches, "warning", None)
             if not meta:
-                return []
-            return list_versions(meta["project_id"], loader=loader, mc_version=mc)
-        def choose(options):
+                return [], warning
+            return list_versions(meta["project_id"], loader=loader, mc_version=mc), warning
+        def choose(outcome):
+            options, warning = outcome
+            if warning:
+                QMessageBox.warning(self, "Partial online identity", warning)
             if not options:
                 QMessageBox.information(self, "No compatible releases", "No exact online identity or compatible release was found. Custom builds are never replaced with a similarly named project. Use Add .jar for a manually obtained version.")
                 return
@@ -619,7 +629,7 @@ class ModsTab(QWidget):
         if self._net_thread is not None and self._net_thread.isRunning():
             QMessageBox.information(
                 self, "Please wait",
-                "Another Modrinth action is still running. Try again in a moment.")
+                "Another online mod action is still running. Try again in a moment.")
             return
         self._count_label.setText(busy)
         self._net_thread = QThread()
@@ -644,7 +654,7 @@ class ModsTab(QWidget):
     def _on_net_error(self, msg: str) -> None:
         self._update_count()
         QMessageBox.warning(
-            self, "Modrinth",
+            self, "Online mod services",
             f"Could not complete the request:\n{msg}\n\n"
             "Check your internet connection and try again.")
 
@@ -676,7 +686,7 @@ class ModsTab(QWidget):
                 lines.append("No missing dependencies were found among linked mods. Unlinked/custom mods are not verified.")
             else:
                 lines.append(
-                    f"Installed {len(missing)} missing dependency(ies):")
+                    f"Found {len(missing)} missing dependency(ies) to install:")
                 lines.extend(f"  • {m.filename}" for m in missing)
                 if installed is not None:
                     lines.append("")
@@ -696,10 +706,29 @@ class ModsTab(QWidget):
         from PyQt6.QtGui import QDesktopServices
         from PyQt6.QtCore import QUrl
         from urllib.parse import quote
-        url = getattr(mod, "url", "") or ""
-        if not url:
-            term = getattr(mod, "name", "") or mod.filename
-            url = "https://modrinth.com/mods?q=" + quote(term)
+        from ...mods.versions import verified_identity_for_file
+
+        inst = getattr(self, "_instance", None)
+        meta = verified_identity_for_file(inst.path, mod.filename, mod.path) if inst else None
+        meta = meta or {}
+        project_id = str(meta.get("project_id", ""))
+        if project_id.startswith("cf:"):
+            # Resolve the official slug on a worker; don't invent a CurseForge
+            # page URL from a numeric project ID or block the Qt UI on HTTP.
+            from ...mods import curseforge
+            self._run_net(
+                lambda: curseforge.project_url(project_id),
+                lambda url: QDesktopServices.openUrl(QUrl(url)),
+                busy="Resolving CurseForge project page…",
+            )
+            return
+        if project_id:
+            url = "https://modrinth.com/mod/" + quote(project_id, safe="")
+        else:
+            url = getattr(mod, "url", "") or ""
+            if not url:
+                term = getattr(mod, "name", "") or mod.filename
+                url = "https://modrinth.com/mods?q=" + quote(term)
         QDesktopServices.openUrl(QUrl(url))
 
     # Add from file / drag-drop
@@ -797,7 +826,8 @@ class ModsTab(QWidget):
                 item.setText(mod.name)
             from ...mods.modrinth import added_mods
             meta = added_mods(self._instance.path).get(mod.filename, {})
-            identity = "Exact online match" if meta.get("project_id") else "Not linked online · use Identify online"
+            identity = ("Recorded online identity · verified before use" if meta.get("project_id")
+                        else "Not linked online · use Identify online")
             item.setToolTip(f"{mod.filename}\n{mod.description}\n{identity}")
             version = self._table.item(current, self._COL_VERSION)
             if version and mod.version:
