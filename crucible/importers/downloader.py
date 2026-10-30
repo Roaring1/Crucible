@@ -432,7 +432,7 @@ def download_pack_mods(
         log("Pack index contained no downloadable files.")
         return result
 
-    opener = _opener()
+    opener = None
     total = len(items)
     log(f"Found {total} file(s) in {index_path.name}.")
 
@@ -446,6 +446,13 @@ def download_pack_mods(
         if item.source == "modrinth-client":
             result.skipped_client.append(item.name)
             log(f" - {item.name}: client-only, skipped")
+            if progress_cb:
+                progress_cb(i, total)
+            continue
+
+        if item.error:
+            result.failed.append((item.name, item.error))
+            log(f" ✗ {item.name}: {item.error}")
             if progress_cb:
                 progress_cb(i, total)
             continue
@@ -465,6 +472,8 @@ def download_pack_mods(
             continue
 
         try:
+            if opener is None:
+                opener = _opener()
             log(f" ↓ {item.name} …")
             _download_one(item, dest, opener, timeout, log, cancel)
             result.downloaded.append(item.name)
