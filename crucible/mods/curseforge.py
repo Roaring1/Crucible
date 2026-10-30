@@ -14,6 +14,21 @@ _session_key = ''
 _DEFAULT_KEY_FILE = Path.home() / '.config/crucible/curseforge-api-key'
 _LOADERS = {'forge': 1, 'fabric': 4, 'quilt': 5, 'neoforge': 6}
 
+# Conservative release fallback: keep the adapter available for future review,
+# but do not use the CurseForge API/CDN until written app-specific authorization
+# and data-retention guidance have been reviewed and accepted.
+_CURSEFORGE_ONLINE_ENABLED = False
+_DISABLED_MESSAGE = "CurseForge online support is temporarily disabled while Crucible's API authorization and data-retention requirements remain unresolved. Use Modrinth, or obtain a permitted JAR independently and add it with Add .jar. Existing local mods and records are not changed."
+
+
+def online_integration_enabled() -> bool:
+    return _CURSEFORGE_ONLINE_ENABLED
+
+
+def ensure_online_integration_enabled() -> None:
+    if not online_integration_enabled():
+        raise mr.ModrinthError(_DISABLED_MESSAGE)
+
 def set_api_key(key: str):
     global _session_key
     _session_key = key.strip()
@@ -48,9 +63,11 @@ def get_api_key():
 
 
 def has_api_key():
-    return bool(get_api_key())
+    # Do not inspect a locally configured key while online support is disabled.
+    return online_integration_enabled() and bool(get_api_key())
 
 def _get(route):
+    ensure_online_integration_enabled()
     key = get_api_key()
     if not key:
         raise mr.ModrinthError('CurseForge needs your own approved API key. Use the API key button (session only), place it in ~/.config/crucible/curseforge-api-key (chmod 600), set CURSEFORGE_API_KEY before launching, or download a JAR from curseforge.com and use Add .jar. Restricted downloads are never bypassed.')
@@ -78,6 +95,7 @@ def _file(pid, data):
     return mr.ModFile(project_id=f'cf:{pid}', title=data.get('displayName',''), version_id=str(data['id']), version_number=data.get('displayName',''), filename=data['fileName'], url=data.get('downloadUrl') or '', sha1=sha1, size=int(data.get('fileLength',0)), dependencies=[f"cf:{d['modId']}" for d in data.get('dependencies',[]) if d.get('relationType') == 3])
 
 def list_versions(project_id, *, loader, mc_version):
+    ensure_online_integration_enabled()
     if not mc_version or loader not in _LOADERS:
         raise mr.ModrinthError('Set the Minecraft version and a supported mod loader in Setup first.')
     pid = project_id.removeprefix('cf:')

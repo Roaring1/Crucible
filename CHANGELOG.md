@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Prepare a conservative CurseForge fallback: hide online CurseForge browsing/key controls and block its API, CDN, media/icon, saved-identity lookup and stale resolved-file install paths until written app-specific authorization and retention guidance are reviewed. Keep Modrinth and local/manual JAR workflows available; preserve existing installed files and local records.
+
 - Fix the Add Mod dialog startup race: deferred initial search is now owned by the dialog and cannot launch a background request after early close. The Qt smoke regression verifies that close-before-startup launches no worker.
 - Isolate Qt smoke tests from the developer's real CurseForge key and live CurseForge API so ordinary tests are deterministic and never consume personal credentials.
 

@@ -184,17 +184,11 @@ class AddModDialog(QDialog):
 
         row = QHBoxLayout()
         self._provider = QComboBox()
-        self._provider.addItems(["Modrinth", "CurseForge"])
+        self._provider.addItems(["Modrinth"])
         self._provider.setAccessibleName("Mod provider")
         self._provider.setMinimumWidth(110)
         self._provider.currentTextChanged.connect(lambda *_: self._do_search())
         row.addWidget(self._provider)
-        key_btn = QPushButton("API key…")
-        self._key_btn = key_btn
-        key_btn.hide()
-        key_btn.setToolTip("CurseForge API key · kept in memory for this session only")
-        key_btn.clicked.connect(self._set_curseforge_key)
-        row.addWidget(key_btn)
         self._search = QLineEdit()
         self._search.setPlaceholderText(
             "Search mods by name — or just browse the popular ones below…")
@@ -336,17 +330,8 @@ class AddModDialog(QDialog):
         thread.start()
         return worker
 
-    def _set_curseforge_key(self):
-        from ..mods import curseforge
-        key, ok = QInputDialog.getText(self, "CurseForge API key", "Your own approved API key (session only):", QLineEdit.EchoMode.Password)
-        if ok:
-            curseforge.set_api_key(key)
-            if self._provider.currentText() == "CurseForge":
-                self._do_search()
-
     # --- search ---
     def _do_search(self, initial: bool = False):
-        self._key_btn.setVisible(self._provider.currentText() == "CurseForge")
         self._view = []
         self._results.clear()
         self._install_btn.setEnabled(False)

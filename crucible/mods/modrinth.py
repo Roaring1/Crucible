@@ -229,6 +229,10 @@ def fetch_bytes(url: str, timeout: float = 15.0) -> bytes:
     """Fetch raw bytes (used for mod icons). Raises ModrinthError on failure."""
     if not url:
         raise ModrinthError("No URL.")
+    from ..download_http import is_curseforge_url
+    if is_curseforge_url(url):
+        from . import curseforge
+        curseforge.ensure_online_integration_enabled()
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
