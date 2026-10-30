@@ -55,7 +55,8 @@ def _mod_file(v):
 
 def list_versions(project_id, *, loader, mc_version):
     if project_id.startswith('cf:'):
-        from .curseforge import list_versions as cf_versions
+        from .curseforge import ensure_online_integration_enabled, list_versions as cf_versions
+        ensure_online_integration_enabled()
         return cf_versions(project_id,loader=loader,mc_version=mc_version)
     if not loader or not mc_version or loader=='vanilla':
         raise mr.ModrinthError('Set this server’s Minecraft version and mod loader in Setup before choosing a mod version.')
@@ -66,6 +67,9 @@ def list_versions(project_id, *, loader, mc_version):
 
 
 def resolve_selected(main, *, loader, mc_version, _seen=None):
+    if main.project_id.startswith('cf:'):
+        from .curseforge import ensure_online_integration_enabled
+        ensure_online_integration_enabled()
     seen={} if _seen is None else _seen
     if main.project_id in seen:
         if seen[main.project_id] != main.version_id:
@@ -100,6 +104,9 @@ def replace_files(server_path, old_filename, files, *, before_commit=None):
     Roll back published files and the identity record on ordinary I/O failures.
     An interrupted operation leaves its history directory for manual recovery.
     """
+    if any(str(getattr(item, "project_id", "")).startswith("cf:") for item in files):
+        from .curseforge import ensure_online_integration_enabled
+        ensure_online_integration_enabled()
     server=Path(server_path)
     mods=server/'mods'
     if not files: raise mr.ModrinthError('No replacement files were selected.')
