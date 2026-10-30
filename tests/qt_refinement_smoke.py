@@ -88,8 +88,8 @@ def unexpected_search(worker):
  worker.done.emit(worker._offset, [])
 with patch.object(_SearchWorker,'run',unexpected_search):
  with patch.object(AddModDialog,'_do_search',lambda *args,**kw:None):
-  browser=AddModDialog(inst);assert browser._provider.count()==2
-  browser._provider.setCurrentText('CurseForge');assert browser._provider.currentText()=='CurseForge';browser.reject()
+  browser=AddModDialog(inst);assert browser._provider.count()==1
+  assert browser._provider.currentText()=='Modrinth';browser.reject()
  QTest.qWait(40)
 assert search_started==[], f'closed Add Mod dialog unexpectedly launched a search: {search_started}'
 
