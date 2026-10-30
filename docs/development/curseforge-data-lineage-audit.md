@@ -187,3 +187,21 @@ Crucible maintainers
 - Resume only after (a) Overwolf/CurseForge provides written answers/approval covering the actual app/key arrangement and the disputed data fields, or (b) the product owner explicitly chooses and implements a no-persistence redesign, and any remaining ambiguous operational uses are clarified in writing.
 - After that decision, implement targeted changes and new synthetic tests for absence of prohibited persistence across normal install, skipped-identical-file, Identify online, update/rollback, temporary staging cleanup and operation-history recovery. Repeat broader tests only after code changes or when integration with another PR gives a specific reason.
 - Do not store or share API credentials, collect credential-bearing screenshots, scrape the website, bypass author restrictions, or use another application's key.
+
+### Conservative release fallback candidate — PR #45 (2026-10-29)
+
+A separate draft PR, [#45 — Disable CurseForge online support pending authorization](https://github.com/Roaring1/Crucible/pull/45), has been prepared from unchanged `main` commit `34ca28fd8f989fe3eb98b90c81012d141684f4c9`. Its head is `a66a10479f23808be72ebb465826144d09bafb05`; it remains open and draft. It is **not merged** and does not alter `main`, deployed releases, user server data or the PR #34 branch.
+
+The candidate fallback:
+- Removes the CurseForge choice and API-key prompt from the Add Mod dialog, leaving Modrinth.
+- Uses a default-off provider gate before reading the local key or making CurseForge API requests.
+- Blocks CurseForge API/CDN downloads and recognized CurseForge media/icon fetches.
+- Blocks provider-backed lookups using pre-existing `cf:` identities and refuses to install already-resolved CurseForge release objects through the shared replacement path.
+- Blocks Prism/CurseForge pack-manifest remote file resolution; the user-supplied manifest can still be read locally and its CurseForge entries are reported unavailable without key access or API/CDN calls.
+- Preserves Modrinth version lookup and manual local JAR addition. Existing installed JARs, `.crucible/added-mods.json`, history receipts, copied source manifests and the configured key file are **not deleted, rewritten or migrated** by this fallback.
+
+Validation on the current draft head: GitHub Actions run [#184](https://github.com/Roaring1/Crucible/actions/runs/40985883789) passed on Python 3.11 and 3.13 with **603 passed, 74 subtests passed**. The first hosted iterations exposed uncovered pack-import resolution and opener initialization on all-error input; both were corrected before the green #184 run. No live API calls, key reads, mod downloads, server/world changes or credential-bearing fixtures were part of this work.
+
+PR #45 also edits the provider-selection/key-control area of `crucible/ui/add_mod_dialog.py`, which overlaps the file changed by PR #35's independent icon lifecycle work. Those hunks are separate but will require conflict-aware sequencing/reconciliation and a combined Qt/full test run before integration. A coordination comment is recorded on PR #35.
+
+This is an engineering release fallback, not a legal conclusion about whether old installed artifacts or historical metadata comply with the terms. It does not clean up previously persisted metadata. The owner should keep PR #45 draft until normal review/integration decisions are made; do not merge automatically. It is a conservative release option if the owner chooses not to enable the CurseForge integration while answers are pending.
