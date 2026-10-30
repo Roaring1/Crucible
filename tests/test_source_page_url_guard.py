@@ -35,6 +35,10 @@ def test_curseforge_url_requires_valid_numeric_id_and_provider_slug():
     assert ModHit("cf:123", "unsafe slug/fragment", "Example", "", 0).page_url() == (
         "https://www.curseforge.com/minecraft/mc-mods/unsafe%20slug%2Ffragment"
     )
+    assert ModHit("cf:123", "Café", "Example", "", 0).page_url() == (
+        "https://www.curseforge.com/minecraft/mc-mods/Caf%C3%A9"
+    )
+    assert ModHit("cf:１２３", "example-mod", "Example", "", 0).page_url() == ""
 
 
 def test_invalid_or_missing_project_ids_fail_closed():
@@ -57,6 +61,9 @@ def test_modrinth_url_uses_encoded_slug_or_safe_id_fallback():
     )
     assert ModHit("example-id", "unsafe slug/fragment", "Example", "", 0).page_url() == (
         "https://modrinth.com/mod/unsafe%20slug%2Ffragment"
+    )
+    assert ModHit("example-id", "Café", "Example", "", 0).page_url() == (
+        "https://modrinth.com/mod/Caf%C3%A9"
     )
     assert ModHit("example-id", "bad\nslug", "Example", "", 0).page_url() == ""
     assert ModHit("example-id", "..", "Example", "", 0).page_url() == ""
@@ -87,9 +94,11 @@ def test_empty_page_url_is_reported_and_never_opened(qapp, kind):
     dialog._results.blockSignals(True)  # isolate _open_page from selection-slot behavior
     dialog._results.addItem("Example")
     dialog._results.setCurrentRow(0)
+    button = dialog._d_link if kind == "mod" else dialog._open_btn
+    button.setEnabled(True)
     with patch("PyQt6.QtWidgets.QMessageBox.information") as info, \
          patch("PyQt6.QtGui.QDesktopServices.openUrl") as open_url:
-        dialog._open_page()
+        button.click()  # exercise the real Qt clicked -> _open_page connection
     info.assert_called_once()
     assert info.call_args.args[1] == "Project page unavailable"
     assert "No guessed URL was opened." in info.call_args.args[2]
@@ -113,9 +122,11 @@ def test_valid_page_url_is_opened_verbatim(qapp, kind):
     dialog._results.blockSignals(True)  # isolate _open_page from selection-slot behavior
     dialog._results.addItem("Example")
     dialog._results.setCurrentRow(0)
+    button = dialog._d_link if kind == "mod" else dialog._open_btn
+    button.setEnabled(True)
     with patch("PyQt6.QtWidgets.QMessageBox.information") as info, \
          patch("PyQt6.QtGui.QDesktopServices.openUrl") as open_url:
-        dialog._open_page()
+        button.click()  # exercise the real Qt clicked -> _open_page connection
     info.assert_not_called()
     open_url.assert_called_once()
     assert open_url.call_args.args[0].toString() == expected
