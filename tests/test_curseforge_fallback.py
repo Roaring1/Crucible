@@ -95,8 +95,11 @@ def test_manual_local_jar_import_remains_available(tmp_path):
     server = tmp_path / "server"
     server.mkdir()
     source = tmp_path / "manual.jar"
-    source.write_bytes(b"owner-selected local jar")
+    import zipfile
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("fabric.mod.json", "{}")
+    expected = source.read_bytes()
     manager = ModManager(SimpleNamespace(path=str(server)))
     added = manager.add_from_file(source)
     assert added.path.is_file()
-    assert added.path.read_bytes() == b"owner-selected local jar"
+    assert added.path.read_bytes() == expected
