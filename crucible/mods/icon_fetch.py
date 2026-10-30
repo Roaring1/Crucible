@@ -23,17 +23,29 @@ _DEFAULT_TIMEOUT = 8.0
 _MAX_ICON_TIMEOUT = 8.0
 _READ_CHUNK_BYTES = 64 * 1024
 
+# CurseForge media/icon authorization and retention terms remain unresolved.
+# Keep this path disabled in code (not just hidden in the UI) until approved.
+# Modrinth icon previews remain independently enabled.
 _PROVIDER_HOSTS = {
     "modrinth": frozenset({"cdn.modrinth.com"}),
-    "curseforge": frozenset({"media.forgecdn.net"}),
 }
+_DISABLED_PROVIDERS = frozenset({"curseforge"})
 
 
 class IconFetchError(RuntimeError):
     """An icon URL or response could not be fetched safely."""
 
 
+def icon_provider_enabled(provider: str) -> bool:
+    """Whether remote icon fetching is currently approved for this provider."""
+    return isinstance(provider, str) and provider.lower() in _PROVIDER_HOSTS
+
+
 def _allowed_hosts(provider: str) -> frozenset[str]:
+    if isinstance(provider, str) and provider.lower() in _DISABLED_PROVIDERS:
+        raise IconFetchError(
+            "CurseForge icon previews are disabled pending provider authorization."
+        )
     try:
         return _PROVIDER_HOSTS[provider.lower()]
     except (AttributeError, KeyError) as exc:

@@ -89,7 +89,6 @@ def test_icon_worker_accepts_later_page_while_top_icon_is_in_flight(monkeypatch)
 
     assert worker.add_jobs([
         ("later-project", "https://cdn.modrinth.com/later"),
-        ("cf:curse-project", "https://media.forgecdn.net/curse"),
     ])
     release.set()
     assert done.wait(4), "icon queue did not drain"
@@ -97,12 +96,21 @@ def test_icon_worker_accepts_later_page_while_top_icon_is_in_flight(monkeypatch)
 
     assert not thread.is_alive()
     assert failed == []
-    assert [pid for pid, _data in emitted] == [
-        "top-project", "later-project", "cf:curse-project"
-    ]
-    assert [provider for _url, provider in fetched] == [
-        "modrinth", "modrinth", "curseforge"
-    ]
+    assert [pid for pid, _data in emitted] == ["top-project", "later-project"]
+    assert [provider for _url, provider in fetched] == ["modrinth", "modrinth"]
+
+
+def test_curseforge_icon_fetch_is_disabled_before_network(monkeypatch):
+    def unexpected_network(*_args, **_kwargs):
+        pytest.fail("disabled CurseForge icon request reached the network opener")
+
+    monkeypatch.setattr(icon_fetch.urllib.request, "build_opener", unexpected_network)
+    assert icon_fetch.icon_provider_enabled("modrinth")
+    assert not icon_fetch.icon_provider_enabled("curseforge")
+    with pytest.raises(icon_fetch.IconFetchError, match="disabled pending provider authorization"):
+        icon_fetch.fetch_icon_bytes(
+            "https://media.forgecdn.net/file/icon.png", provider="curseforge"
+        )
 
 
 def test_icon_worker_discards_obsolete_queued_jobs_but_accepts_new_search(monkeypatch):
