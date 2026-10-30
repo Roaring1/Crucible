@@ -45,7 +45,11 @@ def make_request(url: str, *, headers=None) -> urllib.request.Request:
     safe_headers = {k: v for k, v in (headers or {}).items() if k.lower() != 'x-api-key'}
     if is_curseforge_url(url):
         from .mods.curseforge import ensure_online_integration_enabled, get_api_key
-        ensure_online_integration_enabled()
+        from .mods.modrinth import ModrinthError
+        try:
+            ensure_online_integration_enabled()
+        except ModrinthError as exc:
+            raise DownloadRequestError(str(exc)) from exc
         key = get_api_key()
         if not key:
             raise DownloadRequestError('CurseForge requires an approved API key for browsing and downloads. Configure your own key, or download on the website and use Add .jar / import an installed Prism instance.')
