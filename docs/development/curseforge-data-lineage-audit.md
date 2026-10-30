@@ -88,7 +88,43 @@ These are product choices, not claims about what the terms permit.
 
 **Decision rule:** choose A if the owner wants to preserve current functionality and seek permission. Choose B only after the provider clarifies the disputed operational uses and artifact retention; B is an engineering design, not a contractual safe harbor. Choose C for the release in the meantime. The product owner decides which path to pursue; CurseForge/Overwolf decides the approval, permitted key arrangement, data-retention interpretation and artifact permissions.
 
-## 4. Written support/application request (ready to submit — **not submitted**)
+
+## 4. Contact status — clarification email sent 2026-10-29
+
+**Status source:** The maintainer reported that the email below was sent. This repository record does not independently prove delivery or receipt, and no reply has been recorded here as of this update.
+
+- **To:** `developers@overwolf.com`
+- **Subject:** `Crucible — existing CurseForge API key and usage authorization`
+- **Channel:** Direct email; no API key was included.
+- **Purpose:** Confirm whether the existing key/account has an approved third-party application; clarify retention of response metadata, local digests, user-supplied Prism IDs and installed/staged/rollback JARs; and ask whether the multi-source Modrinth + CurseForge server manager is permitted under the competition restriction.
+- **Official API application status:** **Unverified by the records available here.** The desktop “CurseForge API Key” field is configured and the key succeeded in earlier read-only local probes, but neither fact establishes whether the official application form was submitted or whether Crucible received approval. Do not state that the form was submitted or not submitted without checking the maintainer's application/account records. Do not submit a duplicate application merely because this status is unclear.
+- **Current decision:** Keep PR #34 open/unmerged and keep the current persistent CurseForge path out of release/distribution while awaiting written clarification. Independent Modrinth/local-JAR work may continue. No provider-code or test change is implied by this contact update.
+
+### Copy of the message reported sent
+
+> Hello Overwolf Developer Support,
+>
+> I'm the maintainer of Crucible, an open-source Linux desktop application for managing users' own Minecraft Java servers.
+>
+> Project: https://github.com/Roaring1/Crucible
+>
+> Crucible has a desktop setting labelled “CurseForge API Key”, and we have successfully used a key for local testing. I want to confirm that our application's use is properly authorized. I do not currently have an application reference available, and I don't want to assume that a working key alone confirms approval.
+>
+> Could you please clarify three things?
+>
+> 1. **Existing key and approval:** Can you help confirm whether the relevant developer/account has an approved third-party API application for Crucible? If a separate application or approval step is still required, please tell me exactly which one.
+> 2. **Data retention:** Crucible currently retains some CurseForge project/file IDs, version information and checksums in local management or history records. What may we retain under the API's no-save/no-cache restriction? In particular, how does it apply to locally calculated SHA-1 fingerprints, user-provided Prism manifest IDs, and JAR files that users explicitly choose to install, including normal rollback copies?
+> 3. **Multi-source design:** Crucible supports CurseForge alongside Modrinth and local JARs. Is this type of multi-source server-management application permitted under the API terms' restriction concerning competing products or services?
+>
+> The integration is documented in the public repository. We want to ensure our use is authorized and understand what changes are required before proceeding further.
+>
+> I have not included the API key in this message, but can provide non-secret application or account details if needed.
+>
+> Thank you for your help,
+>
+> Crucible maintainer
+
+## 5. Historical long-form support/application draft (not sent; superseded by Section 4)
 
 **Subject:** API application and written terms clarification for Crucible desktop Minecraft server manager
 
@@ -122,7 +158,7 @@ Crucible maintainers
 
 **Submission route:** [CurseForge API application form](https://forms.monday.com/forms/dce5ccb7afda9a1c21dab1a1aa1d84eb?r=use1) · [CurseForge Support ticket](https://support.curseforge.com/support/tickets/new)
 
-## 5. Release gates
+## 6. Release gates
 
 
 - Keep PR #34 open and **do not merge/release/deploy the current persistent CurseForge integration** pending resolution.
