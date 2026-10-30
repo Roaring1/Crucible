@@ -130,23 +130,14 @@ def test_symlinked_mods_refused(tmp_path):
     with pytest.raises(mr.ModrinthError,match='symlink'):v.replace_files(tmp_path,'old.jar',[mf()])
 
 
-def test_curseforge_requires_explicit_key(monkeypatch,tmp_path):
-    monkeypatch.delenv('CURSEFORGE_API_KEY',raising=False);monkeypatch.delenv('CURSEFORGE_API_KEY_FILE',raising=False);monkeypatch.setattr(cf,'_session_key','');monkeypatch.setattr(cf,'_DEFAULT_KEY_FILE',tmp_path/'missing')
-    with pytest.raises(mr.ModrinthError,match='API key'):cf.search('sodium')
-
-
-def test_curseforge_search_preserves_provider_identity(monkeypatch):
-    routes=[]
-    monkeypatch.setattr(cf,'_get',lambda route: routes.append(route) or [{'id':123,'name':'Example','slug':'example','downloadCount':99}])
-    result=cf.search('example',loader='neoforge',mc_version='1.21.1')
-    assert result[0].project_id=='cf:123'
-    assert result[0].page_url()=='https://www.curseforge.com/minecraft/mc-mods/example'
-    assert 'modLoaderType=6' in routes[0] and 'gameVersion=1.21.1' in routes[0]
-
-
-def test_curseforge_version_keeps_missing_download_url(monkeypatch):
-    monkeypatch.setattr(cf,'_get',lambda _: [{'id':7,'fileName':'a.jar','downloadUrl':None,'hashes':[{'algo':1,'value':'a'*40}]}])
-    assert cf.list_versions('cf:123',loader='forge',mc_version='1.20.1')[0].url==''
+def test_curseforge_search_and_version_lookup_are_disabled_before_key_read(monkeypatch):
+    from crucible import download_http as http
+    monkeypatch.setattr(cf, 'get_api_key', lambda: pytest.fail('disabled provider read the configured key'))
+    monkeypatch.setattr(http, 'open_url', lambda *a, **kw: pytest.fail('disabled provider reached the network'))
+    with pytest.raises(mr.ModrinthError, match='temporarily disabled'):
+        cf.search('sodium')
+    with pytest.raises(mr.ModrinthError, match='temporarily disabled'):
+        cf.list_versions('cf:123', loader='forge', mc_version='1.20.1')
 
 
 def test_versions_include_downgrades_and_filter_locally(monkeypatch):
