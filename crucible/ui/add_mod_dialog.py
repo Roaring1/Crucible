@@ -655,6 +655,13 @@ class AddModDialog(QDialog):
         jobs = []
         for hit in hits:
             pid, url = hit.project_id, hit.icon_url
+            provider = "curseforge" if pid.startswith("cf:") else "modrinth"
+            if not icon_fetch.icon_provider_enabled(provider):
+                self._set_icon_state(pid, "disabled")
+                self._update_item_icon(pid)
+                if pid == self._sel_pid:
+                    self._set_detail_icon_state(pid)
+                continue
             if pid in self._pixmaps:
                 self._set_icon_state(pid, "loaded")
                 self._pixmaps.move_to_end(pid)
@@ -665,7 +672,7 @@ class AddModDialog(QDialog):
                 self._update_item_icon(pid)
                 continue
             state = self._icon_states.get(pid)
-            if state in {"missing", "failed"}:
+            if state in {"missing", "failed", "disabled"}:
                 continue
             if state == "loading" and not priority:
                 continue
@@ -785,7 +792,12 @@ class AddModDialog(QDialog):
 
     def _placeholder_icon(self, state):
         """Return a small locally painted placeholder, never a remote asset."""
-        kind = "failed" if state == "failed" else "missing" if state == "missing" else "loading"
+        if state in {"failed", "disabled"}:
+            kind = "failed"
+        elif state == "missing":
+            kind = "missing"
+        else:
+            kind = "loading"
         cached = self._placeholder_icons.get(kind)
         if cached is not None:
             return cached
@@ -828,6 +840,7 @@ class AddModDialog(QDialog):
             "idle": "Loading icon…",
             "missing": "No icon provided",
             "failed": "Icon unavailable",
+            "disabled": "Icon preview disabled pending authorization",
         }
         message = descriptions.get(state, "No icon provided")
         self._d_icon.setText("")

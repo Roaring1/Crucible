@@ -35,6 +35,25 @@ def _png_bytes():
     return data
 
 
+def test_curseforge_icon_is_not_queued_and_detail_explains_disabled_state(monkeypatch, qapp):
+    def unexpected_fetch(*_args, **_kwargs):
+        pytest.fail("disabled CurseForge icon should never be queued")
+
+    monkeypatch.setattr(icon_fetch, "fetch_icon_bytes", unexpected_fetch)
+    dialog = AddModDialog(SimpleNamespace(loader="fabric", minecraft_version="1.21.1"))
+    dialog._initial_search_timer.stop()
+    dialog._sel_pid = "cf:123"
+    hit = SimpleNamespace(
+        project_id="cf:123",
+        icon_url="https://media.forgecdn.net/file/icon.png",
+    )
+    dialog._start_icons([hit])
+    assert dialog._icon_states["cf:123"] == "disabled"
+    assert dialog._icon_worker is None
+    assert dialog._d_icon_status.text() == "Icon preview disabled pending authorization"
+    dialog.reject()
+
+
 def test_pagination_keeps_top_icon_worker_and_binds_icons_to_project_rows(monkeypatch, qapp):
     entered = threading.Event()
     release = threading.Event()
