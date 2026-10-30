@@ -98,6 +98,27 @@ These are product choices, not claims about what the terms permit.
 - **Channel:** Direct email; no API key was included.
 - **Purpose:** Confirm whether the existing key/account has an approved third-party application; clarify retention of response metadata, local digests, user-supplied Prism IDs and installed/staged/rollback JARs; and ask whether the multi-source Modrinth + CurseForge server manager is permitted under the competition restriction.
 - **Official API application status:** **Unverified by the records available here.** The desktop “CurseForge API Key” field is configured and the key succeeded in earlier read-only local probes, but neither fact establishes whether the official application form was submitted or whether Crucible received approval. Do not state that the form was submitted or not submitted without checking the maintainer's application/account records. Do not submit a duplicate application merely because this status is unclear.
+
+### Verification check — 2026-10-29 (no new external response evidence)
+
+This review did **not** find an actual Overwolf/CurseForge reply or official application-status evidence in the connected sources available to this conversation:
+
+- No Gmail, Outlook, iCloud Mail, or Hostinger Mail inbox was connected. The available plugin discovery results showed those mail integrations were not installed/connected, so the sent mailbox, spam folder, and replies cannot be inspected here.
+- Conversation/Library search for the exact recipient, the project authorization email, an Overwolf reply, and an application reference surfaced the earlier Crucible handoff and this project's records, but no provider reply, form-submission receipt, application reference, or approval notice.
+- This absence of discoverable evidence is **not** evidence that no reply exists, that the form was not submitted, or that the application was rejected. Inbox and account status remain unknown.
+
+The official public [API application guidance](https://support.curseforge.com/support/solutions/articles/9000208346-about-the-curseforge-api-and-how-to-apply-for-a-key) says a third-party developer submits an application; Overwolf reviews it; upon review and approval, a unique key is generated and the developer is contacted by email. The page was modified 2024-12-03 when checked on 2026-10-29. The published [3rd Party API Terms](https://support.curseforge.com/support/solutions/articles/9000207405-curseforge-3rd-party-api-terms-and-conditions), modified 2024-08-14, state that each Developer is issued a unique non-transferable key and prohibit saving/caching API/SDK data and using API materials to build a competing service. They provide no public per-field interpretation for the retention questions in this audit.
+
+Keep these evidence categories separate:
+
+| Evidence category | Verified status | What it does and does not establish |
+|---|---|---|
+| Clarification email sent | **Maintainer-reported sent on 2026-10-29** to `developers@overwolf.com`; exact recipient, subject and message are recorded above. | Establishes the maintainer's report of sending; delivery, receipt and reply are not independently verified here. |
+| Official API application submitted | **Unknown / not evidenced in available records.** | The email is not the application form. No submission confirmation or application reference was found. |
+| Official application approved | **Unverified.** | No approval notice, approved app record, or written Crucible-specific authorization was available. |
+| API key authentication | **Earlier read-only probes succeeded on 2026-10-29** for the specific endpoints/CDN request described in `CURSEFORGE.md`. | Shows that the configured key authenticated those particular requests at that time; does not prove who issued it, what application/account it belongs to, that Crucible is approved, or that the use/retention model is permitted. No additional authenticated request was made in this review. |
+
+**No new external answers were received or verified for any of the substantive questions.** Key authorization, permitted API-derived metadata retention, image/media/icon URLs and bytes, in-memory thumbnail/pixmap retention, downloaded JARs, destination filenames, staging files, rollback/history copies, and multi-source/competition treatment all remain unanswered by a Crucible-specific written response. The public terms establish the broad restrictions above but do not define these implementation-specific boundaries.
 - **Current decision:** Keep PR #34 open/unmerged and keep the current persistent CurseForge path out of release/distribution while awaiting written clarification. Independent Modrinth/local-JAR work may continue. No provider-code or test change is implied by this contact update.
 
 ### Copy of the message reported sent
