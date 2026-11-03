@@ -665,7 +665,14 @@ def _world_name_issue(root: Path) -> str | None:
 
 
 def _world_names(instance) -> list:
-    """level-name plus its sibling dimension folders, if they exist and are safe."""
+    """Return every safe top-level world save, with the configured world first.
+
+    The configured level-name and its conventional Bukkit sibling dimensions
+    retain their historical ordering. Forge/GTNH commonly stores multiple
+    independent world saves directly beside server.properties, however, so
+    any other direct child with its own level.dat is owner data too. Preserve
+    those separately rather than silently dropping them on a pack update.
+    """
     root = Path(getattr(instance, "path", "") or ".")
     if _world_name_issue(root):
         return []
@@ -673,7 +680,31 @@ def _world_names(instance) -> list:
     if level is None:
         return []
     names = [level, f"{level}_nether", f"{level}_the_end"]
-    return [n for n in names if (root / n).is_dir() and not (root / n).is_symlink()]
+    selected = [
+        name for name in names
+        if (root / name).is_dir() and not (root / name).is_symlink()
+    ]
+    selected_set = set(selected)
+    try:
+        children = sorted(root.iterdir(), key=lambda path: path.name.casefold())
+    except OSError:
+        return selected
+    for child in children:
+        if child.name in selected_set or not _safe_world_component(child.name):
+            continue
+        # Do not follow links or treat config/mod/plugin directories as worlds.
+        if child.is_symlink() or not child.is_dir():
+            continue
+        level_dat = child / "level.dat"
+        if level_dat.is_symlink():
+            continue
+        try:
+            if level_dat.is_file():
+                selected.append(child.name)
+                selected_set.add(child.name)
+        except OSError:
+            continue
+    return selected
 
 
 def pack_baseline(server_path: str | Path) -> set:
@@ -837,6 +868,11 @@ def plan_update(
     else:
         worlds = _world_names(instance)
     plan.preserve = list(worlds)
+    if len(worlds) > 1:
+        plan.warnings.append(
+            "Multiple world saves will be preserved independently: "
+            + ", ".join(worlds)
+        )
     for d in PRESERVE_DIRS:
         if (root / d).is_dir():
             plan.preserve.append(d)

@@ -303,6 +303,44 @@ class WorldNameTests(TempDirCase):
         (d / "world").mkdir(parents=True)
         self.assertEqual(_world_names(FakeInstance(path=str(d))), ["world"])
 
+    def test_preserves_multiple_named_world_saves_independently(self):
+        d = self.tmp / "multi-world"
+        d.mkdir()
+        for name in (
+            "jojo world", "evil world", "World", "pre-swap snapshot",
+            "config", "mods", "journeymap",
+        ):
+            (d / name).mkdir()
+        for name in ("jojo world", "evil world", "World", "pre-swap snapshot"):
+            (d / name / "level.dat").write_bytes(b"nbt")
+        # A directory without level.dat is not treated as a world save.
+        (d / "server.properties").write_text(
+            "level-name=jojo world\n", encoding="utf-8"
+        )
+        self.assertEqual(
+            _world_names(FakeInstance(path=str(d))),
+            ["jojo world", "evil world", "pre-swap snapshot", "World"],
+        )
+
+    def test_multiple_world_scan_skips_symlinks_and_unsafe_names(self):
+        d = self.tmp / "multi-world-links"
+        d.mkdir()
+        (d / "primary").mkdir()
+        (d / "primary" / "level.dat").write_bytes(b"nbt")
+        outside = self.tmp / "outside-world"
+        outside.mkdir()
+        (outside / "level.dat").write_bytes(b"outside")
+        try:
+            (d / "linked world").symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"directory symlink unavailable on this host: {exc}")
+        (d / "bad:name").mkdir()
+        (d / "bad:name" / "level.dat").write_bytes(b"unsafe")
+        (d / "server.properties").write_text(
+            "level-name=primary\n", encoding="utf-8"
+        )
+        self.assertEqual(_world_names(FakeInstance(path=str(d))), ["primary"])
+
     def test_duplicate_level_name_uses_last_property_value(self):
         d = self.tmp / "duplicate"
         d.mkdir()
