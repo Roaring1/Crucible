@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
  QMenu,
  QMessageBox,
  QPushButton,
+ QScrollArea,
  QStatusBar,
 )
 
@@ -43,7 +44,11 @@ def focusable_in_tab_order(root_widget):
  seen=set();ordered=[];widget=root_widget
  while widget not in seen and len(ordered)<200:
   seen.add(widget)
-  if widget.isVisible() and widget.isEnabled() and widget.focusPolicy()!=Qt.FocusPolicy.NoFocus:
+  if (
+   widget.isVisible()
+   and widget.isEnabled()
+   and widget.focusPolicy() & Qt.FocusPolicy.TabFocus
+  ):
    ordered.append(widget)
   widget=widget.nextInFocusChain()
  return ordered
@@ -227,14 +232,52 @@ assert destination_picker.called and registered_dialog._destination_parent==cust
 assert registered_dialog._destination_label.text()==str(custom_parent)
 registered_dialog.reject();registered_dialog.deleteLater();QTest.qWait(10)
 add=AddInstanceDialog(m);add.resize(700,560);add.show();QTest.qWait(20)
+source_scroll=add.findChild(QScrollArea)
+assert source_scroll is not None
+assert source_scroll.accessibleName()=='Add server source options'
+assert source_scroll.focusPolicy()==Qt.FocusPolicy.NoFocus
+assert add._import_folder_btn.accessibleName()=='Import Prism instance'
+assert add._import_archive_btn.accessibleName()=='Import modpack archive'
+assert add._destination_label.accessibleName()=='Import destination parent folder'
+assert add._path_edit.accessibleName()=='Existing server folder'
+assert add._name_edit.accessibleName()=='Registered server display name'
+assert add._ver_edit.accessibleName()=='Server version (optional)'
+assert add._session_edit.accessibleName()=='tmux session name (optional)'
+assert add._add_button.accessibleName()=='Add selected server to Crucible'
+assert add._cancel_button.accessibleName()=='Cancel adding server'
+change_import_destination=next(
+ button for button in add.findChildren(QPushButton)
+ if button.accessibleName()=='Change import destination folder'
+)
+add_focus_order=focusable_in_tab_order(add)
+expected_add_focus_order=(
+ add._import_folder_btn,
+ add._import_archive_btn,
+ change_import_destination,
+ add._advanced_toggle,
+ add._cancel_button,
+)
+assert all(widget in add_focus_order for widget in expected_add_focus_order)
+assert [add_focus_order.index(widget) for widget in expected_add_focus_order] == sorted(
+ add_focus_order.index(widget) for widget in expected_add_focus_order
+), 'Add server Tab order must start with the import routes, then destination, registration disclosure and Cancel'
+add._import_folder_btn.setFocus();app.processEvents()
+for current,next_widget in zip(expected_add_focus_order,expected_add_focus_order[1:]):
+ QTest.keyClick(current,Qt.Key.Key_Tab);app.processEvents()
+ assert app.focusWidget() is next_widget, (
+  f'Add server Tab from {current.accessibleName()} should reach {next_widget.accessibleName()}'
+ )
 assert not add._advanced_body.isVisible(), 'advanced registration fields should be hidden by default'
+assert add._advanced_toggle.accessibleName()=='Show registration fields for an existing server folder'
 assert not add._add_button.isEnabled(), 'Add server must not be clickable before an import or folder is selected'
 add._advanced_toggle.click();app.processEvents();assert add._advanced_body.isVisible()
+assert add._advanced_toggle.accessibleName()=='Hide existing server registration fields'
 add._path_edit.setText(str(root/'existing-server'));app.processEvents()
 assert add._add_button.isEnabled(), 'choosing a folder should enable Add server'
 add._path_edit.clear();app.processEvents()
 assert not add._add_button.isEnabled(), 'clearing the folder should disable Add server again'
 add._advanced_toggle.click();app.processEvents();assert not add._advanced_body.isVisible()
+assert add._advanced_toggle.accessibleName()=='Show registration fields for an existing server folder'
 for field in (add._path_edit,add._name_edit,add._ver_edit,add._session_edit):assert field.height()>=32
 add.reject()
 

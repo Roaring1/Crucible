@@ -9,15 +9,27 @@ archive — with manual folder registration available below for advanced users.
 
 from __future__ import annotations
 
-from pathlib import Path, PurePosixPath
 import zipfile
+from pathlib import Path, PurePosixPath
 
-from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea, QWidget,
-    QLabel, QLineEdit, QPushButton, QFileDialog,
-    QDialogButtonBox, QMessageBox, QCheckBox, QFrame, QToolButton,
-    QProgressBar, QPlainTextEdit,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..data.instance_manager import InstanceManager
@@ -111,6 +123,10 @@ class AddInstanceDialog(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
 
         scroll = QScrollArea()
+        scroll.setAccessibleName("Add server source options")
+        # The scroll area is a container, not a separate action. Let Tab begin
+        # on the first useful import choice rather than an unnamed empty stop.
+        scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         body = QWidget()
@@ -165,6 +181,7 @@ class AddInstanceDialog(QDialog):
         destination_title.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         destination_row.addWidget(destination_title)
         self._destination_label = QLabel(str(self._destination_parent))
+        self._destination_label.setAccessibleName("Import destination parent folder")
         self._destination_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -172,6 +189,7 @@ class AddInstanceDialog(QDialog):
         self._destination_label.setStyleSheet(f"color: {theme.TEXT}; font-size: 11px;")
         destination_row.addWidget(self._destination_label, stretch=1)
         destination_change = QPushButton("Change…")
+        destination_change.setAccessibleName("Change import destination folder")
         destination_change.setToolTip("Choose a different parent folder for imported servers")
         destination_change.clicked.connect(self._browse_destination_parent)
         destination_row.addWidget(destination_change)
@@ -186,6 +204,9 @@ class AddInstanceDialog(QDialog):
 
         self._advanced_toggle = QToolButton()
         self._advanced_toggle.setText("Register a server folder already on disk")
+        self._advanced_toggle.setAccessibleName(
+            "Show registration fields for an existing server folder"
+        )
         self._advanced_toggle.setCheckable(True)
         self._advanced_toggle.setChecked(False)
         self._advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
@@ -219,6 +240,7 @@ class AddInstanceDialog(QDialog):
 
         path_row = QHBoxLayout()
         self._path_edit = QLineEdit()
+        self._path_edit.setAccessibleName("Existing server folder")
         self._path_edit.setPlaceholderText("/path/to/my-server")
         self._path_edit.setMinimumWidth(320)
         self._path_edit.setMinimumHeight(32)
@@ -227,6 +249,7 @@ class AddInstanceDialog(QDialog):
         path_row.addWidget(self._path_edit, stretch=1)
 
         browse_btn = QPushButton("Browse…")
+        browse_btn.setAccessibleName("Browse for existing server folder")
         browse_btn.setMinimumWidth(80)
         browse_btn.setMinimumHeight(32)
         browse_btn.clicked.connect(self._browse)
@@ -234,18 +257,21 @@ class AddInstanceDialog(QDialog):
         form.addRow("Server folder:", path_row)
 
         self._name_edit = QLineEdit()
+        self._name_edit.setAccessibleName("Registered server display name")
         self._name_edit.setPlaceholderText("My server")
         self._name_edit.setMinimumWidth(320)
         self._name_edit.setMinimumHeight(32)
         form.addRow("Server name:", self._name_edit)
 
         self._ver_edit = QLineEdit()
+        self._ver_edit.setAccessibleName("Server version (optional)")
         self._ver_edit.setPlaceholderText("Version (optional)")
         self._ver_edit.setMinimumWidth(320)
         self._ver_edit.setMinimumHeight(32)
         form.addRow("Version:", self._ver_edit)
 
         self._session_edit = QLineEdit()
+        self._session_edit.setAccessibleName("tmux session name (optional)")
         self._session_edit.setPlaceholderText("Leave blank to use the server name")
         self._session_edit.setMinimumWidth(320)
         self._session_edit.setMinimumHeight(32)
@@ -261,6 +287,7 @@ class AddInstanceDialog(QDialog):
         layout.addWidget(self._advanced_body)
 
         self._warn_label = QLabel("")
+        self._warn_label.setAccessibleName("Import warning and status")
         self._warn_label.setWordWrap(True)
         self._warn_label.setStyleSheet(
             f"color: {theme.YELLOW}; font-size: 12px; background: {theme.SURFACE0}; "
@@ -270,6 +297,7 @@ class AddInstanceDialog(QDialog):
         layout.addWidget(self._warn_label)
 
         self._import_progress = QProgressBar()
+        self._import_progress.setAccessibleName("Server import progress")
         self._import_progress.setRange(0, 0)
         self._import_progress.setTextVisible(True)
         self._import_progress.setFormat("Preparing import…")
@@ -277,6 +305,7 @@ class AddInstanceDialog(QDialog):
         layout.addWidget(self._import_progress)
 
         self._import_log = QPlainTextEdit()
+        self._import_log.setAccessibleName("Server import activity log")
         self._import_log.setReadOnly(True)
         self._import_log.setMaximumHeight(120)
         self._import_log.setStyleSheet(
@@ -292,15 +321,22 @@ class AddInstanceDialog(QDialog):
         )
         self._add_button = btns.button(QDialogButtonBox.StandardButton.Ok)
         self._add_button.setText("Add server")
+        self._add_button.setAccessibleName("Add selected server to Crucible")
         self._add_button.setObjectName("PrimaryButton")
         self._add_button.setEnabled(False)
         self._cancel_button = btns.button(QDialogButtonBox.StandardButton.Cancel)
+        self._cancel_button.setAccessibleName("Cancel adding server")
         btns.accepted.connect(self._on_accept)
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
 
     def _toggle_advanced_registration(self, expanded: bool) -> None:
         self._advanced_body.setVisible(expanded)
+        self._advanced_toggle.setAccessibleName(
+            "Hide existing server registration fields"
+            if expanded
+            else "Show registration fields for an existing server folder"
+        )
         self._advanced_toggle.setArrowType(
             Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
         )
