@@ -334,6 +334,10 @@ class Sidebar(QWidget):
 
         # Instance list
         self._list = SidebarList()
+        self._list.setAccessibleName("Registered servers")
+        self._list.setAccessibleDescription(
+            "Select a server to open its Console workspace. Use F2 to rename the selected server."
+        )
         self._list.currentItemChanged.connect(self._on_selection_changed)
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._on_context_menu)
@@ -350,6 +354,7 @@ class Sidebar(QWidget):
 
         # Appearance is a first-class action, not an item hidden in RMB.
         self._appearance_btn = QPushButton("Server appearance…")
+        self._appearance_btn.setAccessibleName("Change selected server appearance")
         self._appearance_btn.setMinimumHeight(34)
         self._appearance_btn.setEnabled(False)
         self._appearance_btn.setToolTip(
@@ -364,6 +369,7 @@ class Sidebar(QWidget):
         # Add button
         self._add_btn = QPushButton("＋  Add server")
         self._add_btn.setObjectName("SidebarAddButton")
+        self._add_btn.setAccessibleName("Add server")
         self._add_btn.setMinimumHeight(36)
         self._add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._add_btn.setToolTip("Create a server, install a modpack, or import existing files")

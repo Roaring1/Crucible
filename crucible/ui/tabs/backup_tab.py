@@ -190,6 +190,7 @@ class BackupTab(QWidget):
         heading.addWidget(title)
         heading.addStretch()
         self._open_btn = QPushButton("Open backup folder")
+        self._open_btn.setAccessibleName("Open Crucible fleet backup folder")
         self._open_btn.clicked.connect(self._open_folder)
         heading.addWidget(self._open_btn)
         layout.addLayout(heading)
@@ -231,6 +232,7 @@ class BackupTab(QWidget):
         )
         policy_grid.addWidget(self._scheduler_label, 2, 0, 1, 4)
         self._timer_btn = QPushButton("Enable automatic backups")
+        self._timer_btn.setAccessibleName("Enable ten-minute automatic fleet backups")
         self._timer_btn.setToolTip(
             "Install/enable a systemd user timer. Backups continue when the Crucible window is closed."
         )
@@ -238,6 +240,7 @@ class BackupTab(QWidget):
         policy_grid.addWidget(self._timer_btn, 3, 0, 1, 2)
 
         self._timer_remove_btn = QPushButton("Disable schedule")
+        self._timer_remove_btn.setAccessibleName("Disable automatic fleet backup schedule")
         self._timer_remove_btn.setToolTip(
             "Disable the ten-minute automatic timer. Existing generations are preserved."
         )
@@ -265,6 +268,7 @@ class BackupTab(QWidget):
 
         action_row = QHBoxLayout()
         self._backup_btn = QPushButton("Back up all servers now")
+        self._backup_btn.setAccessibleName("Back up all registered servers now")
         self._backup_btn.setObjectName("PrimaryButton")
         self._backup_btn.setMinimumHeight(38)
         self._backup_btn.setToolTip(
@@ -275,6 +279,7 @@ class BackupTab(QWidget):
         action_row.addWidget(self._backup_btn)
 
         self._verify_btn = QPushButton("Verify retained generations")
+        self._verify_btn.setAccessibleName("Deep verify both retained fleet generations")
         self._verify_btn.setMinimumHeight(38)
         self._verify_btn.setToolTip(
             "Deep-check every file in both retained generations against its SHA-256 manifest."
@@ -352,6 +357,11 @@ class BackupTab(QWidget):
         layout.addLayout(generation_heading)
 
         self._table = QTableWidget(0, 5)
+        self._table.setAccessibleName("Retained complete fleet backup generations")
+        self._table.setAccessibleDescription(
+            "Select a complete fleet generation to inspect its server coverage "
+            "and restore one registered server into a separate folder."
+        )
         self._table.setHorizontalHeaderLabels(
             ["Created", "Servers", "Files", "Logical size", "Generation ID"]
         )

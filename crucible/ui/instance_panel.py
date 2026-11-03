@@ -229,6 +229,7 @@ class InstancePanel(QWidget):
         self._btn_ip = QPushButton("⧉  Copy IP")
         self._btn_ip.setFixedHeight(28)
         self._btn_ip.setFixedWidth(90)
+        self._btn_ip.setAccessibleName("Copy external server IP address")
         self._btn_ip.setToolTip("Copy external server IP to clipboard")
         self._btn_ip.setStyleSheet(
             f"QPushButton {{ background: {theme.SURFACE0}; color: {theme.SUBTEXT}; "
@@ -253,7 +254,9 @@ class InstancePanel(QWidget):
         self._btn_start = QPushButton("▶  Start")
         self._btn_stop = QPushButton("■  Stop")
         self._btn_start.setObjectName("PrimaryButton")
+        self._btn_start.setAccessibleName("Start selected server")
         self._btn_stop.setObjectName("DangerButton")
+        self._btn_stop.setAccessibleName("Stop selected server")
 
         for btn in (self._btn_start, self._btn_stop):
             btn.setFixedHeight(44)
@@ -269,6 +272,8 @@ class InstancePanel(QWidget):
 
         # Tabs
         self._tabs = QTabWidget()
+        self._tabs.setAccessibleName("Selected server workspace pages")
+        self._tabs.tabBar().setAccessibleName("Server workspace navigation")
         self._tabs.setDocumentMode(True)
 
         self._setup   = SetupTab(self._manager)
@@ -313,6 +318,7 @@ class InstancePanel(QWidget):
         self._more_tabs_button = QToolButton()
         self._more_tabs_button.setObjectName("MoreTabsButton")
         self._more_tabs_button.setText("More ▾")
+        self._more_tabs_button.setAccessibleName("More workspace tabs")
         self._more_tabs_button.setMinimumHeight(44)
         self._more_tabs_button.setMinimumWidth(84)
         self._more_tabs_button.setMenu(self._more_menu)
@@ -910,6 +916,14 @@ class InstancePanel(QWidget):
         }.get(status, status.upper())
 
         self._status_label.setText(label_text)
+        self._status_label.setAccessibleName(
+            f"Selected server status: {label_text.strip()}"
+        )
+        self._status_label.setAccessibleDescription(
+            "Current server lifecycle and management availability. "
+            "Start is available only when Stopped is confirmed; Stop is "
+            "available only while Running or Starting."
+        )
         self._status_label.setStyleSheet(
             f"color: {color}; font-size: 12px; font-weight: 600;"
         )

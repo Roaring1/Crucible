@@ -174,6 +174,12 @@ with patch.object(
 assert not backup_ui._restore_btn.isHidden()
 assert backup_ui._restore_btn.isEnabled()
 assert backup_ui._restore_btn.accessibleName()=='Restore selected server snapshot to a new folder'
+assert backup_ui._open_btn.accessibleName()=='Open Crucible fleet backup folder'
+assert backup_ui._timer_btn.accessibleName()=='Enable ten-minute automatic fleet backups'
+assert backup_ui._timer_remove_btn.accessibleName()=='Disable automatic fleet backup schedule'
+assert backup_ui._backup_btn.accessibleName()=='Back up all registered servers now'
+assert backup_ui._verify_btn.accessibleName()=='Deep verify both retained fleet generations'
+assert backup_ui._table.accessibleName()=='Retained complete fleet backup generations'
 assert 'live registered server is never overwritten' in backup_ui._restore_btn.toolTip().lower()
 backup_ui.close();backup_ui.deleteLater();QTest.qWait(10)
 
@@ -315,6 +321,66 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  # The six destinations used during ordinary server operation remain visible.
  # Console is the default landing page; only configuration/reference pages use More.
  panel=window._panel;tabs=panel._tabs;bar=tabs.tabBar()
+ def focusable_widgets(root_widget):
+  seen=set();ordered=[];current=root_widget
+  while current not in seen and len(ordered)<200:
+   seen.add(current)
+   if current.isVisible() and current.isEnabled() and current.focusPolicy()!=Qt.FocusPolicy.NoFocus:
+    ordered.append(current)
+   current=current.nextInFocusChain()
+  return ordered
+
+ panel._update_status_display('stopped')
+ assert panel._status_label.accessibleName().startswith('Selected server status:')
+ assert 'SERVER OFFLINE' in panel._status_label.accessibleName()
+ sidebar=window._sidebar
+ assert sidebar._list.accessibleName()=='Registered servers'
+ assert sidebar._appearance_btn.accessibleName()=='Change selected server appearance'
+ assert sidebar._add_btn.accessibleName()=='Add server'
+ assert panel._btn_ip.accessibleName()=='Copy external server IP address'
+ assert panel._btn_start.accessibleName()=='Start selected server'
+ assert panel._btn_stop.accessibleName()=='Stop selected server'
+ assert tabs.accessibleName()=='Selected server workspace pages'
+ assert bar.accessibleName()=='Server workspace navigation'
+ assert panel._more_tabs_button.accessibleName()=='More workspace tabs'
+
+ stopped_focus=focusable_widgets(window)
+ stopped_order=(
+  sidebar._list,sidebar._appearance_btn,sidebar._add_btn,panel._btn_ip,
+  panel._btn_start,tabs,bar,panel._console._cmd_input,panel._more_tabs_button
+ )
+ assert all(widget in stopped_focus for widget in stopped_order)
+ assert [stopped_focus.index(widget) for widget in stopped_order] == sorted(
+  stopped_focus.index(widget) for widget in stopped_order
+ ), 'stopped-state focus order must follow server selection, actions, workspace, Console, then More'
+ assert panel._btn_stop not in stopped_focus
+ sidebar._add_btn.setFocus();app.processEvents();QTest.keyClick(sidebar._add_btn,Qt.Key.Key_Tab)
+ assert app.focusWidget() is panel._btn_ip, 'Tab from Add server should reach the selected-server actions'
+ QTest.keyClick(panel._btn_ip,Qt.Key.Key_Tab)
+ assert app.focusWidget() is panel._btn_start, 'Tab from Copy IP should reach Start when stopped'
+ QTest.keyClick(panel._btn_start,Qt.Key.Key_Tab)
+ assert app.focusWidget() is bar, 'Tab from Start should reach the workspace tab bar'
+ QTest.keyClick(bar,Qt.Key.Key_Right)
+ assert tabs.currentWidget() is panel._mods, 'Right arrow should advance workspace tabs'
+ QTest.keyClick(bar,Qt.Key.Key_Left)
+ assert tabs.currentWidget() is panel._console, 'Left arrow should return to the Console tab'
+ QTest.keyClick(bar,Qt.Key.Key_Tab)
+ assert app.focusWidget() is panel._console._view, 'Tab from workspace navigation should enter the Console'
+
+ panel._update_status_display('running')
+ assert 'SERVER ONLINE' in panel._status_label.accessibleName()
+ running_focus=focusable_widgets(window)
+ running_order=(
+  sidebar._list,sidebar._appearance_btn,sidebar._add_btn,panel._btn_ip,
+  panel._btn_stop,tabs,bar,panel._console._cmd_input,panel._more_tabs_button
+ )
+ assert all(widget in running_focus for widget in running_order)
+ assert [running_focus.index(widget) for widget in running_order] == sorted(
+  running_focus.index(widget) for widget in running_order
+ ), 'running-state focus order must replace Start with Stop at the same position'
+ assert panel._btn_start not in running_focus
+ panel._btn_ip.setFocus();app.processEvents();QTest.keyClick(panel._btn_ip,Qt.Key.Key_Tab)
+ assert app.focusWidget() is panel._btn_stop, 'Tab from Copy IP should reach Stop when running'
  visible=[tabs.tabText(i) for i in range(tabs.count()) if bar.isTabVisible(i)]
  assert visible==['Console','Mods','World','Backups','Setup','Diagnostics'], visible
  assert tabs.currentWidget() is panel._console
