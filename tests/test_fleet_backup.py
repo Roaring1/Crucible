@@ -522,6 +522,33 @@ def test_failed_partial_fleet_cycle_keeps_both_prior_generations(tmp_path):
     assert not list(backups.staging_dir.iterdir())
 
 
+def test_directory_fsync_failure_keeps_prior_generations_and_cleans_staging(
+    tmp_path, monkeypatch
+):
+    instance = make_server(tmp_path / "server")
+    backups = manager(tmp_path, [instance])
+    first = backups.run_backup()
+    second = backups.run_backup()
+
+    def fail_fsync(_path):
+        raise FleetBackupError("simulated directory fsync failure")
+
+    monkeypatch.setattr(
+        FleetBackupManager,
+        "_fsync_directory_strict",
+        staticmethod(fail_fsync),
+    )
+    with pytest.raises(FleetBackupError, match="simulated directory fsync failure"):
+        backups.run_backup()
+
+    assert first.path.exists()
+    assert second.path.exists()
+    assert [
+        row.generation_id for row in backups.list_generations()
+    ] == [second.generation_id, first.generation_id]
+    assert not list(backups.staging_dir.iterdir())
+
+
 def test_running_server_is_flushed_quiesced_and_autosave_restored(tmp_path):
     instance = make_server(tmp_path / "server")
     tmux = FakeTmux({instance.id: "running"})
@@ -664,6 +691,65 @@ def test_symbolic_links_are_reported_but_not_followed(tmp_path):
     assert any(row["path"] == "outside-link" for row in entry["excluded"])
 
 
+def test_restore_refuses_target_inside_a_registered_live_server(tmp_path):
+    instance = make_server(tmp_path / "server")
+    backups = manager(tmp_path, [instance])
+    result = backups.run_backup()
+    marker = Path(instance.path) / "server.properties"
+    before = marker.read_bytes()
+    target = Path(instance.path) / "recovery-copy"
+
+    with pytest.raises(FleetBackupError, match="registered server folder"):
+        backups.restore_server(result.generation_id, instance.id, target)
+
+    assert not target.exists()
+    assert marker.read_bytes() == before
+
+
+def test_restore_refuses_symlinked_target_parent(tmp_path):
+    instance = make_server(tmp_path / "server")
+    backups = manager(tmp_path, [instance])
+    result = backups.run_backup()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked_parent = tmp_path / "restore-link"
+    linked_parent.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(FleetBackupError, match="symbolic link"):
+        backups.restore_server(
+            result.generation_id, instance.id, linked_parent / "restored"
+        )
+
+    assert list(outside.iterdir()) == []
+
+
+def test_verify_generation_rejects_symlinked_server_files_root(tmp_path):
+    instance = make_server(tmp_path / "server")
+    backups = manager(tmp_path, [instance])
+    result = backups.run_backup()
+    server_root = (
+        result.path / "servers" / backupsafe(instance.id)
+    )
+    files_root = server_root / "files"
+    outside = tmp_path / "outside-snapshot"
+    outside.mkdir()
+
+    try:
+        server_root.chmod(0o700)
+        files_root.rename(server_root / "files-original")
+        files_root.symlink_to(outside, target_is_directory=True)
+        server_root.chmod(0o555)
+
+        verification = backups.verify_generation(result.path, deep=False)
+        assert not verification["ok"]
+        assert any(
+            "unsafe files snapshot directory" in error
+            for error in verification["errors"]
+        )
+    finally:
+        backups._make_generation_removable(result.path)
+
+
 def test_restore_refuses_existing_target_and_does_not_overwrite(tmp_path):
     instance = make_server(tmp_path / "server")
     backups = manager(tmp_path, [instance])
@@ -764,6 +850,62 @@ def test_legacy_archive_source_is_removed_only_after_two_generations_match(tmp_p
     assert latest_archives[0].filename == "old-world.zip"
     assert latest_archives[0].slot_name == "Original world"
     assert latest_archives[0].fleet_generation_id == third.generation_id
+
+
+def test_legacy_archive_migration_hashes_both_retained_copies_before_source_retirement(
+    tmp_path,
+):
+    instance = make_server(tmp_path / "server")
+    backups = manager(tmp_path, [instance])
+    archive = _write_legacy_world_archive(
+        _legacy_backup_dir(tmp_path, instance.id) / "legacy-world.zip"
+    )
+    original_bytes = archive.read_bytes()
+
+    first = backups.run_backup()
+    first_stored = (
+        first.path
+        / "servers"
+        / backupsafe(instance.id)
+        / "legacy-world-archives"
+        / archive.name
+    )
+    # Simulate same-size bit rot in an immutable retained copy while leaving
+    # the original sidecar/source untouched. Shallow verification alone
+    # cannot detect this corruption.
+    first_stored.chmod(0o600)
+    first_stored.write_bytes(b"X" + original_bytes[1:])
+    first_stored.chmod(0o444)
+
+    second = backups.run_backup()
+    second_stored = (
+        second.path
+        / "servers"
+        / backupsafe(instance.id)
+        / "legacy-world-archives"
+        / archive.name
+    )
+
+    # A damaged previous copy must not be propagated by hard-link reuse, and
+    # the external original must not be retired while either retained copy is
+    # corrupt, even when both manifests contain the original expected digest.
+    assert second_stored.read_bytes() == original_bytes
+    assert archive.is_file()
+    assert first_stored.read_bytes() != original_bytes
+    state = json.loads(backups.state_path.read_text(encoding="utf-8"))
+    assert any(
+        first.generation_id in error
+        for error in state["legacy_archive_migration"]["cleanup_errors"]
+    )
+
+    # Once the damaged generation ages out, the newest two actual archive
+    # payloads verify. Only then is the original legacy ZIP eligible for
+    # retirement.
+    third = backups.run_backup()
+    assert not first.path.exists()
+    assert not archive.exists()
+    assert backups.verify_generation(second.path, deep=True)["ok"]
+    assert backups.verify_generation(third.path, deep=True)["ok"]
 
 
 def test_world_swap_can_defer_legacy_source_retirement_until_post_swap_generation(

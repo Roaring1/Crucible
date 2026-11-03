@@ -622,7 +622,9 @@ class FleetBackupManager:
             os.replace(stage, final_path)
             stage = None
             final_path.chmod(0o555)
-            self._fsync_directory(self.generations_dir)
+            self._fsync_directory_strict(final_path)
+            self._fsync_directory_strict(self.generations_dir)
+            self._fsync_directory_strict(self.staging_dir)
 
             pruned = self._prune_after_publish()
             retained = self.list_generations()
@@ -717,7 +719,17 @@ class FleetBackupManager:
             return result
         except Exception as exc:
             if stage is not None:
-                shutil.rmtree(stage, ignore_errors=True)
+                try:
+                    # A failure can occur after sealing has made the staging
+                    # tree read-only. Re-open its directories before removing
+                    # the incomplete generation; never publish or rotate it.
+                    self._make_generation_removable(stage)
+                    shutil.rmtree(stage)
+                except OSError as cleanup_exc:
+                    print(
+                        "[crucible] could not remove failed fleet staging tree "
+                        f"{stage}: {cleanup_exc}"
+                    )
             self._write_state(
                 {
                     "last_status": "failed",
@@ -985,7 +997,7 @@ class FleetBackupManager:
                 [],
             )
 
-        manifests: list[dict[str, Any]] = []
+        generation_records: list[tuple[GenerationSummary, dict[str, Any]]] = []
         for summary in retained[:DEFAULT_KEEP_GENERATIONS]:
             manifest = self._load_manifest(summary.path)
             if manifest is None:
@@ -996,7 +1008,7 @@ class FleetBackupManager:
                     self._count_legacy_sources()[1],
                     [f"Could not reload generation manifest: {summary.generation_id}"],
                 )
-            manifests.append(manifest)
+            generation_records.append((summary, manifest))
 
         removed_count = 0
         removed_bytes = 0
@@ -1011,7 +1023,8 @@ class FleetBackupManager:
                 if source.is_symlink() or not source.is_file():
                     continue
                 records: list[dict[str, Any]] = []
-                for manifest in manifests:
+                stored_copies: list[tuple[Path, dict[str, Any]]] = []
+                for summary, manifest in generation_records:
                     server = next(
                         (
                             item
@@ -1031,17 +1044,19 @@ class FleetBackupManager:
                         None,
                     )
                     if match is None:
-                        records = []
+                        stored_copies = []
                         break
-                    records.append(match)
+                    stored_copies.append((summary.path, match))
 
-                if len(records) != DEFAULT_KEEP_GENERATIONS:
+                if len(stored_copies) != DEFAULT_KEEP_GENERATIONS:
                     continue
+                records = [record for _generation, record in stored_copies]
                 hashes = {str(item.get("sha256", "")) for item in records}
                 if len(hashes) != 1 or not next(iter(hashes)):
                     continue
 
                 try:
+                    digest = next(iter(hashes))
                     source_info = source.stat(follow_symlinks=False)
                     source_signature = _stat_signature(source_info)
                     if not all(
@@ -1049,7 +1064,53 @@ class FleetBackupManager:
                         for item in records
                     ):
                         continue
-                    if _hash_file(source) != next(iter(hashes)):
+
+                    # A shallow manifest/size check is not enough to retire
+                    # the only external original. Verify the actual immutable
+                    # archive bytes in BOTH retained generations first.
+                    copies_valid = True
+                    for generation_path, record in stored_copies:
+                        relative = _safe_relative(str(record.get("path", "")))
+                        expected_relative = PurePosixPath(
+                            "legacy-world-archives", source.name
+                        )
+                        if relative != expected_relative:
+                            copies_valid = False
+                            errors.append(
+                                f"{instance.name}/{source.name}: retained archive path "
+                                f"is invalid in generation {generation_path.name}"
+                            )
+                            break
+                        stored_path = (
+                            generation_path
+                            / "servers"
+                            / _server_key(str(instance.id))
+                            / "legacy-world-archives"
+                            / source.name
+                        )
+                        if (
+                            stored_path.is_symlink()
+                            or not stored_path.is_file()
+                            or stored_path.stat(follow_symlinks=False).st_size
+                            != int(record.get("size", -1))
+                            or stored_path.stat(follow_symlinks=False).st_mode & 0o222
+                            or _hash_file(stored_path) != digest
+                        ):
+                            copies_valid = False
+                            errors.append(
+                                f"{instance.name}/{source.name}: retained archive bytes "
+                                f"failed SHA-256 verification in generation "
+                                f"{generation_path.name}; legacy source was preserved"
+                            )
+                            break
+                    if not copies_valid:
+                        continue
+                    if _hash_file(source) != digest:
+                        continue
+                    if not _same_signature(
+                        _stat_signature(source.stat(follow_symlinks=False)),
+                        source_signature,
+                    ):
                         continue
 
                     source.unlink()
@@ -1513,6 +1574,10 @@ class FleetBackupManager:
                         f"Could not seal fleet snapshot directory {candidate}: {exc}"
                     ) from exc
             current.chmod(0o555)
+            # Persist each directory's child entries bottom-up. File contents
+            # are fsynced while copied; without directory fsyncs, a power loss
+            # could still lose names after the manifest had been published.
+            FleetBackupManager._fsync_directory_strict(current)
 
     @staticmethod
     def _make_generation_removable(generation: Path) -> None:
@@ -1945,14 +2010,17 @@ class FleetBackupManager:
                 raise FleetBackupError(
                     f"{instance_name}: legacy archive source disappeared without a prior snapshot: {relative_path}"
                 )
+            expected_digest = str(previous_entry.get("sha256", ""))
             if (
                 previous_path.is_symlink()
                 or not previous_path.is_file()
                 or previous_path.stat().st_size != int(previous_entry["size"])
                 or previous_path.stat().st_mode & 0o222
+                or not expected_digest
+                or _hash_file(previous_path) != expected_digest
             ):
                 raise FleetBackupError(
-                    f"{instance_name}: prior generation's legacy archive is missing or writable: {relative_path}"
+                    f"{instance_name}: prior generation's legacy archive is missing, writable or checksum-invalid: {relative_path}"
                 )
             try:
                 os.link(previous_path, destination)
@@ -1983,15 +2051,29 @@ class FleetBackupManager:
         current_signature = _stat_signature(info)
         size = int(info.st_size)
         old_digest = str(previous_entry.get("sha256", "")) if previous_entry else ""
+        previous_snapshot_valid = False
+        if (
+            previous_entry is not None
+            and previous_path is not None
+            and previous_path.is_file()
+            and not previous_path.is_symlink()
+        ):
+            try:
+                previous_snapshot_valid = (
+                    previous_path.stat().st_size == int(previous_entry["size"])
+                    and not (previous_path.stat().st_mode & 0o222)
+                    and bool(old_digest)
+                    and _hash_file(previous_path) == old_digest
+                )
+            except (OSError, KeyError, ValueError, TypeError):
+                previous_snapshot_valid = False
 
         if (
             previous_entry is not None
             and previous_path is not None
             and _same_signature(previous_entry.get("source_stat"), current_signature)
-            and previous_path.is_file()
-            and not previous_path.is_symlink()
+            and previous_snapshot_valid
             and previous_path.stat().st_size == size
-            and not (previous_path.stat().st_mode & 0o222)
         ):
             try:
                 os.link(previous_path, destination)
@@ -2025,8 +2107,7 @@ class FleetBackupManager:
             previous_entry is not None
             and previous_path is not None
             and old_digest == digest
-            and previous_path.is_file()
-            and not previous_path.is_symlink()
+            and previous_snapshot_valid
         ):
             destination.unlink(missing_ok=True)
             try:
@@ -2809,8 +2890,33 @@ class FleetBackupManager:
                 )
                 continue
             seen_ids.add(server_id)
-            server_root = generation_path / "servers" / _server_key(server_id)
+            servers_root = generation_path / "servers"
+            server_root = servers_root / _server_key(server_id)
             files_root = server_root / "files"
+            roots_safe = True
+            for label, directory in (
+                ("servers", servers_root),
+                ("server", server_root),
+                ("files", files_root),
+            ):
+                try:
+                    if directory.is_symlink() or not directory.is_dir():
+                        errors.append(
+                            f"{server.get('name', server_id)}: missing or unsafe {label} snapshot directory"
+                        )
+                        roots_safe = False
+                    elif directory.stat(follow_symlinks=False).st_mode & 0o222:
+                        errors.append(
+                            f"{server.get('name', server_id)}: {label} snapshot directory is writable"
+                        )
+                        roots_safe = False
+                except OSError as exc:
+                    errors.append(
+                        f"{server.get('name', server_id)}: could not inspect {label} snapshot directory: {exc}"
+                    )
+                    roots_safe = False
+            if not roots_safe:
+                continue
             try:
                 for directory_entry in server.get("directories", []):
                     relative_dir = _safe_relative(str(directory_entry["path"]))
@@ -3081,8 +3187,34 @@ class FleetBackupManager:
             )
 
         target = Path(target_directory).expanduser()
+        if not target.is_absolute():
+            target = Path.cwd() / target
+        target = Path(os.path.abspath(target))
         if target.exists() or target.is_symlink():
             raise FleetBackupError(f"Restore target already exists: {target}")
+
+        # A restore is a recovery drill into a separate, new directory. Never
+        # let a caller accidentally place that output inside (or over) any
+        # registered live server folder, including an instance whose path is
+        # currently missing on disk.
+        for instance in self.instances:
+            live_server = Path(instance.path).expanduser().resolve()
+            if (
+                target == live_server
+                or live_server in target.parents
+                or target in live_server.parents
+            ):
+                raise FleetBackupError(
+                    "Refusing to restore a fleet snapshot into or over a "
+                    f"registered server folder: {live_server}"
+                )
+
+        parent_chain = list(reversed(target.parent.parents)) + [target.parent]
+        for directory in parent_chain:
+            if directory.is_symlink():
+                raise FleetBackupError(
+                    f"Refusing a symbolic link in the restore target path: {directory}"
+                )
         target.parent.mkdir(parents=True, exist_ok=True)
         server_root = (
             source_generation / "servers" / _server_key(str(instance_id)) / "files"
@@ -3349,7 +3481,24 @@ class FleetBackupManager:
             pass
 
     @staticmethod
+    def _fsync_directory_strict(path: Path) -> None:
+        """Flush a backup directory or fail before any prior generation is pruned."""
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(path, flags)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            raise FleetBackupError(
+                f"Could not durably flush fleet backup directory {path}: {exc}"
+            ) from exc
+
+    @staticmethod
     def _fsync_directory(path: Path) -> None:
+        # Best-effort metadata flush for the diagnostic state file. Snapshot
+        # publication uses _fsync_directory_strict and never prunes on failure.
         try:
             fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:
