@@ -424,6 +424,15 @@ def capture_previews(output: Path) -> list[Path]:
             app.processEvents()
 
         import_dialog = AddInstanceDialog(manager)
+        import_dialog.show()
+        import_dialog.activateWindow()
+        app.setActiveWindow(import_dialog)
+        import_dialog._import_folder_btn.setFocus(Qt.FocusReason.OtherFocusReason)
+        app.processEvents()
+        if app.focusWidget() is not import_dialog._import_folder_btn:
+            raise RuntimeError(
+                "Could not focus the primary Prism import action in the Add server preview"
+            )
         save(import_dialog, "import-files.png", 740, 420)
         import_dialog.close()
         QTest.qWait(20)
