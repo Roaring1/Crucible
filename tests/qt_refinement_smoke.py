@@ -44,6 +44,9 @@ rail=Sidebar();rail.populate([inst],{inst.id:'stopped'})
 rail_item=rail._items[inst.id];rail_widget=rail._row_widgets[inst.id]
 assert rail_item.text()=='' and rail_item.icon().isNull()
 assert rail_widget._status_label.text()=='Stopped'
+assert rail_widget.minimumHeight() >= 44
+assert rail_widget.accessibleName()=='Test server, status Stopped'
+assert rail_widget._status_label.accessibleName()=='Server status: Stopped'
 rail.update_status(inst.id,'running')
 assert rail_widget._status_label.text()=='Running'
 assert rail_item.text()=='' and rail_item.icon().isNull(), 'status polling must not restore duplicate item text/icons'
