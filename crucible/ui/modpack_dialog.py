@@ -16,20 +16,29 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal, QSize, QUrl
-from PyQt6.QtGui import QPixmap, QIcon, QDesktopServices
+from PyQt6.QtCore import QObject, QSize, Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QListWidget, QListWidgetItem, QFileDialog, QCheckBox,
-    QPlainTextEdit, QProgressBar,
+    QCheckBox,
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QVBoxLayout,
 )
 
-from ..mods import modrinth
-from ..importers import modpack_auto
 from ..data.instance_manager import InstanceManager
 from ..data.instance_model import ServerInstance
-from .add_mod_dialog import _IconWorker  # reuse the best-effort icon fetcher
+from ..importers import modpack_auto
+from ..mods import modrinth
 from . import theme
+from .add_mod_dialog import _IconWorker  # reuse the best-effort icon fetcher
 from .thread_lifecycle import connect_thread_cleanup
 
 _ICON_PX = 46
@@ -148,21 +157,28 @@ class ModpackDialog(QDialog):
 
         row = QHBoxLayout()
         self._search = QLineEdit()
+        self._search.setAccessibleName("Search server modpacks")
         self._search.setPlaceholderText(
             "Search modpacks by name \u2014 or browse the popular ones below\u2026")
         self._search.returnPressed.connect(lambda: self._do_search())
         row.addWidget(self._search, 1)
         self._search_btn = QPushButton("Search")
+        self._search_btn.setAccessibleName("Search Modrinth server modpacks")
         self._search_btn.clicked.connect(lambda: self._do_search())
         row.addWidget(self._search_btn)
         root.addLayout(row)
 
         self._status = QLabel("Loading popular modpacks\u2026")
+        self._status.setAccessibleName("Server modpack search status")
         self._status.setWordWrap(True)
         self._status.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:11px;")
         root.addWidget(self._status)
 
         self._results = QListWidget()
+        self._results.setAccessibleName("Server modpack search results")
+        self._results.setAccessibleDescription(
+            "Select a modpack to inspect it before accepting the EULA and installing."
+        )
         self._results.setIconSize(QSize(_ICON_PX, _ICON_PX))
         self._results.setStyleSheet(
             f"QListWidget::item {{ padding:6px; border-bottom:1px solid {theme.SURFACE0}; }}")
@@ -174,15 +190,18 @@ class ModpackDialog(QDialog):
         # EULA + install row
         ctl = QHBoxLayout()
         self._eula = QCheckBox("I accept the Minecraft EULA")
+        self._eula.setAccessibleName("Accept the Minecraft EULA")
         self._eula.setToolTip(
             "Required by Mojang to run any server. See https://aka.ms/MinecraftEULA")
         ctl.addWidget(self._eula)
         self._open_btn = QPushButton("Open on Modrinth")
+        self._open_btn.setAccessibleName("View selected modpack on Modrinth")
         self._open_btn.clicked.connect(self._open_page)
         self._open_btn.setEnabled(False)
         ctl.addWidget(self._open_btn)
         ctl.addStretch()
         self._install_btn = QPushButton("Install server")
+        self._install_btn.setAccessibleName("Install selected server modpack")
         self._install_btn.setObjectName("PrimaryButton")
         self._install_btn.setEnabled(False)
         self._install_btn.clicked.connect(self._install)
@@ -190,11 +209,13 @@ class ModpackDialog(QDialog):
         root.addLayout(ctl)
 
         self._progress = QProgressBar()
+        self._progress.setAccessibleName("Server modpack installation progress")
         self._progress.setRange(0, 0)   # indeterminate
         self._progress.hide()
         root.addWidget(self._progress)
 
         self._log = QPlainTextEdit()
+        self._log.setAccessibleName("Server modpack installation log")
         self._log.setReadOnly(True)
         self._log.setMaximumHeight(150)
         self._log.setStyleSheet(

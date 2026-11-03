@@ -150,6 +150,34 @@ def unexpected_search(worker):
 with patch.object(_SearchWorker,'run',unexpected_search):
  with patch.object(AddModDialog,'_do_search',lambda *args,**kw:None):
   browser=AddModDialog(inst);assert browser._provider.count()==2
+  browser.show();QTest.qWait(20)
+  assert browser._provider.accessibleName()=='Mod provider'
+  assert browser._search.accessibleName()=='Search mods by name or project'
+  assert browser._search_btn.accessibleName()=='Search selected mod provider'
+  assert browser._cb_client.accessibleName()=='Show client-side mods'
+  assert browser._cb_server.accessibleName()=='Show server-side mods'
+  assert browser._status.accessibleName()=='Mod search status'
+  assert browser._results.accessibleName()=='Mod search results'
+  assert browser._results.accessibleDescription()
+  assert browser._d_title.accessibleName()=='Selected mod title'
+  assert browser._d_author.accessibleName()=='Selected mod author'
+  assert browser._d_stats.accessibleName()=='Selected mod statistics'
+  assert browser._d_compat.accessibleName()=='Selected mod compatibility'
+  assert browser._d_desc.accessibleName()=='Selected mod description'
+  assert browser._d_deps.accessibleName()=='Selected mod dependencies'
+  assert browser._install_btn.accessibleName()=='Install selected mod'
+  assert browser._d_link.accessibleName()=='View selected mod project page'
+  assert browser._close_btn.accessibleName()=='Close Add Mod dialog'
+  add_mod_focus_order=focusable_in_tab_order(browser)
+  expected_add_mod_order=(
+   browser._provider,browser._search,browser._search_btn,
+   browser._cb_client,browser._cb_server,browser._results,
+   browser._d_desc,browser._close_btn
+  )
+  assert all(widget in add_mod_focus_order for widget in expected_add_mod_order)
+  assert [add_mod_focus_order.index(widget) for widget in expected_add_mod_order] == sorted(
+   add_mod_focus_order.index(widget) for widget in expected_add_mod_order
+  ), 'Add Mod focus order must follow provider, search, side filters, results, details and Close'
   browser._provider.setCurrentText('CurseForge');assert browser._provider.currentText()=='CurseForge';browser.reject()
  QTest.qWait(40)
 assert search_started==[], f'closed Add Mod dialog unexpectedly launched a search: {search_started}'
@@ -357,6 +385,23 @@ registered_target=modpack_parent/'Test-Pack-2'
 registered_only=SimpleNamespace(path=str(registered_target))
 with patch.object(ModpackDialog,'_do_search',lambda self,initial=False:None):
  pack_ui=ModpackDialog(m)
+ pack_ui.show();QTest.qWait(20)
+ assert pack_ui._search.accessibleName()=='Search server modpacks'
+ assert pack_ui._search_btn.accessibleName()=='Search Modrinth server modpacks'
+ assert pack_ui._status.accessibleName()=='Server modpack search status'
+ assert pack_ui._results.accessibleName()=='Server modpack search results'
+ assert pack_ui._results.accessibleDescription()
+ assert pack_ui._eula.accessibleName()=='Accept the Minecraft EULA'
+ assert pack_ui._open_btn.accessibleName()=='View selected modpack on Modrinth'
+ assert pack_ui._install_btn.accessibleName()=='Install selected server modpack'
+ assert pack_ui._progress.accessibleName()=='Server modpack installation progress'
+ assert pack_ui._log.accessibleName()=='Server modpack installation log'
+ pack_focus_order=focusable_in_tab_order(pack_ui)
+ expected_pack_order=(pack_ui._search,pack_ui._search_btn,pack_ui._results,pack_ui._eula)
+ assert all(widget in pack_focus_order for widget in expected_pack_order)
+ assert [pack_focus_order.index(widget) for widget in expected_pack_order] == sorted(
+  pack_focus_order.index(widget) for widget in expected_pack_order
+ ), 'Modpack install focus order must follow search, Search, results and EULA'
 assert pack_ui._unique_install_target(
  modpack_parent,'Test Pack',m.instances+[registered_only]
 ) == modpack_parent/'Test-Pack-3'
