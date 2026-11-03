@@ -32,7 +32,7 @@ if str(REPO_ROOT) not in sys.path:
 def capture_previews(output: Path) -> list[Path]:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-    from PyQt6.QtCore import QCoreApplication, QEvent, QPoint
+    from PyQt6.QtCore import QCoreApplication, QEvent, QPoint, Qt
     from PyQt6.QtGui import QImage
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QMenu
@@ -348,6 +348,34 @@ def capture_previews(output: Path) -> list[Path]:
 
             panel._tabs.setCurrentWidget(panel._info)
             save(selected, "workspace-diagnostics.png", 1440, 900)
+
+            # Capture a real keyboard focus state so reviewers can inspect
+            # the focus boundary restored by the global Qt stylesheet.
+            selected.show()
+            selected.activateWindow()
+            selected.raise_()
+            app.setActiveWindow(selected)
+            QTest.qWait(30)
+            panel._more_tabs_button.setFocus(Qt.FocusReason.OtherFocusReason)
+            app.processEvents()
+            if app.focusWidget() is not panel._more_tabs_button:
+                raise RuntimeError(
+                    "Could not activate More workspace tabs for the keyboard-focus preview"
+                )
+            save(selected, "workspace-keyboard-focus.png", 1440, 900)
+            normal_focus = QImage(
+                str(output / "workspace-diagnostics.png")
+            )
+            focused_preview = QImage(
+                str(output / "workspace-keyboard-focus.png")
+            )
+            if normal_focus.isNull() or focused_preview.isNull():
+                raise RuntimeError("Could not reload the keyboard-focus review images")
+            if normal_focus == focused_preview:
+                raise RuntimeError(
+                    "Keyboard-focus preview is pixel-identical to Diagnostics; "
+                    "the visible focus indicator was not captured"
+                )
 
             # Right-click is now a shortcut menu; the primary actions are also
             # visible in the selected-server workspace.

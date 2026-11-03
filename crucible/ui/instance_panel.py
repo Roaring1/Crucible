@@ -333,6 +333,9 @@ class InstancePanel(QWidget):
             "padding: 6px 10px; border: none; font-weight: 600; } "
             f"QToolButton#MoreTabsButton:hover {{ color: {theme.TEXT}; "
             f"background: {theme.SURFACE0}; }}"
+            f"QToolButton#MoreTabsButton:focus {{ color: {theme.TEXT}; "
+            f"background: {theme.SURFACE0}; border: 2px solid {theme.ACCENT}; "
+            "border-radius: 4px; }"
         )
         self._tabs.setCornerWidget(
             self._more_tabs_button, Qt.Corner.TopRightCorner

@@ -360,6 +360,7 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  assert tabs.accessibleName()=='Selected server workspace pages'
  assert bar.accessibleName()=='Server workspace navigation'
  assert panel._more_tabs_button.accessibleName()=='More workspace tabs'
+ assert 'QToolButton#MoreTabsButton:focus' in panel._more_tabs_button.styleSheet()
 
  stopped_focus=focusable_widgets(window)
  stopped_order=(

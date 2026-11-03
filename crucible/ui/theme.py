@@ -468,4 +468,31 @@ QProgressBar::chunk {{
     background-color: {ACCENT};
     border-radius: 2px;
 }}
+
+/* The global QWidget rule removes native outlines. Restore a visible,
+   high-contrast keyboard focus boundary for interactive controls. */
+QPushButton:focus, QToolButton:focus {{
+    border: 2px solid {ACCENT};
+}}
+QPushButton#PrimaryButton:focus,
+QPushButton#DangerButton:focus,
+QPushButton#SidebarAddButton:focus,
+QPushButton#RestartButton:focus,
+QPushButton#AttachButton:focus,
+QToolButton#MoreTabsButton:focus {{
+    border: 2px solid {ACCENT};
+}}
+QAbstractItemView:focus {{
+    border: 2px solid {ACCENT};
+}}
+QPlainTextEdit:focus, QTextEdit:focus {{
+    border: 2px solid {ACCENT};
+}}
+QCheckBox:focus {{
+    border: 1px solid {ACCENT};
+    border-radius: 3px;
+}}
+QComboBox:focus {{
+    border: 2px solid {ACCENT};
+}}
 """

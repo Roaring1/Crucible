@@ -53,3 +53,40 @@ def test_server_status_text_meets_wcag_aa_contrast_on_app_surfaces():
                 f"{status} status label has only {ratio:.2f}:1 contrast "
                 f"({foreground} on {background})"
             )
+
+
+def test_keyboard_focus_indicators_cover_primary_interactive_widgets():
+    stylesheet = theme.STYLESHEET
+    required_selectors = (
+        "QPushButton:focus",
+        "QToolButton:focus",
+        "QPushButton#PrimaryButton:focus",
+        "QPushButton#DangerButton:focus",
+        "QPushButton#SidebarAddButton:focus",
+        "QToolButton#MoreTabsButton:focus",
+        "QAbstractItemView:focus",
+        "QPlainTextEdit:focus",
+        "QTextEdit:focus",
+        "QCheckBox:focus",
+        "QComboBox:focus",
+        "QTabBar::tab:focus",
+    )
+    for selector in required_selectors:
+        assert selector in stylesheet, (
+            f"{selector} must have an explicit visible keyboard focus style"
+        )
+
+    # ACCENT is the focus-boundary color. These surfaces cover the sidebar,
+    # workspace, tab strip and raised controls where these widgets are rendered.
+    for background in (
+        theme.CRUST,
+        theme.MANTLE,
+        theme.BASE,
+        theme.SURFACE0,
+        theme.SURFACE1,
+    ):
+        ratio = _contrast_ratio(theme.ACCENT, background)
+        assert ratio >= 3.0, (
+            f"Keyboard focus boundary has only {ratio:.2f}:1 contrast "
+            f"({theme.ACCENT} on {background})"
+        )
