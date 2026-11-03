@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
  QGroupBox,
  QInputDialog,
  QMenu,
+ QMessageBox,
  QPushButton,
  QStatusBar,
 )
@@ -316,6 +317,55 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  assert tabs.currentWidget() is panel._console
  assert panel._btn_start.height() >= 44 and panel._btn_stop.height() >= 44
  assert all(not bar.isTabVisible(i) for i in (6,7,8))
+
+ # Stop must wait for a confirmed result; cancelling a failed graceful stop
+ # restores the running state, while an in-progress/uncertain transition
+ # cannot dispatch duplicate lifecycle commands. Start is offered only from
+ # a confirmed stopped state. All tmux calls are intercepted below.
+ def synchronous_tmux(operation, callback):
+  callback(*operation())
+
+ panel._update_status_display('running')
+ with patch.object(panel._tmux,'stop',return_value=(False,'simulated graceful-stop failure')), \
+      patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.Cancel), \
+      patch.object(panel,'_run_tmux',new=synchronous_tmux):
+  panel._do_stop()
+ assert panel._current_status=='running'
+ assert panel._btn_stop.isEnabled() and not panel._btn_start.isEnabled()
+
+ panel._update_status_display('stopping')
+ assert not panel._btn_stop.isEnabled(), 'Stop must disable during an existing stop transition'
+ with patch.object(panel,'_run_tmux') as duplicate_stop:
+  panel._do_stop()
+ assert not duplicate_stop.called, 'a second Stop must not be dispatched while stopping'
+
+ panel._update_status_display('unknown')
+ assert not panel._btn_start.isEnabled() and not panel._btn_stop.isEnabled()
+ with patch.object(panel,'_choose_fml_query_result',return_value='confirm'), \
+      patch.object(panel,'_preflight_properties'), \
+      patch.object(panel,'_run_tmux') as uncertain_start:
+  panel._do_start()
+  panel._do_stop()
+ assert not uncertain_start.called, 'uncertain lifecycle state must not dispatch Start or Stop'
+
+ panel._update_status_display('running')
+ with patch.object(panel._tmux,'stop',return_value=(True,'stopped')) as graceful_stop, \
+      patch.object(panel._tmux,'start') as unexpected_start, \
+      patch.object(panel,'_run_tmux',new=synchronous_tmux):
+  panel._do_stop()
+ assert graceful_stop.call_count==1
+ assert not unexpected_start.called, 'Stop must never chain an automatic Start'
+ assert panel._current_status=='stopped'
+ assert panel._btn_start.isEnabled() and not panel._btn_stop.isEnabled()
+
+ panel._update_status_display('stopped')
+ with patch.object(panel,'_choose_fml_query_result',return_value='confirm'), \
+      patch.object(panel,'_preflight_properties'), \
+      patch.object(panel,'_run_tmux') as stopped_start:
+  panel._do_start()
+ assert stopped_start.called, 'Start should be dispatched once the server is confirmed stopped'
+ panel._update_status_display('stopped')
+ panel._btn_start.setText('▶  Start')
  panel._more_tab_actions[6].trigger();app.processEvents()
  assert tabs.currentWidget() is panel._config
  assert panel._more_tabs_button.text().startswith('More: Config')
@@ -424,4 +474,4 @@ for widget in app.topLevelWidgets():
  widget.deleteLater()
 QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 app.processEvents()
-print('Qt workflow smoke passed: live suggestions, caret completion, keyboard, resizing, sorting, workers, provider, rename, drop')
+print('Qt workflow smoke passed: navigation, stop/start guards, cancellation recovery, backup restore, keyboard, resizing, workers, provider, rename and drop')

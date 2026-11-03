@@ -914,10 +914,8 @@ class InstancePanel(QWidget):
             f"color: {color}; font-size: 12px; font-weight: 600;"
         )
 
-        running  = (status == "running")
-        starting = (status in ("starting", "stopping"))
         self._btn_start.setEnabled(status == "stopped")
-        self._btn_stop.setEnabled(running or starting)
+        self._btn_stop.setEnabled(status in ("running", "starting"))
 
         # Drive (or stop) the fast transition poll based on the new state.
         if status in ("starting", "stopping"):
@@ -1080,6 +1078,11 @@ class InstancePanel(QWidget):
         return None
 
     def _do_start(self) -> None:
+        if self._current_status != "stopped":
+            self.show_feedback(
+                "Start is available only after the server is confirmed stopped."
+            )
+            return
         if self._mods.has_active_operation() or self._setup.has_active_operation():
             QMessageBox.information(self, "Operation in progress", "Wait for mod or setup operations to finish before starting this server.")
             return
@@ -1118,7 +1121,10 @@ class InstancePanel(QWidget):
             self.watchdog_watch_requested.emit(inst, inst.auto_restart)
 
     def _do_stop(self) -> None:
-        if not self._instance:
+        if (
+            not self._instance
+            or self._current_status not in ("running", "starting")
+        ):
             return
         inst = self._instance
         if self._watchdog:
