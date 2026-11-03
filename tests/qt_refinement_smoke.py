@@ -38,6 +38,16 @@ from crucible.ui.tabs.mods_tab import ModsTab
 from crucible.ui.tabs.players_tab import PlayersTab
 
 app=QApplication([]);app.setStyleSheet(theme.STYLESHEET)
+
+def focusable_in_tab_order(root_widget):
+ seen=set();ordered=[];widget=root_widget
+ while widget not in seen and len(ordered)<200:
+  seen.add(widget)
+  if widget.isVisible() and widget.isEnabled() and widget.focusPolicy()!=Qt.FocusPolicy.NoFocus:
+   ordered.append(widget)
+  widget=widget.nextInFocusChain()
+ return ordered
+
 root=Path(tempfile.mkdtemp(prefix='crucible-qt-test-'))
 inst=ServerInstance(str(root/'server'),'Test server',minecraft_version='1.21.1',loader='fabric',loader_version='0.16.10')
 rail=Sidebar();rail.populate([inst],{inst.id:'stopped'})
@@ -233,14 +243,50 @@ add.reject()
 with patch.object(NewServerDialog,'_reload_versions',lambda self:None):
  fresh=NewServerDialog(m)
 fresh.resize(720,620);fresh.show();QTest.qWait(20)
+assert fresh._loader_combo.accessibleName()=='Server software'
+assert fresh._ver_combo.accessibleName()=='Minecraft version'
+assert fresh._ver_combo.lineEdit().accessibleName()=='Minecraft version'
+assert fresh._advanced_toggle.accessibleName()=='Show more server version options'
+assert fresh._name_edit.accessibleName()=='Server display name'
+assert fresh._path_edit.accessibleName()=='Server destination folder'
+assert fresh._lver_edit.accessibleName()=='Loader version'
+assert fresh._snap_check.accessibleName()=='Include Minecraft snapshot versions'
+assert fresh._eula_check.accessibleName()=='Accept the Minecraft EULA'
+assert fresh._cancel_btn.accessibleName()=='Cancel server creation'
+assert fresh._create_btn.accessibleName()=='Create server with selected software and folder'
+browse_server_folder=next(
+ button for button in fresh.findChildren(QPushButton)
+ if button.accessibleName()=='Choose server destination folder'
+)
+focus_order=focusable_in_tab_order(fresh)
+expected_focus_order=(
+ fresh._loader_combo,
+ fresh._ver_combo,
+ fresh._ver_combo.lineEdit(),
+ fresh._advanced_toggle,
+ fresh._name_edit,
+ fresh._path_edit,
+ browse_server_folder,
+ fresh._eula_check,
+ fresh._cancel_btn,
+ fresh._create_btn,
+)
+assert all(widget in focus_order for widget in expected_focus_order)
+assert [focus_order.index(widget) for widget in expected_focus_order] == sorted(
+ focus_order.index(widget) for widget in expected_focus_order
+), 'New server keyboard order must follow software/version, optional settings, identity, destination, EULA and final actions'
 assert fresh._name_edit.text() == 'My Server'
 assert fresh._path_edit.text(), 'default server name should produce a real destination path'
 assert not fresh._advanced_body.isVisible()
 fresh._advanced_toggle.click();app.processEvents();assert fresh._advanced_body.isVisible()
+assert fresh._advanced_toggle.accessibleName()=='Hide advanced version options'
 ix=fresh._loader_combo.findText('NeoForge')
 if ix >= 0:
  fresh._loader_combo.setCurrentIndex(ix);app.processEvents()
  assert fresh._lver_row_label.isVisible()
+fresh._advanced_toggle.click();app.processEvents()
+assert not fresh._advanced_body.isVisible()
+assert fresh._advanced_toggle.accessibleName()=='Show more server version options'
 destinations=root/'destinations';destinations.mkdir()
 (destinations/'taken').mkdir();(destinations/'taken-2').mkdir()
 assert fresh._unique_folder_path(destinations,'taken') == destinations/'taken-3'
