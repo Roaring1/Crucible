@@ -7,22 +7,58 @@ from crucible.data.instance_model import ServerInstance
 class UnknownPropertySuggestionSafetyTests(unittest.TestCase):
     def test_server_id_and_server_name_do_not_get_semantically_unsafe_guesses(self):
         doc = PropertiesDoc.loads("server-id=legacy-value\nserver-name=GTNH Server\n")
-        issues = doc.validate(minecraft_version="1.7.10")
+        issues = doc.validate(minecraft_version="1.21.1")
         self.assertEqual([issue.key for issue in issues], ["server-id", "server-name"])
-        self.assertTrue(all(issue.kind == "unknown_key" for issue in issues))
+        self.assertTrue(all(issue.kind == "unsupported_version" for issue in issues))
         self.assertTrue(all(issue.suggestion is None for issue in issues))
         self.assertTrue(all(issue.options == [] for issue in issues))
-        self.assertIn("not an ID", issues[0].message)
-        self.assertIn("not a display name", issues[1].message)
+        self.assertTrue(all("removed in Minecraft 1.8.0" in issue.message for issue in issues))
 
     def test_full_repair_does_not_rename_ambiguous_custom_or_legacy_keys(self):
         doc = PropertiesDoc.loads("server-id=legacy-value\nserver-name=GTNH Server\n")
-        changes = doc.autofix(fix_unknown_keys=True, minecraft_version="1.7.10")
+        changes = doc.autofix(fix_unknown_keys=True, minecraft_version="1.21.1")
         self.assertEqual(changes, [])
         self.assertEqual(doc.get("server-id"), "legacy-value")
         self.assertEqual(doc.get("server-name"), "GTNH Server")
         self.assertIsNone(doc.get("server-ip"))
         self.assertIsNone(doc.get("level-name"))
+
+    def test_official_gtnh_1710_legacy_server_keys_are_valid(self):
+        doc = PropertiesDoc.loads(
+            "server-id=unnamed\n"
+            "server-name=\n"
+            "texture-pack=\n"
+        )
+        self.assertEqual(doc.validate(minecraft_version="1.7.10"), [])
+
+    def test_gtnh_legacy_server_keys_are_unsupported_after_1710(self):
+        for version in ("1.8.0", "1.12.2", "1.21.1"):
+            with self.subTest(version=version):
+                doc = PropertiesDoc.loads(
+                    "server-id=unnamed\n"
+                    "server-name=\n"
+                    "texture-pack=\n"
+                )
+                issues = doc.validate(minecraft_version=version)
+                self.assertEqual(
+                    {issue.key for issue in issues},
+                    {"server-id", "server-name", "texture-pack"},
+                )
+                self.assertTrue(all(issue.kind == "unsupported_version" for issue in issues))
+                self.assertTrue(all(issue.suggestion is None for issue in issues))
+
+    def test_unknown_version_keeps_legacy_gtnh_keys_advisory(self):
+        doc = PropertiesDoc.loads(
+            "server-id=unnamed\n"
+            "server-name=\n"
+            "texture-pack=\n"
+        )
+        issues = doc.validate(minecraft_version=None)
+        self.assertEqual(
+            {issue.key for issue in issues},
+            {"server-id", "server-name", "texture-pack"},
+        )
+        self.assertTrue(all(issue.kind == "unknown_key" for issue in issues))
 
     def test_clear_typo_still_gets_a_suggestion(self):
         issues = PropertiesDoc.loads("max-player=12\n").validate(minecraft_version="1.21.1")
@@ -71,6 +107,9 @@ class VersionedPropertiesValidationTests(unittest.TestCase):
             "difficulty=3\n"
             "gamemode=0\n"
             "level-type=rwg\n"
+            "server-id=unnamed\n"
+            "server-name=\n"
+            "texture-pack=\n"
         )
         self.assertEqual(doc.validate(minecraft_version="1.7.10"), [])
 

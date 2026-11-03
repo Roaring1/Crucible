@@ -67,6 +67,12 @@ _RESOURCE_LOCATION_RE = re.compile(r"^[a-z0-9_.-]+:[a-z0-9/._-]+$")
 # schemas available for older server versions, but do not suppress unknown-key
 # warnings on 1.21.2+ (or when the Minecraft version is unknown).
 _VERSIONED_PROPERTY_SPECS: dict[str, tuple[str, PropSpec]] = {
+    # GTNH's official 1.7.10 server.properties includes these legacy keys.
+    # They are not modern Java settings, but must not be treated as typos on
+    # the exact legacy runtime GTNH still ships. Keep their values untouched.
+    "server-id": ("1.8.0", PropSpec("server-id", _STR, "unnamed")),
+    "server-name": ("1.8.0", PropSpec("server-name", _STR, "")),
+    "texture-pack": ("1.8.0", PropSpec("texture-pack", _STR, "")),
     "announce-player-achievements": (
         "1.12.0", PropSpec("announce-player-achievements", _BOOL, "true")
     ),
