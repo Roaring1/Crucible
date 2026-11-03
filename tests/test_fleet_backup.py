@@ -287,6 +287,111 @@ def test_unassigned_retired_manual_and_flat_sources_are_preserved_then_pruned_af
     assert failed.exists()
 
 
+def test_manual_legacy_source_is_not_retired_when_retained_snapshot_bytes_are_corrupt(
+    tmp_path,
+):
+    instance = make_server(tmp_path / "server")
+    base = tmp_path / "legacy-backups"
+    manual = base / "manual" / "unassigned-server-snapshot"
+    manual.mkdir(parents=True)
+    source_file = manual / "server.properties"
+    source_file.write_bytes(b"level-name=legacy_world\n")
+
+    backups = FleetBackupManager(
+        [instance],
+        FakeTmux(),
+        root=tmp_path / "fleet",
+        legacy_backup_base=base,
+    )
+    first = backups.run_backup()
+    first_record = next(
+        item
+        for item in backups._load_manifest(first.path)["legacy_sources"]
+        if item["source"] == "manual/unassigned-server-snapshot"
+    )
+    first_file_record = first_record["files"][0]
+    first_stored = first.path.joinpath(*Path(first_file_record["path"]).parts)
+    original_bytes = source_file.read_bytes()
+
+    first_stored.chmod(0o600)
+    first_stored.write_bytes(b"X" + original_bytes[1:])
+    first_stored.chmod(0o444)
+
+    second = backups.run_backup()
+    second_record = next(
+        item
+        for item in backups._load_manifest(second.path)["legacy_sources"]
+        if item["source"] == "manual/unassigned-server-snapshot"
+    )
+    second_stored = second.path.joinpath(
+        *Path(second_record["files"][0]["path"]).parts
+    )
+
+    assert second_stored.read_bytes() == original_bytes
+    assert manual.exists()
+    state = json.loads(backups.state_path.read_text(encoding="utf-8"))
+    assert any(
+        first.generation_id in error
+        for error in state["legacy_source_migration"]["cleanup_errors"]
+    )
+
+    third = backups.run_backup()
+    assert not first.path.exists()
+    assert not manual.exists()
+    assert backups.verify_generation(second.path, deep=True)["ok"]
+    assert backups.verify_generation(third.path, deep=True)["ok"]
+
+
+def test_legacy_source_added_after_hashing_is_not_deleted(tmp_path, monkeypatch):
+    from crucible.data import fleet_backup as fleet_module
+
+    instance = make_server(tmp_path / "server")
+    base = tmp_path / "legacy-backups"
+    manual = base / "manual" / "late-file-server"
+    manual.mkdir(parents=True)
+    source_file = manual / "server.properties"
+    source_file.write_bytes(b"level-name=legacy_world\n")
+
+    backups = FleetBackupManager(
+        [instance],
+        FakeTmux(),
+        root=tmp_path / "fleet",
+        legacy_backup_base=base,
+    )
+
+    # Keep the original source for the explicit cleanup exercise while still
+    # creating two completed immutable generations.
+    monkeypatch.setattr(
+        FleetBackupManager,
+        "_cleanup_migrated_legacy_sources",
+        lambda self, retained: (0, 0, len(self.legacy_backup_blockers()), 1, []),
+    )
+    backups.run_backup()
+    backups.run_backup()
+    monkeypatch.undo()
+
+    original_hash = fleet_module._hash_file
+    injected = False
+    late_file = manual / "added-after-inventory.txt"
+
+    def add_file_after_source_hash(path):
+        nonlocal injected
+        digest = original_hash(path)
+        if Path(path) == source_file and not injected:
+            late_file.write_bytes(b"this file was never present in either backup")
+            injected = True
+        return digest
+
+    monkeypatch.setattr(fleet_module, "_hash_file", add_file_after_source_hash)
+    cleanup = backups._cleanup_migrated_legacy_sources(backups.list_generations())
+
+    assert injected
+    assert manual.is_dir()
+    assert source_file.read_bytes() == b"level-name=legacy_world\n"
+    assert late_file.read_bytes() == b"this file was never present in either backup"
+    assert any("changed after verification" in error for error in cleanup[4])
+
+
 def test_external_serverbackup_root_and_unregistered_rollbacks_join_two_generation_policy(
     tmp_path, monkeypatch
 ):
@@ -546,6 +651,42 @@ def test_directory_fsync_failure_keeps_prior_generations_and_cleans_staging(
     assert [
         row.generation_id for row in backups.list_generations()
     ] == [second.generation_id, first.generation_id]
+    assert not list(backups.staging_dir.iterdir())
+
+
+def test_post_rename_fsync_failure_rolls_back_unpublished_generation(
+    tmp_path, monkeypatch
+):
+    instance = make_server(tmp_path / "server")
+    backups = manager(tmp_path, [instance])
+    first = backups.run_backup()
+    second = backups.run_backup()
+    original_fsync = FleetBackupManager._fsync_directory_strict
+
+    def fail_retained_parent(path):
+        if path == backups.generations_dir:
+            raise FleetBackupError("simulated post-rename parent fsync failure")
+        original_fsync(path)
+
+    monkeypatch.setattr(
+        FleetBackupManager,
+        "_fsync_directory_strict",
+        staticmethod(fail_retained_parent),
+    )
+    with pytest.raises(
+        FleetBackupError, match="simulated post-rename parent fsync failure"
+    ):
+        backups.run_backup()
+
+    assert first.path.exists()
+    assert second.path.exists()
+    assert sorted(path.name for path in backups.generations_dir.iterdir()) == sorted(
+        [first.generation_id, second.generation_id]
+    )
+    assert [
+        row.generation_id for row in backups.list_generations()
+    ] == [second.generation_id, first.generation_id]
+    assert backups.generation_issues() == []
     assert not list(backups.staging_dir.iterdir())
 
 

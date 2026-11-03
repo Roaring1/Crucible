@@ -825,9 +825,9 @@ def cmd_backup_fleet(manager: InstanceManager, tmux: TmuxManager, args) -> None:
     if args.list:
         generations = backups.list_generations()
         if not generations:
-            dim("No verified fleet backup generations exist yet.")
+            dim("No complete fleet backup generations exist yet.")
             return
-        print("\n  VERIFIED FLEET BACKUP GENERATIONS")
+        print("\n  COMPLETE FLEET BACKUP GENERATIONS")
         print("  " + "─" * 86)
         for entry in generations:
             print(

@@ -14,6 +14,7 @@ from PyQt6.QtCore import QObject, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -36,6 +37,7 @@ from ...data.fleet_backup import (
     FleetBackupError,
     FleetBackupManager,
     FleetBackupResult,
+    fleet_operation_lock,
 )
 from ...data.instance_manager import InstanceManager
 from ...data.instance_model import ServerInstance
@@ -50,14 +52,22 @@ class _FleetBackupWorker(QObject):
     finished = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, instances, mode: str):
+    def __init__(
+        self,
+        instances,
+        mode: str,
+        restore_args: tuple[str, str, Path, str] | None = None,
+    ):
         super().__init__()
         self._instances = list(instances)
         self._mode = mode
+        self._restore_args = restore_args
 
     def run(self) -> None:
         try:
-            if self._mode in {"list", "capture", "verify", "install_timer"}:
+            if self._mode in {
+                "list", "capture", "verify", "install_timer", "restore"
+            }:
                 manager = FleetBackupManager(self._instances, TmuxManager())
             else:
                 manager = None
@@ -99,6 +109,26 @@ class _FleetBackupWorker(QObject):
                         f"generations. Migrate/review them first: {names}"
                     )
                 result = backup_scheduler.install_timer()
+            elif self._mode == "restore":
+                assert manager is not None
+                if self._restore_args is None:
+                    raise FleetBackupError("A server restore target was not selected.")
+                generation_id, instance_id, target, server_name = self._restore_args
+                # Serialize with timer/manual backup, world operations and pack
+                # updates so retention cannot prune this generation mid-restore.
+                with fleet_operation_lock(manager.root):
+                    restored = manager.restore_server(
+                        generation_id,
+                        instance_id,
+                        target,
+                        deep_verify=True,
+                    )
+                result = {
+                    "generation_id": generation_id,
+                    "instance_id": instance_id,
+                    "server_name": server_name,
+                    "target": str(restored),
+                }
             elif self._mode == "remove_timer":
                 result = backup_scheduler.remove_timer()
             else:
@@ -301,7 +331,25 @@ class BackupTab(QWidget):
         label.setStyleSheet(
             f"color: {theme.TEXT}; font-size: 13px; font-weight: 700;"
         )
-        layout.addWidget(label)
+        generation_heading = QHBoxLayout()
+        generation_heading.addWidget(label)
+        generation_heading.addStretch()
+        self._restore_btn = QPushButton(
+            "Restore selected server to a new folder…"
+        )
+        self._restore_btn.setMinimumHeight(36)
+        self._restore_btn.setAccessibleName(
+            "Restore selected server snapshot to a new folder"
+        )
+        self._restore_btn.setToolTip(
+            "Deep-verify the selected fleet generation, then restore only the "
+            "currently selected server into a new separate folder. The live "
+            "registered server is never overwritten."
+        )
+        self._restore_btn.setEnabled(False)
+        self._restore_btn.clicked.connect(self._restore_selected_server)
+        generation_heading.addWidget(self._restore_btn)
+        layout.addLayout(generation_heading)
 
         self._table = QTableWidget(0, 5)
         self._table.setHorizontalHeaderLabels(
@@ -324,8 +372,10 @@ class BackupTab(QWidget):
 
         self._details = QLabel(
             "A generation is published only after every registered server has been "
-            "captured and its file inventory and checksums have been verified. "
-            "A failed capture does not rotate away the previous generations."
+            "captured and its manifest, file inventory, paths and sizes pass checks. "
+            "Newly copied data is SHA-256 recorded; unchanged immutable files are "
+            "reused. Use Verify retained generations to re-hash every stored file "
+            "before relying on a restore."
         )
         self._details.setWordWrap(True)
         self._details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -369,7 +419,12 @@ class BackupTab(QWidget):
     # Background jobs
     # ------------------------------------------------------------------
 
-    def _run_job(self, mode: str) -> None:
+    def _run_job(
+        self,
+        mode: str,
+        *,
+        restore_args: tuple[str, str, Path, str] | None = None,
+    ) -> None:
         if self.has_active_operation():
             return
         instances = self._instances()
@@ -386,7 +441,9 @@ class BackupTab(QWidget):
 
         self._thread = QThread()
         self._thread.setObjectName("CrucibleFleetBackupThread")
-        self._worker = _FleetBackupWorker(instances, mode)
+        self._worker = _FleetBackupWorker(
+            instances, mode, restore_args=restore_args
+        )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.finished.connect(self._on_job_finished)
@@ -408,6 +465,7 @@ class BackupTab(QWidget):
                 "list": "Checking retained generations and timer status…",
                 "capture": "Capturing every registered server; running servers are safely flushed…",
                 "verify": "Deep-verifying retained generations and every SHA-256 checksum…",
+                "restore": "Deep-verifying the selected generation and restoring to a new folder…",
                 "install_timer": "Installing and enabling the systemd user timer…",
                 "remove_timer": "Disabling the automatic fleet backup timer…",
             }
@@ -417,6 +475,11 @@ class BackupTab(QWidget):
         else:
             self._progress_label.hide()
             self._progress.hide()
+        self._restore_btn.setEnabled(
+            not busy
+            and self._instance is not None
+            and self._table.currentRow() >= 0
+        )
         self._backup_btn.setText(
             "Backing up all servers…" if busy and mode == "capture"
             else "Back up all servers now"
@@ -434,13 +497,30 @@ class BackupTab(QWidget):
                 )
                 self._last_completed.setText(result.generation_id)
                 self._details.setText(
-                    f"Generation {result.generation_id} was verified and published. "
+                    f"Generation {result.generation_id} passed manifest/inventory "
+                    "checks and was published. Newly copied data was SHA-256 recorded; "
+                    "use Verify retained generations for a deep re-hash of every file. "
                     f"Logical size: {_human_size(result.logical_bytes)}. "
                     f"New data copied: {_human_size(result.bytes_copied)}. "
                     f"Immutable data reused from the previous generation: "
                     f"{_human_size(result.bytes_reused)}. "
                     f"Older generations pruned: {len(result.pruned_generations)}."
                 )
+        elif mode == "restore":
+            target = result["target"]
+            QMessageBox.information(
+                self,
+                "Server restore completed",
+                f"{result['server_name']} was restored from generation "
+                f"{result['generation_id']} to a new folder:\n\n{target}\n\n"
+                "Every file in the source generation passed deep SHA-256 "
+                "verification. The registered live server was not changed.",
+            )
+            self._details.setText(
+                f"Restored {result['server_name']} from generation "
+                f"{result['generation_id']} to {target}. The source generation "
+                "passed deep SHA-256 verification; no live server path was changed."
+            )
         elif mode == "verify":
             failed = [row for row in result if not row["ok"]]
             if failed:
@@ -471,7 +551,7 @@ class BackupTab(QWidget):
                 "The systemd user timer is disabled. Existing backup generations are unchanged.",
             )
 
-        if mode in {"capture", "install_timer", "remove_timer", "verify"}:
+        if mode in {"capture", "install_timer", "remove_timer", "verify", "restore"}:
             QTimer.singleShot(100, self._refresh)
 
     def _on_job_failed(self, error: str) -> None:
@@ -484,6 +564,12 @@ class BackupTab(QWidget):
             QMessageBox.warning(self, "Automatic backup timer", error)
         elif mode == "verify":
             QMessageBox.critical(self, "Backup verification failed", error)
+        elif mode == "restore":
+            QMessageBox.critical(
+                self,
+                "Server restore failed",
+                f"{error}\n\nNo registered server folder was overwritten.",
+            )
         else:
             self._scheduler_label.setText("Could not read automatic backup status.")
             self._issues.setText(error)
@@ -545,7 +631,7 @@ class BackupTab(QWidget):
         elif last_status == "failed":
             self._last_result.setText("Failed · previous generations preserved")
         elif generations:
-            self._last_result.setText("Verified generations available")
+            self._last_result.setText("Complete fleet generations available")
         else:
             self._last_result.setText("No backup has run yet")
 
@@ -733,11 +819,14 @@ class BackupTab(QWidget):
     def _show_selected_details(self) -> None:
         row = self._table.currentRow()
         if row < 0:
+            self._restore_btn.setEnabled(False)
             return
         item = self._table.item(row, 4)
         summary = item.data(Qt.ItemDataRole.UserRole) if item else None
         if summary is None:
+            self._restore_btn.setEnabled(False)
             return
+        self._restore_btn.setEnabled(self._instance is not None)
         server_list = ", ".join(summary.server_names) or (
             f"{summary.server_count} registered server(s)"
         )
@@ -803,6 +892,65 @@ class BackupTab(QWidget):
 
     def _verify_generations(self) -> None:
         self._run_job("verify")
+
+    def _restore_selected_server(self) -> None:
+        if self._instance is None or self.has_active_operation():
+            return
+        row = self._table.currentRow()
+        if row < 0:
+            return
+        item = self._table.item(row, 4)
+        summary = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if summary is None:
+            return
+
+        parent_text = QFileDialog.getExistingDirectory(
+            self,
+            "Choose a parent folder for the restored server",
+            str(Path.home()),
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not parent_text:
+            return
+
+        safe_name = "".join(
+            char if char.isalnum() or char in "._-" else "-"
+            for char in self._instance.name
+        ).strip(".-") or "Crucible-server"
+        target = Path(parent_text) / (
+            f"{safe_name}-{str(self._instance.id)[:8]}-restored-"
+            f"{summary.generation_id[-8:]}"
+        )
+        if target.exists() or target.is_symlink():
+            QMessageBox.warning(
+                self,
+                "Restore destination already exists",
+                f"Crucible will never overwrite an existing folder:\n\n{target}\n\n"
+                "Choose a different parent folder.",
+            )
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            "Restore a separate server copy?",
+            f"Crucible will deep-verify every file in generation "
+            f"{summary.generation_id}, then restore only "
+            f"{self._instance.name} to this new folder:\n\n{target}\n\n"
+            "This can require substantial disk space. The live registered "
+            "server is never replaced or modified.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._run_job(
+                "restore",
+                restore_args=(
+                    summary.generation_id,
+                    str(self._instance.id),
+                    target,
+                    self._instance.name,
+                ),
+            )
 
     def _toggle_timer(self) -> None:
         if self._timer_btn.text() == "Refresh timer status":

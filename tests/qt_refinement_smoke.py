@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
  QStatusBar,
 )
 
+from crucible.data.fleet_backup import GenerationSummary
 from crucible.data.instance_manager import InstanceManager
 from crucible.data.instance_model import ServerInstance
 from crucible.mods.mod_manager import ModEntry
@@ -30,6 +31,7 @@ from crucible.ui.main_window import MainWindow
 from crucible.ui.modpack_dialog import ModpackDialog, _PackInstallWorker
 from crucible.ui.new_server_dialog import NewServerDialog
 from crucible.ui.sidebar import Sidebar
+from crucible.ui.tabs.backup_tab import BackupTab
 from crucible.ui.tabs.console_tab import ConsoleTab
 from crucible.ui.tabs.mods_tab import ModsTab
 from crucible.ui.tabs.players_tab import PlayersTab
@@ -141,6 +143,36 @@ assert empty_panel._empty_state.isVisible() and empty_panel._tabs.isHidden() and
 assert not empty_panel._btn_start.isVisible() and not empty_panel._btn_ip.isVisible()
 empty_panel.close();empty_panel.deleteLater();QTest.qWait(10)
 inst=m.add_instance(str(root/'server'),'Before',minecraft_version='1.21.1',loader='fabric')
+
+# The fleet backup workspace exposes restore as a clearly scoped action and
+# names its non-overwrite boundary. Preview with synthetic generation data;
+# never execute the restore worker or touch a real backup generation here.
+preview_generation=GenerationSummary(
+ '20261103T000000000000Z-preview00',
+ root/'preview-fleet'/'generations'/'preview00',
+ '2026-11-03T00:00:00Z',
+ 1,4,4096,4096,
+ server_names=('Before',),
+ world_saves=('Before: world [active]',),
+)
+preview_backup_data={
+ 'generations':[preview_generation],
+ 'issues':[],
+ 'state':{'last_status':'success','last_completed_at_utc':'2026-11-03T00:00:00Z','registered_servers':1},
+ 'scheduler':{'active':'false','enabled':'false','next':'','detail':'synthetic preview'},
+}
+with patch.object(
+ BackupTab,'_run_job',
+ lambda tab,mode: tab._render_inventory(preview_backup_data),
+):
+ backup_ui=BackupTab(m)
+ backup_ui.load(inst)
+assert not backup_ui._restore_btn.isHidden()
+assert backup_ui._restore_btn.isEnabled()
+assert backup_ui._restore_btn.accessibleName()=='Restore selected server snapshot to a new folder'
+assert 'live registered server is never overwritten' in backup_ui._restore_btn.toolTip().lower()
+backup_ui.close();backup_ui.deleteLater();QTest.qWait(10)
+
 # An old registry entry can outlive its deleted folder; import target naming
 # must avoid that reserved path as well as existing folders on disk.
 registered_manager=InstanceManager(root/'registered-import-registry');registered_manager.load()

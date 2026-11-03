@@ -518,6 +518,8 @@ class FleetBackupManager:
 
         lock_handle = self._acquire_lock()
         stage: Path | None = None
+        published_path: Path | None = None
+        published_durable = False
         generation_id = (
             datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ") + "-" + uuid.uuid4().hex[:8]
         )
@@ -621,10 +623,12 @@ class FleetBackupManager:
             stage.chmod(0o700)
             os.replace(stage, final_path)
             stage = None
+            published_path = final_path
             final_path.chmod(0o555)
             self._fsync_directory_strict(final_path)
             self._fsync_directory_strict(self.generations_dir)
             self._fsync_directory_strict(self.staging_dir)
+            published_durable = True
 
             pruned = self._prune_after_publish()
             retained = self.list_generations()
@@ -718,6 +722,27 @@ class FleetBackupManager:
             )
             return result
         except Exception as exc:
+            if published_path is not None and not published_durable and (
+                published_path.exists() or published_path.is_symlink()
+            ):
+                try:
+                    # The atomic rename happened, but one of the directory
+                    # metadata flushes failed. Remove this uncommitted third
+                    # tree while both prior retained generations are intact.
+                    self._make_generation_removable(published_path)
+                    shutil.rmtree(published_path)
+                    try:
+                        self._fsync_directory_strict(self.generations_dir)
+                    except OSError as flush_exc:
+                        print(
+                            "[crucible] could not confirm directory flush after "
+                            f"removing uncommitted generation {published_path}: {flush_exc}"
+                        )
+                except OSError as cleanup_exc:
+                    print(
+                        "[crucible] could not remove uncommitted fleet generation "
+                        f"{published_path}: {cleanup_exc}"
+                    )
             if stage is not None:
                 try:
                     # A failure can occur after sealing has made the staging
@@ -1138,7 +1163,7 @@ class FleetBackupManager:
         if len(retained) < DEFAULT_KEEP_GENERATIONS or not blockers:
             return 0, 0, pending_count, pending_bytes, []
 
-        manifests: list[dict[str, Any]] = []
+        generation_records: list[tuple[GenerationSummary, dict[str, Any]]] = []
         for summary in retained[:DEFAULT_KEEP_GENERATIONS]:
             manifest = self._load_manifest(summary.path)
             if manifest is None:
@@ -1149,7 +1174,7 @@ class FleetBackupManager:
                     pending_bytes,
                     [f"Could not reload generation manifest: {summary.generation_id}"],
                 )
-            manifests.append(manifest)
+            generation_records.append((summary, manifest))
 
         removed_count = 0
         removed_bytes = 0
@@ -1158,8 +1183,8 @@ class FleetBackupManager:
         for blocker in blockers:
             source_name = str(blocker["path"])
             source, _ = self._legacy_source_location(source_name)
-            source_records: list[dict[str, Any]] = []
-            for manifest in manifests:
+            stored_sources: list[tuple[Path, dict[str, Any]]] = []
+            for summary, manifest in generation_records:
                 match = next(
                     (
                         item
@@ -1169,9 +1194,10 @@ class FleetBackupManager:
                     None,
                 )
                 if match is None:
-                    source_records = []
+                    stored_sources = []
                     break
-                source_records.append(match)
+                stored_sources.append((summary.path, match))
+            source_records = [record for _generation_path, record in stored_sources]
 
             if len(source_records) != DEFAULT_KEEP_GENERATIONS:
                 continue
@@ -1242,6 +1268,7 @@ class FleetBackupManager:
 
                 total_bytes = 0
                 source_is_current = True
+                source_signatures: dict[str, dict[str, int]] = {}
                 for relative, source_file in current_files.items():
                     file_records = [records[relative] for records in record_maps]
                     info = source_file.stat(follow_symlinks=False)
@@ -1264,9 +1291,179 @@ class FleetBackupManager:
                     if _hash_file(source_file) != next(iter(expected_hashes)):
                         source_is_current = False
                         break
+                    source_signatures[relative] = signature
                     total_bytes += info.st_size
 
                 if not source_is_current:
+                    continue
+
+                # The matching manifest fingerprints and a healthy external
+                # source do not prove that both stored copies still contain
+                # those bytes. Hash every actual file in both retained
+                # generations before retiring a historical/manual source.
+                source_root_relative = _safe_relative(source_name)
+                expected_source_type = "directory" if is_directory else "file"
+                if any(
+                    item.get("source_type") != expected_source_type
+                    for item in source_records
+                ):
+                    continue
+                stored_copies_valid = True
+                for generation_path, source_record in stored_sources:
+                    stored_map = {
+                        str(item["source_path"]): item
+                        for item in source_record.get("files", [])
+                        if isinstance(item, dict)
+                        and isinstance(item.get("source_path"), str)
+                    }
+                    if stored_map.keys() != record_maps[0].keys():
+                        stored_copies_valid = False
+                        break
+                    for source_file_name, file_entry in stored_map.items():
+                        source_file_relative = _safe_relative(source_file_name)
+                        if is_directory:
+                            inside_parts = source_file_relative.parts[
+                                len(source_root_relative.parts) :
+                            ]
+                            if (
+                                source_file_relative.parts[
+                                    : len(source_root_relative.parts)
+                                ]
+                                != source_root_relative.parts
+                                or not inside_parts
+                            ):
+                                stored_copies_valid = False
+                                break
+                            expected_snapshot_path = (
+                                PurePosixPath("legacy-sources")
+                                / source_root_relative
+                                / PurePosixPath(*inside_parts)
+                            )
+                        else:
+                            expected_snapshot_path = (
+                                PurePosixPath("legacy-sources")
+                                / source_root_relative
+                            )
+                            if source_file_relative != source_root_relative:
+                                stored_copies_valid = False
+                                break
+
+                        try:
+                            recorded_path = _safe_relative(
+                                str(file_entry.get("path", ""))
+                            )
+                            if recorded_path != expected_snapshot_path:
+                                stored_copies_valid = False
+                                break
+                            stored_path = generation_path.joinpath(
+                                *recorded_path.parts
+                            )
+                            if (
+                                stored_path.is_symlink()
+                                or not stored_path.is_file()
+                            ):
+                                stored_copies_valid = False
+                                break
+                            stored_info = stored_path.stat(follow_symlinks=False)
+                            if (
+                                not stat.S_ISREG(stored_info.st_mode)
+                                or stored_info.st_size
+                                != int(file_entry.get("size", -1))
+                                or stored_info.st_mode & 0o222
+                                or not file_entry.get("sha256")
+                                or _hash_file(stored_path)
+                                != str(file_entry["sha256"])
+                            ):
+                                stored_copies_valid = False
+                                break
+                            parent = generation_path
+                            for component in recorded_path.parts[:-1]:
+                                parent = parent / component
+                                if parent.is_symlink() or not parent.is_dir():
+                                    stored_copies_valid = False
+                                    break
+                            if not stored_copies_valid:
+                                break
+                        except (OSError, KeyError, ValueError, TypeError, FleetBackupError):
+                            stored_copies_valid = False
+                            break
+                    if not stored_copies_valid:
+                        errors.append(
+                            f"{source_name}: retained legacy-source bytes failed "
+                            f"SHA-256 verification in generation {generation_path.name}; "
+                            "the original source was preserved"
+                        )
+                        break
+                if not stored_copies_valid:
+                    continue
+
+                # Close the final enumeration-to-delete window. A new file
+                # may have appeared after the source hashes were checked; do
+                # not let rmtree silently discard data absent from the two
+                # retained manifests.
+                source_changed = source.is_symlink()
+                if is_directory:
+                    final_files: dict[str, Path] = {}
+                    if not source.is_dir():
+                        source_changed = True
+                    else:
+                        for current_text, dir_names, file_names in os.walk(
+                            source, topdown=True, followlinks=False
+                        ):
+                            current = Path(current_text)
+                            safe_dirs: list[str] = []
+                            for name in dir_names:
+                                candidate = current / name
+                                if candidate.is_symlink():
+                                    source_changed = True
+                                else:
+                                    safe_dirs.append(name)
+                            dir_names[:] = safe_dirs
+                            for name in file_names:
+                                candidate = current / name
+                                if candidate.is_symlink():
+                                    source_changed = True
+                                    continue
+                                info = candidate.stat(follow_symlinks=False)
+                                if not stat.S_ISREG(info.st_mode):
+                                    source_changed = True
+                                    continue
+                                relative = str(
+                                    PurePosixPath(source_name)
+                                    / PurePosixPath(
+                                        candidate.relative_to(source).as_posix()
+                                    )
+                                )
+                                final_files[relative] = candidate
+                    if final_files.keys() != current_files.keys():
+                        source_changed = True
+                    if not source_changed:
+                        for relative, candidate in final_files.items():
+                            if not _same_signature(
+                                source_signatures.get(relative),
+                                _stat_signature(candidate.stat(follow_symlinks=False)),
+                            ):
+                                source_changed = True
+                                break
+                else:
+                    try:
+                        final_info = source.stat(follow_symlinks=False)
+                        source_changed = (
+                            source_changed
+                            or not stat.S_ISREG(final_info.st_mode)
+                            or not _same_signature(
+                                source_signatures.get(source_name),
+                                _stat_signature(final_info),
+                            )
+                        )
+                    except OSError:
+                        source_changed = True
+
+                if source_changed:
+                    errors.append(
+                        f"{source_name}: legacy source changed after verification; "
+                        "the original was preserved for the next backup cycle"
+                    )
                     continue
 
                 if is_directory:

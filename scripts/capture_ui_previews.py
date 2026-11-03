@@ -339,6 +339,10 @@ def capture_previews(output: Path) -> list[Path]:
 
             panel._tabs.setCurrentWidget(panel._backup)
             panel._backup._render_inventory(preview_backup_data)
+            if not panel._backup._restore_btn.isEnabled():
+                raise RuntimeError(
+                    "Selected-server restore action is not enabled in the synthetic Backups preview"
+                )
             save(selected, "workspace-backups.png", 1440, 900)
             save(selected, "workspace-backups-compact.png", 900, 600)
 
