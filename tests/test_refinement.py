@@ -20,6 +20,15 @@ from crucible.process.resource_monitor import machine_cpu_percent
 from crucible.diagnostics.loadcheck import autofix_loading, parse_crash_log, latest_crash_text
 
 
+@pytest.fixture(autouse=True)
+def isolate_curseforge_credentials(monkeypatch, tmp_path):
+    """Never let this suite inherit the developer's real CurseForge key."""
+    monkeypatch.delenv('CURSEFORGE_API_KEY', raising=False)
+    monkeypatch.delenv('CURSEFORGE_API_KEY_FILE', raising=False)
+    monkeypatch.setattr(cf, '_session_key', '')
+    monkeypatch.setattr(cf, '_DEFAULT_KEY_FILE', tmp_path / 'no-live-curseforge-key')
+
+
 def mf(name='new.jar', data=b'new', project='project'):
     return mr.ModFile(project,'Demo','v2','2.0',name,'https://example.invalid/file',hashlib.sha1(data).hexdigest(),len(data))
 
@@ -115,6 +124,29 @@ def test_unverified_download_is_refused(tmp_path):
     with pytest.raises(mr.ModrinthError):v.replace_files(tmp_path,'old.jar',[file])
 
 
+def test_install_files_refuses_missing_or_invalid_sha1_before_download(tmp_path, monkeypatch):
+    server(tmp_path)
+    called=[]
+    monkeypatch.setattr(mr, '_download', lambda *args, **kwargs: called.append(args))
+    for sha1 in ('', 'abc', 'g'*40):
+        file = mf('unchecked.jar')
+        file.sha1 = sha1
+        result = mr.install_files(tmp_path, [file], verify=False)
+        assert result.failed and 'no valid SHA-1' in result.failed[0]
+    assert called == []
+    assert (tmp_path/'mods/old.jar').read_bytes() == b'old'
+    assert not (tmp_path/'mods/unchecked.jar').exists()
+
+
+def test_install_files_always_verifies_provider_download_even_if_verify_flag_false(tmp_path, monkeypatch):
+    server(tmp_path)
+    monkeypatch.setattr(mr, '_download', lambda url, dest: dest.write_bytes(b'corrupted'))
+    result = mr.install_files(tmp_path, [mf('dependency.jar')], verify=False)
+    assert result.failed and 'checksum mismatch' in result.failed[0]
+    assert not (tmp_path/'mods/dependency.jar').exists()
+    assert (tmp_path/'mods/old.jar').read_bytes() == b'old'
+
+
 def test_restricted_curseforge_download_is_not_fabricated(tmp_path):
     server(tmp_path);file=mf();file.url=''
     with pytest.raises(mr.ModrinthError,match='restricted'):v.replace_files(tmp_path,'old.jar',[file])
@@ -135,6 +167,18 @@ def test_curseforge_requires_explicit_key(monkeypatch,tmp_path):
     with pytest.raises(mr.ModrinthError,match='API key'):cf.search('sodium')
 
 
+def test_modrinth_search_rejects_a_curseforge_namespace_id(monkeypatch):
+    monkeypatch.setattr(mr, '_get', lambda url: {'hits':[{'project_id':'cf:123','title':'Wrong provider'}]})
+    with pytest.raises(mr.ModrinthError, match='wrong provider namespace'):
+        mr.search('example', loader='fabric', mc_version='1.21.1')
+
+
+def test_curseforge_search_rejects_non_numeric_project_identity(monkeypatch):
+    monkeypatch.setattr(cf, '_get', lambda route: [{'id':'not-a-project-id','name':'Example'}])
+    with pytest.raises(mr.ModrinthError, match='valid numeric ID'):
+        cf.search('example', loader='forge', mc_version='1.20.1')
+
+
 def test_curseforge_search_preserves_provider_identity(monkeypatch):
     routes=[]
     monkeypatch.setattr(cf,'_get',lambda route: routes.append(route) or [{'id':123,'name':'Example','slug':'example','downloadCount':99}])
@@ -144,8 +188,90 @@ def test_curseforge_search_preserves_provider_identity(monkeypatch):
     assert 'modLoaderType=6' in routes[0] and 'gameVersion=1.21.1' in routes[0]
 
 
+def test_curseforge_versions_filter_explicit_minecraft_mismatch(monkeypatch):
+    routes = []
+    def fake_get(route):
+        routes.append(route)
+        return [
+            {'id': 1, 'isAvailable': True, 'fileName': 'compatible.jar', 'displayName': '1.20.1',
+             'downloadUrl': 'https://edge.forgecdn.net/compatible.jar',
+             'gameVersions': ['1.20.1'], 'hashes': [{'algo': 1, 'value': 'a' * 40}]},
+            {'id': 2, 'isAvailable': True, 'fileName': 'wrong-mc.jar', 'displayName': '1.19.4',
+             'downloadUrl': 'https://edge.forgecdn.net/wrong.jar',
+             'gameVersions': ['1.19.4'], 'hashes': [{'algo': 1, 'value': 'b' * 40}]},
+        ]
+    monkeypatch.setattr(cf, '_get', fake_get)
+    versions = v.list_versions('cf:123', loader='forge', mc_version='1.20.1')
+    assert [item.filename for item in versions] == ['compatible.jar']
+    assert versions[0].project_id == 'cf:123'
+    assert 'gameVersion=1.20.1' in routes[0] and 'modLoaderType=1' in routes[0]
+
+
+def test_resolve_selected_keeps_curseforge_required_dependency_provider_ids(monkeypatch):
+    main = mr.ModFile('cf:123', 'Main', '100', '1.0', 'main.jar',
+                      'https://edge.forgecdn.net/main.jar', 'a' * 40, 10,
+                      dependencies=['cf:456'])
+    dependency = mr.ModFile('cf:456', 'Dependency', '200', '2.0', 'dep.jar',
+                            'https://edge.forgecdn.net/dep.jar', 'b' * 40, 20)
+    calls = []
+    def fake_list(project_id, *, loader, mc_version):
+        calls.append(project_id)
+        return [dependency] if project_id == 'cf:456' else []
+    monkeypatch.setattr(v, 'list_versions', fake_list)
+    resolved = v.resolve_selected(main, loader='forge', mc_version='1.20.1')
+    assert [item.project_id for item in resolved] == ['cf:123', 'cf:456']
+    assert calls == ['cf:456']
+
+
+def test_curseforge_project_link_rejects_response_for_a_different_id(monkeypatch):
+    monkeypatch.setattr(cf, '_get', lambda route: {'id':999,'slug':'unrelated-project'})
+    with pytest.raises(mr.ModrinthError, match='did not match the requested project ID'):
+        cf.project_url('cf:123')
+
+
+def test_curseforge_identified_project_link_resolves_official_slug(monkeypatch):
+    routes = []
+    monkeypatch.setattr(cf, '_get', lambda route: routes.append(route) or {'id': 123, 'slug': 'example-mod'})
+    assert cf.project_url('cf:123') == 'https://www.curseforge.com/minecraft/mc-mods/example-mod'
+    assert routes == ['/mods/123']
+    with pytest.raises(mr.ModrinthError, match='Invalid CurseForge project ID'):
+        cf.project_url('cf:not-an-id')
+
+
+def test_curseforge_release_metadata_cannot_cross_project_boundaries(monkeypatch):
+    monkeypatch.setattr(cf, '_get', lambda route: [{
+        'id':7, 'isAvailable':True, 'modId':999, 'fileName':'wrong-project.jar', 'downloadUrl':'https://edge.forgecdn.net/wrong.jar',
+        'gameVersions':['1.20.1'], 'hashes':[{'algo':1,'value':'a'*40}],
+    }])
+    with pytest.raises(mr.ModrinthError, match='different project ID'):
+        cf.list_versions('cf:123', loader='forge', mc_version='1.20.1')
+
+
+def test_curseforge_versions_do_not_offer_releases_without_verifiable_sha1(monkeypatch):
+    monkeypatch.setattr(cf, '_get', lambda route: [{
+        'id':7, 'isAvailable':True, 'fileName':'unverifiable.jar', 'downloadUrl':'https://edge.forgecdn.net/file.jar',
+        'gameVersions':['1.20.1'], 'hashes':[],
+    }])
+    assert cf.list_versions('cf:123', loader='forge', mc_version='1.20.1') == []
+
+
+def test_curseforge_versions_refuse_unknown_file_availability(monkeypatch):
+    monkeypatch.setattr(cf, '_get', lambda route: [{
+        'id':7, 'fileName':'unknown-availability.jar', 'downloadUrl':'https://edge.forgecdn.net/file.jar',
+        'gameVersions':['1.20.1'], 'hashes':[{'algo':1,'value':'a'*40}],
+    }])
+    with pytest.raises(mr.ModrinthError, match='omitted or malformed file-availability'):
+        cf.list_versions('cf:123',loader='forge',mc_version='1.20.1')
+
+
+def test_curseforge_versions_reject_malformed_release_list(monkeypatch):
+    monkeypatch.setattr(cf, '_get', lambda route: {'files':[]})
+    with pytest.raises(mr.ModrinthError, match='unexpected release-list format'):
+        cf.list_versions('cf:123', loader='forge', mc_version='1.20.1')
+
+
 def test_curseforge_version_keeps_missing_download_url(monkeypatch):
-    monkeypatch.setattr(cf,'_get',lambda _: [{'id':7,'fileName':'a.jar','downloadUrl':None,'hashes':[{'algo':1,'value':'a'*40}]}])
+    monkeypatch.setattr(cf,'_get',lambda _: [{'id':7,'isAvailable':True,'fileName':'a.jar','downloadUrl':None,'gameVersions':['1.20.1'],'hashes':[{'algo':1,'value':'a'*40}]}])
     assert cf.list_versions('cf:123',loader='forge',mc_version='1.20.1')[0].url==''
 
 
@@ -154,6 +280,19 @@ def test_versions_include_downgrades_and_filter_locally(monkeypatch):
         return {'id':id,'project_id':'p','version_number':id,'loaders':[loader],'game_versions':[mc],'files':[{'filename':id+'.jar','url':'https://example.invalid/a','hashes':{'sha1':'a'*40}}]}
     monkeypatch.setattr(mr,'_get',lambda _: [release('new'),release('old'),release('wrong','forge'),release('wrongmc',mc='1.20.1')])
     assert [f.version_id for f in v.list_versions('p',loader='fabric',mc_version='1.21.1')]==['new','old']
+
+
+def test_pinned_modrinth_dependency_without_sha1_is_not_resolved(monkeypatch):
+    main = mf()
+    main.dependencies=[{'dependency_type':'required','version_id':'pinned-version','project_id':'dependency-project'}]
+    monkeypatch.setattr(mr, '_get', lambda url: {
+        'project_id':'dependency-project','id':'pinned-version',
+        'loaders':['fabric'],'game_versions':['1.21.1'],
+        'files':[{'filename':'dependency.jar','url':'https://cdn.modrinth.com/dependency.jar','hashes':{}}],
+        'dependencies':[],
+    })
+    with pytest.raises(mr.ModrinthError, match='valid SHA-1'):
+        v.resolve_selected(main,loader='fabric',mc_version='1.21.1')
 
 
 def test_pinned_dependency_must_match_platform(monkeypatch):
@@ -315,6 +454,563 @@ def test_exact_identity_requires_returned_file_hash(tmp_path,monkeypatch):
     assert found['old.jar']['identity']=='exact-sha1'
     version['files'][0]['hashes']['sha1']='wrong'
     assert v.identify_files(tmp_path,[tmp_path/'mods/old.jar'])=={}
+
+
+def test_curseforge_fingerprint_matches_reference_vector_and_normalizes_whitespace(tmp_path):
+    # Fixed regression vector cross-checked against a compatible Murmur2/seed-1 implementation.
+    assert cf.fingerprint_bytes(b'foo') == 197930586
+    assert cf.fingerprint_bytes(b'a\tb\n c\r') == cf.fingerprint_bytes(b'abc')
+    path = tmp_path / 'large-boundary.jar'
+    data = (b'abc def\tghi\rjkl\n' * 1200) + b'end'
+    path.write_bytes(data)
+    assert cf.fingerprint_file(path, chunk_size=7) == cf.fingerprint_bytes(data)
+
+
+def test_curseforge_exact_fingerprint_lookup_uses_authenticated_official_endpoint(monkeypatch):
+    from crucible import download_http
+    fingerprint = 197930586
+    body = {
+        'data': {
+            'exactMatches': [{
+                'id': fingerprint,
+                'file': {
+                    'id': 456, 'modId': 123, 'fileFingerprint': fingerprint,
+                    'displayName': 'Demo release', 'fileName': 'demo.jar',
+                    'hashes': [{'algo': 1, 'value': 'a' * 40}],
+                },
+            }],
+            # Fuzzy/partial matches must never become identity.
+            'partialMatches': [{'id': 999, 'file': {'id': 888, 'modId': 777}}],
+        }
+    }
+    captured = {}
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'get_api_key', lambda: 'synthetic-test-key')
+    def fake_open(request, *, timeout):
+        captured['url'] = request.full_url
+        captured['method'] = request.get_method()
+        captured['body'] = json.loads(request.data)
+        captured['key'] = request.get_header('X-api-key')
+        return io.BytesIO(json.dumps(body).encode())
+    monkeypatch.setattr(download_http, 'open_url', fake_open)
+    found = cf.identify_fingerprints({fingerprint: [Path('demo.jar')]})
+    assert captured['url'] == 'https://api.curseforge.com/v1/fingerprints/432'
+    assert captured['method'] == 'POST'
+    assert captured['body'] == {'fingerprints': [fingerprint]}
+    assert captured['key'] == 'synthetic-test-key'
+    assert found[fingerprint]['project_id'] == 'cf:123'
+    assert found[fingerprint]['version_id'] == '456'
+    assert found[fingerprint]['identity'] == 'exact-curseforge-fingerprint'
+    assert set(found) == {fingerprint}
+
+
+def test_curseforge_fingerprint_lookup_rejects_inconsistent_exact_match(monkeypatch):
+    from crucible import download_http
+    fingerprint = 197930586
+    payload = {'data': {'exactMatches': [{
+        'id': fingerprint,
+        'file': {'id': 1, 'modId': 2, 'fileFingerprint': fingerprint + 1,
+                 'displayName': 'inconsistent', 'fileName': 'x.jar'},
+    }]}}
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'get_api_key', lambda: 'synthetic-test-key')
+    monkeypatch.setattr(download_http, 'open_url', lambda request, timeout: io.BytesIO(json.dumps(payload).encode()))
+    assert cf.identify_fingerprints({fingerprint: [Path('x.jar')]}) == {}
+
+
+def test_identify_files_rejects_ambiguous_exact_curseforge_matches(tmp_path, monkeypatch):
+    server(tmp_path)
+    digest = 1234
+    payload = {'data': {'exactMatches': [
+        {'id': digest, 'file': {'id': 654, 'modId': 321, 'fileFingerprint': digest,
+                                'displayName': 'Release A', 'fileName': 'a.jar'}},
+        {'id': digest, 'file': {'id': 655, 'modId': 322, 'fileFingerprint': digest,
+                                'displayName': 'Release B', 'fileName': 'b.jar'}},
+    ]}}
+    from crucible import download_http
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kw: io.BytesIO(b'{}'))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'get_api_key', lambda: 'synthetic-test-key')
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: digest)
+    monkeypatch.setattr(download_http, 'open_url', lambda request, timeout: io.BytesIO(json.dumps(payload).encode()))
+
+    with pytest.raises(mr.ModrinthError, match='matched multiple exact files'):
+        v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+    assert not (tmp_path/'.crucible/added-mods.json').exists()
+
+
+def test_identify_files_uses_curseforge_when_key_available_and_preserves_duplicate_jars(tmp_path, monkeypatch):
+    server(tmp_path)
+    (tmp_path / 'mods' / 'copy.jar').write_bytes(b'old')
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kw: io.BytesIO(b'{}'))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    monkeypatch.setattr(cf, 'identify_fingerprints', lambda mapping: {
+        1234: {'project_id': 'cf:321', 'version_id': '654', 'version': 'Demo',
+               'fingerprint': 1234, 'identity': 'exact-curseforge-fingerprint', 'sha1': ''}
+    })
+    found = v.identify_files(tmp_path, [tmp_path/'mods/old.jar', tmp_path/'mods/copy.jar'])
+    assert found['old.jar']['project_id'] == 'cf:321'
+    assert found['copy.jar']['project_id'] == 'cf:321'
+    record = json.loads((tmp_path/'.crucible/added-mods.json').read_text())
+    assert record['old.jar']['identity'] == 'exact-curseforge-fingerprint'
+    assert record['copy.jar']['identity'] == 'exact-curseforge-fingerprint'
+
+
+def test_identify_files_malformed_modrinth_response_falls_back_to_curseforge(tmp_path, monkeypatch):
+    server(tmp_path)
+    (tmp_path/'mods'/'copy.jar').write_bytes(b'old')
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kwargs: io.BytesIO(b'[]'))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    monkeypatch.setattr(cf, 'identify_fingerprints', lambda mapping: {
+        1234: {'project_id':'cf:321','version_id':'654','version':'Demo','fingerprint':1234,
+               'identity':'exact-curseforge-fingerprint','sha1':hashlib.sha1(b'old').hexdigest()}
+    })
+
+    found = v.identify_files(tmp_path, [tmp_path/'mods/old.jar', tmp_path/'mods/copy.jar'])
+
+    assert {name: meta['project_id'] for name, meta in found.items()} == {
+        'old.jar':'cf:321', 'copy.jar':'cf:321'
+    }
+    assert 'Modrinth could not be checked' in found.warning
+    assert 'unexpected format' in found.warning
+
+
+def test_identify_files_malformed_modrinth_file_hash_metadata_falls_back_to_curseforge(tmp_path, monkeypatch):
+    server(tmp_path)
+    digest = hashlib.sha1(b'old').hexdigest()
+    malformed = {'project_id':'mr-project','id':'mr-version','version_number':'1',
+                 'files':[{'hashes':None}]}
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kwargs: io.BytesIO(json.dumps({digest:malformed}).encode()))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    monkeypatch.setattr(cf, 'identify_fingerprints', lambda mapping: {
+        1234: {'project_id':'cf:321','version_id':'654','version':'Demo','fingerprint':1234,
+               'identity':'exact-curseforge-fingerprint','sha1':digest}
+    })
+
+    found = v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+
+    assert found['old.jar']['project_id'] == 'cf:321'
+    assert found['old.jar']['identity'] == 'exact-curseforge-fingerprint'
+    assert 'Modrinth identity response contained malformed file hashes' in found.warning
+
+
+def test_curseforge_identification_malformed_exact_entry_falls_back_to_modrinth(tmp_path, monkeypatch):
+    server(tmp_path)
+    digest = hashlib.sha1(b'old').hexdigest()
+    version = {'project_id':'mr-project','id':'mr-version','version_number':'1',
+               'files':[{'hashes':{'sha1':digest}}]}
+    payload = {'data': {'exactMatches': [{'id':'not-a-fingerprint','file':{
+        'id':654,'modId':321,'fileFingerprint':1234,'fileName':'old.jar','hashes':[]
+    }}]}}
+    from crucible import download_http
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kwargs: io.BytesIO(json.dumps({digest:version}).encode()))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'get_api_key', lambda: 'synthetic-test-key')
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    monkeypatch.setattr(download_http, 'open_url', lambda request, timeout: io.BytesIO(json.dumps(payload).encode()))
+
+    found = v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+
+    assert found['old.jar']['project_id'] == 'mr-project'
+    assert found['old.jar']['identity'] == 'exact-sha1'
+    assert 'CurseForge fingerprint response contained invalid exact-match IDs' in found.warning
+
+
+def test_identify_files_malformed_curseforge_response_preserves_modrinth_match(tmp_path, monkeypatch):
+    server(tmp_path)
+    digest = hashlib.sha1(b'old').hexdigest()
+    version = {'project_id':'mr-project','id':'mr-version','version_number':'1',
+               'files':[{'hashes':{'sha1':digest}}]}
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kwargs: io.BytesIO(json.dumps({digest:version}).encode()))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'get_api_key', lambda: 'synthetic-test-key')
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    from crucible import download_http
+    monkeypatch.setattr(download_http, 'open_url', lambda request, timeout: io.BytesIO(b'{"data":{"exactMatches":"not-an-array"}}'))
+
+    found = v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+
+    assert found['old.jar']['identity'] == 'exact-sha1'
+    assert found['old.jar']['project_id'] == 'mr-project'
+    assert 'CurseForge could not be checked' in found.warning
+    assert 'unexpected format' in found.warning
+
+
+def test_modrinth_never_accepts_or_requests_a_curseforge_project_id(tmp_path, monkeypatch):
+    monkeypatch.setattr(mr, '_get', lambda *args, **kwargs: pytest.fail('cf: identifiers must never reach Modrinth endpoints'))
+    with pytest.raises(mr.ModrinthError, match='Modrinth project ID'):
+        mr.resolve_file('cf:123', loader='forge', mc_version='1.20.1')
+    with pytest.raises(mr.ModrinthError, match='Modrinth project ID'):
+        mr.resolve_modpack('cf:123', loader='forge', mc_version='1.20.1')
+
+
+def test_modrinth_release_selectors_reject_cross_project_metadata(monkeypatch):
+    bad_release = {'project_id':'another-project','id':'wrong-version','name':'Wrong',
+                   'version_number':'1','loaders':['fabric'],'game_versions':['1.21.1'],
+                   'files':[{'filename':'wrong.jar','url':'https://cdn.modrinth.com/wrong.jar',
+                             'hashes':{'sha1':'a'*40}}]}
+    monkeypatch.setattr(mr, '_get', lambda url: [bad_release])
+    with pytest.raises(mr.ModrinthError, match='different or unknown project'):
+        v.list_versions('requested-project', loader='fabric', mc_version='1.21.1')
+    with pytest.raises(mr.ModrinthError, match='different or unknown project'):
+        mr.resolve_file('requested-project', loader='fabric', mc_version='1.21.1')
+    with pytest.raises(mr.ModrinthError, match='different or unknown project'):
+        mr.resolve_modpack('requested-project', loader='fabric', mc_version='1.21.1')
+
+
+def test_modhit_curseforge_page_never_guesses_numeric_id_as_slug():
+    missing_slug = mr.ModHit('cf:123', '', 'Example', '', 0)
+    assert missing_slug.page_url() == ''
+    known_slug = mr.ModHit('cf:123', 'example-mod', 'Example', '', 0)
+    assert known_slug.page_url() == 'https://www.curseforge.com/minecraft/mc-mods/example-mod'
+    encoded_slug = mr.ModHit('cf:123', 'unsafe slug/fragment', 'Example', '', 0)
+    assert encoded_slug.page_url() == 'https://www.curseforge.com/minecraft/mc-mods/unsafe%20slug%2Ffragment'
+
+
+def test_curseforge_parent_rejects_dependency_without_curseforge_namespace(monkeypatch):
+    main = mr.ModFile('cf:123', 'Main', '100', '1.0', 'main.jar',
+                      'https://edge.forgecdn.net/main.jar', 'a'*40, 1,
+                      dependencies=['unqualified-project-id'])
+    monkeypatch.setattr(v, 'list_versions', lambda *args, **kwargs: pytest.fail('invalid dependency must fail before provider routing'))
+    monkeypatch.setattr(mr, '_get', lambda *args, **kwargs: pytest.fail('CurseForge dependency must never reach Modrinth'))
+    with pytest.raises(mr.ModrinthError, match='without a namespaced CurseForge project ID'):
+        v.resolve_selected(main, loader='forge', mc_version='1.20.1')
+
+
+def test_pinned_curseforge_dependency_routes_through_provider_aware_listing(monkeypatch):
+    main = mr.ModFile('mr-main', 'Main', 'main-v', '1.0', 'main.jar',
+                      'https://cdn.modrinth.com/main.jar', 'a'*40, 1,
+                      dependencies=[{'project_id':'cf:456','version_id':'777','dependency_type':'required'}])
+    dependency = mr.ModFile('cf:456', 'Dependency', '777', '2.0', 'dep.jar',
+                            'https://edge.forgecdn.net/dep.jar', 'b'*40, 2)
+    calls=[]
+    monkeypatch.setattr(v, 'list_versions', lambda project_id, *, loader, mc_version: calls.append(
+        (project_id, loader, mc_version)
+    ) or [dependency])
+    monkeypatch.setattr(mr, '_get', lambda *args, **kwargs: pytest.fail('cf: pinned dependency must not call Modrinth /version'))
+
+    resolved = v.resolve_selected(main, loader='forge', mc_version='1.20.1')
+
+    assert [item.project_id for item in resolved] == ['mr-main','cf:456']
+    assert calls == [('cf:456','forge','1.20.1')]
+
+
+def test_identical_modrinth_jars_keep_separate_filename_records(tmp_path, monkeypatch):
+    server(tmp_path)
+    (tmp_path/'mods'/'copy.jar').write_bytes(b'old')
+    digest = hashlib.sha1(b'old').hexdigest()
+    version = {'project_id':'mr-project','id':'mr-version','version_number':'1',
+               'files':[{'hashes':{'sha1':digest}}]}
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kwargs: io.BytesIO(json.dumps({digest:version}).encode()))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: False)
+
+    found = v.identify_files(tmp_path, [tmp_path/'mods/old.jar', tmp_path/'mods/copy.jar'])
+
+    assert set(found) == {'old.jar','copy.jar'}
+    assert found['old.jar'] == found['copy.jar']
+    saved = json.loads((tmp_path/'.crucible/added-mods.json').read_text())
+    assert saved['old.jar']['identity'] == saved['copy.jar']['identity'] == 'exact-sha1'
+
+
+def test_unknown_custom_jar_remains_unlinked_without_fuzzy_fallback(tmp_path, monkeypatch):
+    server(tmp_path)
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kwargs: io.BytesIO(b'{}'))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: False)
+    found = v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+    assert found == {}
+    assert not (tmp_path/'.crucible'/'added-mods.json').exists()
+
+
+def test_identify_files_uses_curseforge_when_modrinth_lookup_fails_and_preserves_duplicate_jars(tmp_path, monkeypatch):
+    server(tmp_path)
+    (tmp_path / 'mods' / 'copy.jar').write_bytes(b'old')
+
+    def modrinth_unavailable(req, **kwargs):
+        raise OSError('synthetic Modrinth outage')
+
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', modrinth_unavailable)
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    monkeypatch.setattr(cf, 'identify_fingerprints', lambda mapping: {
+        1234: {'project_id': 'cf:321', 'version_id': '654', 'version': 'Demo',
+               'fingerprint': 1234, 'identity': 'exact-curseforge-fingerprint',
+               'sha1': hashlib.sha1(b'old').hexdigest()}
+    })
+
+    found = v.identify_files(tmp_path, [tmp_path/'mods/old.jar', tmp_path/'mods/copy.jar'])
+
+    assert set(found) == {'old.jar', 'copy.jar'}
+    for filename in ('old.jar', 'copy.jar'):
+        assert found[filename]['project_id'] == 'cf:321'
+        assert found[filename]['version_id'] == '654'
+        assert found[filename]['identity'] == 'exact-curseforge-fingerprint'
+        assert found[filename]['fingerprint'] == 1234
+        assert found[filename]['sha1'] == hashlib.sha1(b'old').hexdigest()
+    assert 'Modrinth could not be checked' in found.warning
+    assert 'synthetic Modrinth outage' in found.warning
+    record = json.loads((tmp_path/'.crucible/added-mods.json').read_text())
+    assert record['old.jar']['project_id'] == record['copy.jar']['project_id'] == 'cf:321'
+
+
+def test_identify_files_reports_both_provider_failures_without_exposing_credentials(tmp_path, monkeypatch):
+    server(tmp_path)
+
+    def modrinth_unavailable(req, **kwargs):
+        raise OSError('synthetic Modrinth outage')
+
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', modrinth_unavailable)
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    monkeypatch.setattr(cf, 'identify_fingerprints', lambda mapping: (_ for _ in ()).throw(
+        mr.ModrinthError('CurseForge rejected the configured key (HTTP 403).')
+    ))
+
+    with pytest.raises(mr.ModrinthError) as excinfo:
+        v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+    message = str(excinfo.value)
+    assert 'Modrinth' in message and 'synthetic Modrinth outage' in message
+    assert 'CurseForge' in message and 'HTTP 403' in message
+    assert 'synthetic-test-key' not in message
+    assert not (tmp_path/'.crucible/added-mods.json').exists()
+
+
+def test_verify_dependencies_rejects_version_id_from_a_different_modrinth_project(tmp_path, monkeypatch):
+    server(tmp_path)
+    digest=hashlib.sha1(b'old').hexdigest()
+    (tmp_path/'.crucible').mkdir(exist_ok=True)
+    (tmp_path/'.crucible'/'added-mods.json').write_text(json.dumps({
+        'old.jar': {'project_id':'mr-project','version_id':'some-other-project-version','sha1':digest}
+    }))
+    monkeypatch.setattr(mr, '_get', lambda url: {
+        'project_id':'not-the-recorded-project','id':'some-other-project-version',
+        'loaders':['fabric'],'game_versions':['1.21.1'],
+        'files':[{'filename':'unrelated.jar','url':'https://cdn.modrinth.com/unrelated.jar',
+                  'hashes':{'sha1':'b'*40}}], 'dependencies':[]
+    })
+
+    missing, notes = mr.verify_dependencies(tmp_path, loader='fabric', mc_version='1.21.1')
+
+    assert not missing
+    assert any('does not belong to the recorded project' in note for note in notes)
+
+
+def test_verified_identity_refuses_symlinked_mods_and_state_directories(tmp_path):
+    server(tmp_path)
+    digest = hashlib.sha1(b'old').hexdigest()
+    state = tmp_path/'.crucible'
+    state.mkdir(exist_ok=True)
+    (state/'added-mods.json').write_text(json.dumps({
+        'old.jar': {'project_id':'mr-project','version_id':'mr-version','sha1':digest}
+    }))
+    external = tmp_path/'external-mods'
+    external.mkdir()
+    (external/'old.jar').write_bytes(b'old')
+    real_mods = tmp_path/'mods'
+    real_mods.rename(tmp_path/'mods-real')
+    real_mods.symlink_to(external, target_is_directory=True)
+    assert v.verified_identity_for_file(tmp_path, 'old.jar', real_mods/'old.jar') is None
+    real_mods.unlink()
+    (tmp_path/'mods-real').rename(real_mods)
+
+    state_real = tmp_path/'.crucible-real'
+    state.rename(state_real)
+    state.symlink_to(state_real, target_is_directory=True)
+    assert v.verified_identity_for_file(tmp_path, 'old.jar', real_mods/'old.jar') is None
+
+
+def test_verified_identity_rejects_provider_namespace_hash_mismatches(tmp_path, monkeypatch):
+    server(tmp_path)
+    digest = hashlib.sha1(b'old').hexdigest()
+    record_path = tmp_path/'.crucible'/'added-mods.json'
+    record_path.parent.mkdir(exist_ok=True)
+    record_path.write_text(json.dumps({
+        'old.jar': {'project_id':'cf:321','version_id':'654','identity':'exact-sha1','sha1':digest},
+    }))
+    assert v.verified_identity_for_file(tmp_path, 'old.jar', tmp_path/'mods'/'old.jar') is None
+
+    record_path.write_text(json.dumps({
+        'old.jar': {'project_id':'mr-project','version_id':'mr-version',
+                    'identity':'exact-curseforge-fingerprint','fingerprint':1234,'sha1':digest},
+    }))
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    assert v.verified_identity_for_file(tmp_path, 'old.jar', tmp_path/'mods'/'old.jar') is None
+
+
+def test_verified_sha1_identity_does_not_return_a_stale_fingerprint_field(tmp_path):
+    server(tmp_path)
+    digest = hashlib.sha1(b'old').hexdigest()
+    record_path = tmp_path/'.crucible'/'added-mods.json'
+    record_path.parent.mkdir(exist_ok=True)
+    record_path.write_text(json.dumps({
+        'old.jar': {'project_id':'mr-project','version_id':'mr-version','identity':'exact-sha1',
+                    'sha1':digest,'fingerprint':1234,'filename':'old.jar'},
+    }))
+    verified = v.verified_identity_for_file(tmp_path, 'old.jar', tmp_path/'mods'/'old.jar')
+    assert verified and verified['project_id'] == 'mr-project'
+    assert 'fingerprint' not in verified and 'filename' not in verified
+
+
+def test_verified_identity_rejects_stale_sha1_before_update_or_source_use(tmp_path, monkeypatch):
+    server(tmp_path)
+    original_sha1 = hashlib.sha1(b'previous bytes').hexdigest()
+    (tmp_path/'.crucible').mkdir(exist_ok=True)
+    (tmp_path/'.crucible'/'added-mods.json').write_text(json.dumps({
+        'old.jar': {'project_id':'old-project','version_id':'old-version','sha1':original_sha1}
+    }))
+
+    assert v.verified_identity_for_file(tmp_path, 'old.jar', tmp_path/'mods'/'old.jar') is None
+    monkeypatch.setattr(mr, 'resolve_file', lambda *args, **kwargs: pytest.fail('stale identity must not trigger update lookup'))
+    assert mr.check_update(tmp_path, 'old.jar', loader='fabric', mc_version='1.21.1') is None
+
+
+def test_check_update_routes_curseforge_identity_through_curseforge_versions(tmp_path, monkeypatch):
+    server(tmp_path)
+    current_sha1 = hashlib.sha1(b'old').hexdigest()
+    (tmp_path/'.crucible').mkdir(exist_ok=True)
+    (tmp_path/'.crucible'/'added-mods.json').write_text(json.dumps({
+        'old.jar': {'project_id':'cf:321','version_id':'654','sha1':current_sha1}
+    }))
+    newest = mr.ModFile('cf:321', 'Demo', '655', 'New release', 'new.jar',
+                        'https://edge.forgecdn.net/new.jar', hashlib.sha1(b'new').hexdigest(), 3)
+    calls = []
+    monkeypatch.setattr(v, 'list_versions', lambda project_id, *, loader, mc_version: calls.append(
+        (project_id, loader, mc_version)
+    ) or [newest])
+    monkeypatch.setattr(mr, 'resolve_file', lambda *args, **kwargs: pytest.fail('CF IDs must not go to Modrinth'))
+
+    result = mr.check_update(tmp_path, 'old.jar', loader='forge', mc_version='1.20.1')
+
+    assert result is newest
+    assert calls == [('cf:321', 'forge', '1.20.1')]
+
+
+def test_verify_dependencies_skips_a_stale_identity_record(tmp_path, monkeypatch):
+    server(tmp_path)
+    (tmp_path/'.crucible').mkdir(exist_ok=True)
+    (tmp_path/'.crucible'/'added-mods.json').write_text(json.dumps({
+        'old.jar': {'project_id':'mr-project','version_id':'mr-version',
+                    'sha1':hashlib.sha1(b'previous bytes').hexdigest()}
+    }))
+    monkeypatch.setattr(mr, '_get', lambda *args, **kwargs: pytest.fail('stale record must not trigger provider lookup'))
+
+    missing, notes = mr.verify_dependencies(tmp_path, loader='fabric', mc_version='1.21.1')
+
+    assert not missing
+    assert any('no longer matches its recorded identity' in note for note in notes)
+
+
+def test_verified_identity_accepts_current_exact_hashes_and_curseforge_fingerprint_fallback(tmp_path, monkeypatch):
+    server(tmp_path)
+    current_sha1 = hashlib.sha1(b'old').hexdigest()
+    record_path = tmp_path/'.crucible'/'added-mods.json'
+    record_path.parent.mkdir(exist_ok=True)
+    record_path.write_text(json.dumps({
+        'old.jar': {'project_id':'mr-project','version_id':'mr-version','sha1':current_sha1},
+    }))
+    meta = v.verified_identity_for_file(tmp_path, 'old.jar', tmp_path/'mods'/'old.jar')
+    assert meta and meta['project_id'] == 'mr-project'
+
+    record_path.write_text(json.dumps({
+        'old.jar': {'project_id':'cf:321','version_id':'654','identity':'exact-curseforge-fingerprint',
+                    'fingerprint':1234,'sha1':''},
+    }))
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    meta = v.verified_identity_for_file(tmp_path, 'old.jar', tmp_path/'mods'/'old.jar')
+    assert meta and meta['project_id'] == 'cf:321'
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 9999)
+    assert v.verified_identity_for_file(tmp_path, 'old.jar', tmp_path/'mods'/'old.jar') is None
+
+
+def test_switching_provider_identity_does_not_keep_foreign_fingerprint_fields(tmp_path, monkeypatch):
+    server(tmp_path)
+    digest = hashlib.sha1(b'old').hexdigest()
+    record_path = tmp_path/'.crucible'/'added-mods.json'
+    record_path.parent.mkdir(exist_ok=True)
+    record_path.write_text(json.dumps({
+        'old.jar': {'project_id':'cf:321','version_id':'654','identity':'exact-curseforge-fingerprint',
+                    'fingerprint':1234,'sha1':''}
+    }))
+    version = {'project_id':'mr-project','id':'mr-version','version_number':'1',
+               'files':[{'hashes':{'sha1':digest}}]}
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kw: io.BytesIO(json.dumps({digest:version}).encode()))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: False)
+
+    found = v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+    saved = json.loads(record_path.read_text())['old.jar']
+
+    assert found['old.jar']['identity'] == 'exact-sha1'
+    assert saved['project_id'] == 'mr-project'
+    assert saved['sha1'] == digest
+    assert 'fingerprint' not in saved
+
+
+def test_identify_files_keeps_modrinth_available_without_curseforge_key(tmp_path, monkeypatch):
+    server(tmp_path)
+    digest = hashlib.sha1(b'old').hexdigest()
+    version = {'project_id': 'mr-project', 'id': 'mr-version', 'version_number': '1',
+               'files': [{'hashes': {'sha1': digest}}]}
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kw: io.BytesIO(json.dumps({digest: version}).encode()))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: False)
+    found = v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+    assert found['old.jar']['identity'] == 'exact-sha1'
+    assert found['old.jar']['project_id'] == 'mr-project'
+
+
+def test_identify_files_keeps_modrinth_exact_matches_when_curseforge_lookup_fails(tmp_path, monkeypatch):
+    server(tmp_path)
+    digest = hashlib.sha1(b'old').hexdigest()
+    version = {'project_id': 'mr-project', 'id': 'mr-version', 'version_number': '1',
+               'files': [{'hashes': {'sha1': digest}}]}
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kw: io.BytesIO(json.dumps({digest: version}).encode()))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    monkeypatch.setattr(cf, 'identify_fingerprints', lambda mapping: (_ for _ in ()).throw(mr.ModrinthError('CurseForge key rejected (HTTP 403).')))
+
+    found = v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+
+    assert found['old.jar']['identity'] == 'exact-sha1'
+    assert found['old.jar']['project_id'] == 'mr-project'
+    assert 'CurseForge key rejected' in found.warning
+    record = json.loads((tmp_path/'.crucible/added-mods.json').read_text())
+    assert record['old.jar']['project_id'] == 'mr-project'
+
+
+def test_identify_files_still_surfaces_curseforge_error_without_any_modrinth_match(tmp_path, monkeypatch):
+    server(tmp_path)
+    monkeypatch.setattr(mr.urllib.request, 'urlopen', lambda req, **kw: io.BytesIO(b'{}'))
+    monkeypatch.setattr(cf, 'has_api_key', lambda: True)
+    monkeypatch.setattr(cf, 'fingerprint_file', lambda path: 1234)
+    monkeypatch.setattr(cf, 'identify_fingerprints', lambda mapping: (_ for _ in ()).throw(mr.ModrinthError('CurseForge key rejected (HTTP 403).')))
+
+    with pytest.raises(mr.ModrinthError, match='key rejected'):
+        v.identify_files(tmp_path, [tmp_path/'mods/old.jar'])
+    assert not (tmp_path/'.crucible/added-mods.json').exists()
+
+
+def test_curseforge_file_replace_records_namespaced_identity_and_can_list_versions(tmp_path, monkeypatch):
+    server(tmp_path)
+    data = b'curseforge jar bytes'
+    digest = hashlib.sha1(data).hexdigest()
+    file = mr.ModFile('cf:321', 'Example', '654', 'Example release', 'example.jar',
+                      'https://edge.forgecdn.net/files/example.jar', digest, len(data))
+    monkeypatch.setattr(mr, '_download', lambda url, dest: (dest.write_bytes(data) and len(data)))
+    result = v.replace_files(tmp_path, None, [file])
+    assert not result.failed
+    record = mr.added_mods(tmp_path)['example.jar']
+    assert record['project_id'] == 'cf:321' and record['version_id'] == '654'
+
+    routes = []
+    monkeypatch.setattr(cf, '_get', lambda route: routes.append(route) or [{
+        'id': 654, 'isAvailable': True, 'fileName': 'example.jar', 'displayName': 'Example release',
+        'downloadUrl': 'https://edge.forgecdn.net/files/example.jar',
+        'gameVersions': ['1.20.1'], 'hashes': [{'algo': 1, 'value': digest}],
+    }])
+    versions = v.list_versions(record['project_id'], loader='forge', mc_version='1.20.1')
+    assert versions[0].project_id == 'cf:321' and versions[0].version_id == '654'
+    assert routes and '/mods/321/files?' in routes[0]
 
 
 def test_same_downloaded_jar_links_without_redownload(tmp_path,monkeypatch):
