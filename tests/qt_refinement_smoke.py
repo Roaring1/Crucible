@@ -181,6 +181,23 @@ assert backup_ui._backup_btn.accessibleName()=='Back up all registered servers n
 assert backup_ui._verify_btn.accessibleName()=='Deep verify both retained fleet generations'
 assert backup_ui._table.accessibleName()=='Retained complete fleet backup generations'
 assert 'live registered server is never overwritten' in backup_ui._restore_btn.toolTip().lower()
+active_timer_preview={**preview_backup_data,'scheduler':{
+ 'active':'true','enabled':'true','next':'14:10','detail':'timer active'
+}}
+backup_ui._render_inventory(active_timer_preview)
+assert backup_ui._timer_btn.text()=='Refresh timer status'
+assert backup_ui._timer_btn.accessibleName()=='Refresh automatic fleet backup timer status'
+assert backup_ui._timer_remove_btn.isEnabled()
+blocked_timer_preview={**preview_backup_data,
+ 'legacy_backup_blockers':[{'path':'/legacy/orphan','reason':'unassigned server identity'}]
+}
+backup_ui._render_inventory(blocked_timer_preview)
+assert not backup_ui._timer_btn.isEnabled()
+assert backup_ui._timer_btn.accessibleName()==(
+ 'Automatic backups unavailable until legacy sources are migrated'
+)
+backup_ui._render_inventory(preview_backup_data)
+assert backup_ui._timer_btn.accessibleName()=='Enable ten-minute automatic fleet backups'
 backup_ui.close();backup_ui.deleteLater();QTest.qWait(10)
 
 # An old registry entry can outlive its deleted folder; import target naming

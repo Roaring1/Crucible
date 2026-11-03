@@ -765,6 +765,9 @@ class BackupTab(QWidget):
                 f"color: {theme.GREEN}; font-size: 11px; font-weight: 600;"
             )
             self._timer_btn.setText("Refresh timer status")
+            self._timer_btn.setAccessibleName(
+                "Refresh automatic fleet backup timer status"
+            )
             self._timer_remove_btn.setEnabled(True)
         else:
             detail = scheduler.get("detail") or "timer not active"
@@ -777,6 +780,9 @@ class BackupTab(QWidget):
                     "backup source(s) must be migrated into both retained generations first."
                 )
                 self._timer_btn.setText("Resolve legacy backups before enabling")
+                self._timer_btn.setAccessibleName(
+                    "Automatic backups unavailable until legacy sources are migrated"
+                )
                 self._timer_btn.setEnabled(False)
                 self._timer_btn.setToolTip(
                     "An unattended timer stays disabled until every retired-ID archive, "
@@ -788,6 +794,9 @@ class BackupTab(QWidget):
                     f"Automatic timer inactive · {detail}"
                 )
                 self._timer_btn.setText("Enable automatic backups")
+                self._timer_btn.setAccessibleName(
+                    "Enable ten-minute automatic fleet backups"
+                )
                 self._timer_btn.setEnabled(True)
                 self._timer_btn.setToolTip(
                     "Install/enable a systemd user timer. Backups continue when the Crucible window is closed."
