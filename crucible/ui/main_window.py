@@ -22,21 +22,34 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QPoint, Qt, QObject, QThread, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    Qt,
+    QThread,
+    QTimer,
+    pyqtSignal,
+    pyqtSlot,
+)
 from PyQt6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
-    QMainWindow, QSplitter, QStatusBar, QLabel,
-    QMessageBox, QInputDialog, QMenu,
+    QFileDialog,
+    QInputDialog,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QSplitter,
 )
 
 from ..data.instance_manager import InstanceManager, validate_delete_target
 from ..data.instance_model import ServerInstance
 from ..process.crash_recovery import reconcile as reconcile_crash_recovery
 from ..process.tmux_manager import TmuxManager
-from . import theme
-from .sidebar import Sidebar
-from .instance_panel import InstancePanel
 from .add_dialog import AddInstanceDialog
+from .instance_panel import InstancePanel
+from .sidebar import Sidebar
 
 HEALTH_CHECK_INTERVAL_MS = 5_000
 
@@ -117,9 +130,10 @@ class MainWindow(QMainWindow):
         self._sidebar.instance_selected.connect(self._on_instance_selected)
         self._sidebar.add_requested.connect(self._on_add_requested)
         self._sidebar.remove_requested.connect(self._on_remove_requested)
-        self._sidebar.fix_loading_requested.connect(self._on_fix_loading_requested)
         self._sidebar.rename_requested.connect(self._on_rename_requested)
-        self._sidebar.export_requested.connect(self._on_export_requested)
+        self._sidebar.appearance_requested.connect(self._on_appearance_requested)
+        self._sidebar.inspect_logs_requested.connect(self._on_inspect_logs_requested)
+        self._sidebar.fix_loading_requested.connect(self._on_fix_loading_requested)
         self._sidebar.order_changed.connect(self._on_order_changed)
         self._sidebar.paths_dropped.connect(self._on_paths_dropped)
         self._splitter.addWidget(self._sidebar)
@@ -127,28 +141,21 @@ class MainWindow(QMainWindow):
         # Right: instance panel (must be created before wiring sidebar RMB signals)
         self._panel = InstancePanel(self._manager)
         self._panel.status_changed.connect(self._on_status_changed)
+        self._panel.fix_loading_requested.connect(self._on_fix_loading_requested)
+        self._panel.inspect_logs_requested.connect(self._on_inspect_logs_requested)
         self._splitter.addWidget(self._panel)
 
-        # Wire sidebar context-menu actions now that _panel exists
+        # Wire the remaining server-rail lifecycle shortcuts now that the
+        # selected-server panel exists. Diagnostics actions live in Diagnostics.
         self._sidebar.start_requested.connect(self._panel._do_start_for)
         self._sidebar.stop_requested.connect(self._panel._do_stop_for)
-        self._sidebar.restart_requested.connect(self._panel._do_restart_for)
 
         self._splitter.setStretchFactor(0, 0)
         self._splitter.setStretchFactor(1, 1)
         self._splitter.setSizes([240, 960])
 
-        # Status bar
-        sb = QStatusBar()
-        sb.setFixedHeight(24)
-        self.setStatusBar(sb)
-
-        self._sb_instances = QLabel("")
-        self._sb_tmux      = QLabel("")
-        sb.addWidget(self._sb_instances)
-        sb.addPermanentWidget(self._sb_tmux)
-
-        self._update_status_bar()
+        # The persistent instance/tmux footer has been removed. Genuine
+        # action feedback appears briefly in the selected-server header.
 
     # Population
 
@@ -270,19 +277,14 @@ class MainWindow(QMainWindow):
     # Status bar
 
     def _update_status_bar(self) -> None:
-        n = len(self._manager.instances)
-        self._sb_instances.setText(
-            f"{n} instance{'s' if n != 1 else ''}"
+        """Compatibility no-op: the old permanent instance/tmux footer is gone."""
+        return
+
+    def _on_inspect_logs_requested(self, instance: ServerInstance) -> None:
+        """Open the existing read-only log/crash inspection view from Diagnostics."""
+        self._show_loading_details(
+            instance, "Review the latest available server log and crash details. No files will be changed."
         )
-        if not self._tmux.tmux_available():
-            self._sb_tmux.setText("tmux not found — install tmux")
-            self._sb_tmux.setStyleSheet(f"color: {theme.RED};")
-        elif n == 0:
-            self._sb_tmux.setText("Ready to add a server")
-            self._sb_tmux.setStyleSheet(f"color: {theme.GREEN};")
-        else:
-            self._sb_tmux.setText("Server console available")
-            self._sb_tmux.setStyleSheet(f"color: {theme.GREEN};")
 
     # Event handlers
 
@@ -291,6 +293,55 @@ class MainWindow(QMainWindow):
         status_hint = self._sidebar.status_for(instance.id)
         if not self._panel.load(instance, status_hint=status_hint) and previous_id:
             QTimer.singleShot(0, lambda: self._sidebar.select_by_id(previous_id))
+
+    def _on_appearance_requested(self, instance: ServerInstance) -> None:
+        """Change only the selected server's Crucible rail image."""
+        from ..data import server_icons
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Server appearance")
+        box.setText(f"Choose the image shown beside {instance.name}.")
+        box.setInformativeText(
+            "This is stored in Crucible's private application data. It does not "
+            "modify the server folder, modpack, or files shared with players."
+        )
+        choose = box.addButton(
+            "Choose custom image…", QMessageBox.ButtonRole.AcceptRole
+        )
+        reset = box.addButton(
+            "Use pack image / built-in icon", QMessageBox.ButtonRole.ActionRole
+        )
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(choose)
+        box.exec()
+        picked = box.clickedButton()
+
+        if picked is cancel or picked is None:
+            return
+        try:
+            if picked is choose:
+                filename, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "Choose server image",
+                    str(Path.home()),
+                    "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif)",
+                )
+                if not filename:
+                    return
+                server_icons.set_custom_icon(instance.id, filename)
+                feedback = "Custom server image saved"
+            elif picked is reset:
+                server_icons.clear_custom_icon(instance.id)
+                feedback = "Using server pack image or built-in icon"
+            else:
+                return
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Server appearance", str(exc))
+            return
+
+        self._sidebar.refresh_instance_icon(instance.id)
+        if self._panel.current_instance_id() == instance.id:
+            self._panel.show_feedback(feedback)
 
     def _on_rename_requested(self, instance) -> None:
         from dataclasses import replace
@@ -316,7 +367,8 @@ class MainWindow(QMainWindow):
         if self._panel.current_instance_id() == updated.id:
             self._panel._instance.name = updated.name
             self._panel._name_label.setText(updated.name)
-        self.statusBar().showMessage(f'Renamed to “{name}” · files and session unchanged', 5000)
+        if self._panel.current_instance_id() == updated.id:
+            self._panel.show_feedback(f'Renamed to “{name}” · files and session unchanged')
 
     def _on_add_requested(self) -> None:
         """Offer the three common server setup routes without a stacked chooser dialog."""
@@ -361,7 +413,7 @@ class MainWindow(QMainWindow):
                 if already_listed
                 else f'Added "{inst.name}" to the server list'
             )
-            self.statusBar().showMessage(message, 5000)
+            self._panel.show_feedback(message)
             self._update_status_bar()
     def _on_order_changed(self, order: list) -> None:
         """Persist the new sidebar order after an internal drag-reorder."""
@@ -378,9 +430,16 @@ class MainWindow(QMainWindow):
                 self._import_dropped_path(Path(p))
 
     def _show_loading_details(self, instance, summary):
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QPushButton
-        from PyQt6.QtGui import QDesktopServices
         from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtWidgets import (
+            QDialog,
+            QHBoxLayout,
+            QPlainTextEdit,
+            QPushButton,
+            QVBoxLayout,
+        )
+
         from ..diagnostics.loadcheck import latest_crash_text
         text, source = latest_crash_text(instance.path)
         dlg = QDialog(self)
@@ -580,7 +639,7 @@ class MainWindow(QMainWindow):
                 )
                 return
             self._sidebar.remove_instance(instance.id)
-            self.statusBar().showMessage(f'Deleted "{instance.name}" server files; external backups kept', 5000)
+            print(f'[crucible] Deleted "{instance.name}" server files; external backups kept')
         if self._sidebar.selected_instance() is None:
             self._panel.clear()
         self._update_status_bar()

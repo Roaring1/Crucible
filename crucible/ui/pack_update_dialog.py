@@ -17,9 +17,19 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-    QSpinBox, QVBoxLayout,
+    QCheckBox,
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
 )
 
 from . import pack_update_model as model
@@ -346,11 +356,34 @@ class PackUpdateDialog(_JobDialog):
         self._append(f"Installing {preview.confirm_word}\u2026")
 
         def job(log):
+            from ..data.fleet_backup import (
+                FleetBackupManager,
+                fleet_operation_lock,
+            )
             from ..importers import pack_update as pu
-            backup_cb = model.backup_callback(instance, plan, log_cb=log)
-            outcome = pu.apply_update(
-                instance, plan, backup_cb=backup_cb, log_cb=log,
-                cancel=cancel, keep_previous=keep_previous)
+            from ..process.tmux_manager import TmuxManager
+
+            if self._manager is None or getattr(self._manager, "load_error", None):
+                raise RuntimeError(
+                    "The complete server registry is unavailable; a fleet-wide "
+                    "pre-update checkpoint cannot be created."
+                )
+
+            fleet = FleetBackupManager(self._manager.instances, TmuxManager())
+            with fleet_operation_lock(fleet.root):
+                def backup_cb() -> str:
+                    log("Creating a complete fleet checkpoint before the pack update...")
+                    generation = fleet.run_backup(operation_lock_held=True)
+                    log(
+                        f"Verified generation {generation.generation_id}: "
+                        f"{generation.server_count} servers, {generation.file_count:,} files."
+                    )
+                    return str(generation.path)
+
+                outcome = pu.apply_update(
+                    instance, plan, backup_cb=backup_cb, log_cb=log,
+                    cancel=cancel, keep_previous=keep_previous)
+
             if getattr(outcome, "ok", False):
                 # Stays on the worker: readiness touches the disk and can
                 # shell out to java.
@@ -398,7 +431,7 @@ class PackUpdateDialog(_JobDialog):
         if note:
             self._append(note)
         if result.backup_path:
-            self._append(f"World backup: {result.backup_path}")
+            self._append(f"Fleet backup generation: {result.backup_path}")
         if result.previous_dir:
             self._append(f"Old install kept at: {result.previous_dir}")
         self._append("")

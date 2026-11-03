@@ -18,7 +18,6 @@ comes back as .note, and neither ever touches the disk.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 ARROW = "\u2192"
 
@@ -297,32 +296,6 @@ def describe_preview(preview: UpdatePreview) -> list:
         lines.extend(f"    {line}" for line in blockers)
 
     return lines
-
-
-def backup_callback(instance, plan, *, log_cb=None):
-    """The mandatory pre-update world backup, or None when there is no world.
-
-    Injected into apply_update rather than imported by it, so the importer
-    stays free of the UI's BackupManager.
-    """
-    try:
-        world = instance.world_root_path()
-    except Exception:
-        return None
-    if not world or not Path(world).is_dir():
-        return None
-
-    current = getattr(getattr(plan, "current", None), "version", "") or "unknown"
-    target = getattr(getattr(plan, "target", None), "version", "") or "unknown"
-    label = f"Before update {current} {ARROW} {target}"
-
-    def _backup() -> str:
-        from ..data.backup_manager import BackupManager
-        if log_cb:
-            log_cb("Backing up the world before touching anything...")
-        return str(BackupManager(instance).create_backup(slot_name=label))
-
-    return _backup
 
 
 def sync_registry_after_update(manager, instance, *, to_version: str,

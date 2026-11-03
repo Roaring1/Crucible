@@ -9,20 +9,31 @@ from __future__ import annotations
 import re
 from collections import deque
 
-from PyQt6.QtCore import Qt, QEvent, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
-    QColor, QFont, QTextCharFormat, QTextCursor,
-    QShortcut, QKeySequence, QTextDocument,
+    QColor,
+    QFont,
+    QKeySequence,
+    QShortcut,
+    QTextCharFormat,
+    QTextCursor,
+    QTextDocument,
 )
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout,
-    QPlainTextEdit, QLineEdit, QPushButton,
-    QLabel, QCheckBox, QListWidget,
+    QCheckBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ...data.instance_model import ServerInstance
-from ...process.log_watcher import LogWatcher
 from ...process.command_intent import lifecycle_intent
+from ...process.log_watcher import LogWatcher
 from .. import theme
 
 MAX_LINES    = 2000
@@ -150,6 +161,7 @@ class ConsoleTab(QWidget):
     # Emitted only after tmux accepted a command. The panel uses this to fold
     # lifecycle commands into the same state machine as GUI buttons.
     lifecycle_command_sent = pyqtSignal(str, str)  # instance_id, command
+    open_terminal_requested = pyqtSignal()
 
     """
     Displays the live server log and allows sending commands.
@@ -326,6 +338,13 @@ class ConsoleTab(QWidget):
         open_log_btn = QPushButton("Open log file")
         open_log_btn.clicked.connect(self._open_log)
         or_layout.addWidget(open_log_btn)
+
+        terminal_btn = QPushButton("Open tmux in terminal")
+        terminal_btn.setToolTip(
+            "Open this server's managed tmux session in a separate terminal window."
+        )
+        terminal_btn.clicked.connect(self.open_terminal_requested)
+        or_layout.addWidget(terminal_btn)
 
         copy_btn = QPushButton("Copy log")
         copy_btn.setFixedWidth(72)
@@ -800,8 +819,8 @@ class ConsoleTab(QWidget):
         log = self._instance.get_log_path()
         if log is None:
             return
-        from PyQt6.QtGui import QDesktopServices
         from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(log)))
 
     # Display options

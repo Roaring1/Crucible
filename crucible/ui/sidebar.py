@@ -6,17 +6,28 @@ Left sidebar: lists registered server instances with live status dots.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QSize, QUrl, QMimeData, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QDrag, QDesktopServices
+from pathlib import Path
+from types import MappingProxyType
+
+from PyQt6.QtCore import QMimeData, QSize, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QDrag, QIcon
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QLabel, QMenu, QAbstractItemView, QApplication,
+    QAbstractItemView,
+    QApplication,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
-from ..data.instance_model import ServerInstance
-from ..data.backup_manager import BackupManager
-from . import theme
 from crucible import __version__
+
+from ..data.fleet_backup import DEFAULT_FLEET_BACKUP_DIR
+from ..data.instance_model import ServerInstance
+from . import theme
 
 
 class InstanceItem(QListWidgetItem):
@@ -24,7 +35,7 @@ class InstanceItem(QListWidgetItem):
 
     DOT_COLORS = {
         "running":      theme.GREEN,
-        "stopped":      theme.SURFACE2,
+        "stopped":      theme.SUBTEXT,
         "tmux_missing": theme.YELLOW,
         "starting":     theme.ORANGE,
         "stopping":     theme.ORANGE,
@@ -41,18 +52,33 @@ class InstanceItem(QListWidgetItem):
 
     def _refresh(self) -> None:
         color = self.DOT_COLORS.get(self._status, theme.SURFACE2)
-        # Four leading spaces give the dot enough room (dot is drawn at left+14, ~10px wide)
-        self.setText(f"    {self.instance.name}")
+        # The item widget renders the visible icon/name/status. Keep the
+        # underlying QListWidgetItem visually empty so status refreshes cannot
+        # resurrect a second text/icon layer underneath that widget.
+        self.setText("")
+        self.setIcon(QIcon())
+        label = InstanceRowWidget.STATUS_LABELS.get(
+            self._status, self._status.replace("_", " ").title()
+        )
         self.setToolTip(
             f"{self.instance.name}\n"
+            f"Status: {label}\n"
             f"Path: {self.instance.path}\n"
-            f"Session: {self.instance.tmux_session}\n"
-            f"Status: {self._status}"
+            f"Session: {self.instance.tmux_session}"
         )
-        # Store color so the delegate can paint the dot
+        self.setData(
+            Qt.ItemDataRole.AccessibleTextRole,
+            f"{self.instance.name}, status {label}",
+        )
+        self.setData(
+            Qt.ItemDataRole.AccessibleDescriptionRole,
+            f"Server folder: {self.instance.path}. Session: {self.instance.tmux_session}.",
+        )
+        # Status is painted as readable text below the name. Color reinforces
+        # the state but is never the only status cue.
         self.setData(Qt.ItemDataRole.UserRole, color)
         self.setData(Qt.ItemDataRole.UserRole + 1, self._status)
-        self.setSizeHint(QSize(0, 44))
+        self.setSizeHint(QSize(0, 64))
 
     def update_status(self, status: str) -> None:
         if self._status != status:
@@ -60,17 +86,137 @@ class InstanceItem(QListWidgetItem):
             self._refresh()
 
 
-class SidebarList(QListWidget):
-    """QListWidget that paints a colored status dot before each item name.
+class InstanceRowWidget(QWidget):
+    """Visible server identity row: image, name, and a text status chip."""
 
-    Drag & drop behaviour
-    ─────────────────────
-    * Internal drag  → reorder the server list (persisted by the window).
-    * External drop  → a dropped Prism instance / .mrpack / .zip / server
-      folder is imported (handled by the window).
-    * Drag *out*     → each row exposes its server folder as a file URL
-      (text/uri-list), so a server can be dragged into a file manager or
-      another launcher's import flow.
+    STATUS_LABELS = MappingProxyType({
+        "running": "Running",
+        "stopped": "Stopped",
+        "starting": "Starting",
+        "stopping": "Stopping",
+        "tmux_missing": "tmux unavailable",
+        "missing": "Server files missing",
+        "unmanaged": "Unmanaged process",
+        "unknown": "Status unavailable",
+    })
+
+    def __init__(self, instance: ServerInstance, status: str, parent=None):
+        super().__init__(parent)
+        from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout
+
+        from ..data.server_icons import resolve_icon_path
+
+        self._instance = instance
+        self._status = status
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 7, 8, 7)
+        layout.setSpacing(10)
+
+        self._icon = QLabel()
+        self._icon.setFixedSize(40, 40)
+        self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._icon.setPixmap(QIcon(str(resolve_icon_path(instance))).pixmap(40, 40))
+        layout.addWidget(self._icon)
+
+        text = QVBoxLayout()
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(3)
+        self._name = QLabel(instance.name)
+        self._name.setObjectName("ServerRailName")
+        self._name.setWordWrap(False)
+        self._name.setMinimumWidth(0)
+        self._name.setStyleSheet(
+            f"color: {theme.TEXT}; font-size: 12px; font-weight: 600;"
+        )
+        self._name.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        text.addWidget(self._name)
+
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(5)
+        self._status_icon = QLabel()
+        self._status_icon.setFixedSize(16, 16)
+        self._status_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        status_row.addWidget(self._status_icon)
+
+        self._status_label = QLabel()
+        self._status_label.setObjectName("ServerRailStatus")
+        self._status_label.setWordWrap(False)
+        self._status_label.setMinimumWidth(0)
+        status_row.addWidget(self._status_label)
+        status_row.addStretch()
+        text.addLayout(status_row)
+        text.addStretch()
+        layout.addLayout(text, 1)
+        self.setMinimumHeight(60)
+        self.set_status(status)
+
+    def _fit_text(self) -> None:
+        from PyQt6.QtGui import QFontMetrics
+
+        available = max(36, self.width() - 74)
+        self._name.setText(
+            QFontMetrics(self._name.font()).elidedText(
+                self._instance.name, Qt.TextElideMode.ElideRight, available
+            )
+        )
+        status_text = self.STATUS_LABELS.get(
+            self._status, self._status.replace("_", " ").title()
+        )
+        self._status_label.setText(
+            QFontMetrics(self._status_label.font()).elidedText(
+                status_text, Qt.TextElideMode.ElideRight, available
+            )
+        )
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._fit_text()
+
+    def set_status(self, status: str) -> None:
+        self._status = status
+        color = InstanceItem.DOT_COLORS.get(status, theme.SURFACE2)
+        label = self.STATUS_LABELS.get(status, status.replace("_", " ").title())
+        self._status_label.setText(label)
+        self._status_label.setStyleSheet(
+            f"color: {color}; font-size: 11px; font-weight: 700;"
+        )
+        icon_name = status if status in self.STATUS_LABELS else "unknown"
+        icon_path = (
+            Path(__file__).resolve().parent
+            / "assets" / "status-icons" / f"{icon_name}.svg"
+        )
+        if not icon_path.is_file():
+            icon_path = (
+                Path(__file__).resolve().parent
+                / "assets" / "status-icons" / "unknown.svg"
+            )
+        self._status_icon.setPixmap(QIcon(str(icon_path)).pixmap(16, 16))
+        self._status_icon.setAccessibleName(f"Status icon: {label}")
+        self._status_label.setAccessibleName(f"Server status: {label}")
+        self.setAccessibleName(f"{self._instance.name}, status {label}")
+        self.setAccessibleDescription(
+            f"Server folder: {self._instance.path}. "
+            f"Status: {label}. Select this row to open the server workspace."
+        )
+        if self.width() > 0:
+            self._fit_text()
+        self.setToolTip(f"{self._instance.name}\nStatus: {label}\nPath: {self._instance.path}")
+
+    def refresh(self) -> None:
+        from ..data.server_icons import resolve_icon_path
+
+        self._icon.setPixmap(QIcon(str(resolve_icon_path(self._instance))).pixmap(40, 40))
+        self.set_status(self._status)
+
+
+class SidebarList(QListWidget):
+    """List of server rows with drag/drop ordering and external import support.
+
+    Each row is a normal QListWidgetItem with a transparent, non-interactive
+    widget. This keeps selection, keyboard navigation, dragging and reorder
+    behavior native while making the two-line identity/status layout reliable.
     """
 
     # Emitted after an internal reorder, with the new top-to-bottom id order.
@@ -81,10 +227,9 @@ class SidebarList(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setUniformItemSizes(True)
-        self.setSpacing(0)
+        self.setSpacing(2)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # Enable drag-to-reorder + accept external file drops simultaneously.
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
@@ -102,13 +247,10 @@ class SidebarList(QListWidget):
         mime = QMimeData()
         mime.setUrls([QUrl.fromLocalFile(str(inst.path))])
         mime.setText(str(inst.path))
-        # Internal-move marker so dropEvent can tell self-drags apart.
-        mime.setData("application/x-crucible-instance",
-                     str(inst.id).encode("utf-8"))
+        mime.setData("application/x-crucible-instance", str(inst.id).encode("utf-8"))
         drag = QDrag(self)
         drag.setMimeData(mime)
-        drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction,
-                  Qt.DropAction.MoveAction)
+        drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction, Qt.DropAction.MoveAction)
 
     def _is_internal(self, event) -> bool:
         return (event.source() is self
@@ -127,41 +269,22 @@ class SidebarList(QListWidget):
             event.ignore()
 
     def dropEvent(self, event) -> None:
-        # Internal reorder: let Qt move the row, then report the new order.
         if self._is_internal(event):
             super().dropEvent(event)
             order = []
             for row in range(self.count()):
-                it = self.item(row)
-                inst = getattr(it, "instance", None)
+                inst = getattr(self.item(row), "instance", None)
                 if inst is not None:
                     order.append(inst.id)
             self.order_changed.emit(order)
             return
-        # External file drop → import.
         if event.mimeData().hasUrls():
-            paths = [u.toLocalFile() for u in event.mimeData().urls()
-                     if u.toLocalFile()]
+            paths = [url.toLocalFile() for url in event.mimeData().urls() if url.toLocalFile()]
             if paths:
                 event.acceptProposedAction()
                 self.paths_dropped.emit(paths)
                 return
         event.ignore()
-
-    def drawRow(self, painter: QPainter, option, index) -> None:
-        super().drawRow(painter, option, index)
-        # Paint the status dot on top of the item
-        color_hex = index.data(Qt.ItemDataRole.UserRole)
-        if color_hex:
-            painter.save()
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setBrush(QColor(color_hex))
-            painter.setPen(Qt.PenStyle.NoPen)
-            rect = self.visualRect(index)
-            cx   = rect.left() + 14
-            cy   = rect.center().y()
-            painter.drawEllipse(cx - 5, cy - 5, 10, 10)
-            painter.restore()
 
 
 class Sidebar(QWidget):
@@ -176,14 +299,14 @@ class Sidebar(QWidget):
 
     instance_selected = pyqtSignal(object)  # ServerInstance
     add_requested     = pyqtSignal()
+    appearance_requested = pyqtSignal(object)  # ServerInstance
     # Context menu actions
     start_requested   = pyqtSignal(object)  # ServerInstance
     stop_requested    = pyqtSignal(object)  # ServerInstance
-    restart_requested = pyqtSignal(object)  # ServerInstance
     remove_requested  = pyqtSignal(object)  # ServerInstance
-    fix_loading_requested = pyqtSignal(object)  # ServerInstance
     rename_requested = pyqtSignal(object)
-    export_requested  = pyqtSignal(object)  # ServerInstance
+    inspect_logs_requested = pyqtSignal(object)  # ServerInstance
+    fix_loading_requested = pyqtSignal(object)  # ServerInstance
     # Drag & drop
     order_changed     = pyqtSignal(list)    # list[str] of instance ids (new order)
     paths_dropped     = pyqtSignal(list)    # list[str] of dropped local paths
@@ -195,6 +318,7 @@ class Sidebar(QWidget):
         # No setMaximumWidth -- let the splitter handle sizing freely
 
         self._items: dict[str, InstanceItem] = {}  # id → item
+        self._row_widgets: dict[str, InstanceRowWidget] = {}
 
         self._build_ui()
 
@@ -213,7 +337,7 @@ class Sidebar(QWidget):
         self._list.currentItemChanged.connect(self._on_selection_changed)
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._on_context_menu)
-        from PyQt6.QtGui import QShortcut, QKeySequence
+        from PyQt6.QtGui import QKeySequence, QShortcut
         self._rename_shortcut = QShortcut(QKeySequence("F2"), self)
         self._rename_shortcut.activated.connect(lambda: self.rename_requested.emit(self.selected_instance()) if self.selected_instance() else None)
         # Forward drag & drop signals upward.
@@ -223,6 +347,19 @@ class Sidebar(QWidget):
             "Drag to reorder. Drop a Prism/.mrpack/.zip here to import. "
             "Drag a server out to copy its folder.")
         layout.addWidget(self._list, stretch=1)
+
+        # Appearance is a first-class action, not an item hidden in RMB.
+        self._appearance_btn = QPushButton("Server appearance…")
+        self._appearance_btn.setMinimumHeight(34)
+        self._appearance_btn.setEnabled(False)
+        self._appearance_btn.setToolTip(
+            "Choose the image shown beside the selected server. This changes Crucible's list only."
+        )
+        self._appearance_btn.clicked.connect(
+            lambda: self.appearance_requested.emit(self.selected_instance())
+            if self.selected_instance() is not None else None
+        )
+        layout.addWidget(self._appearance_btn)
 
         # Add button
         self._add_btn = QPushButton("＋  Add server")
@@ -253,22 +390,47 @@ class Sidebar(QWidget):
         self._list.blockSignals(True)
         self._list.clear()
         self._items.clear()
+        self._row_widgets.clear()
 
         for inst in instances:
             status = status_map.get(inst.id, "stopped")
-            item   = InstanceItem(inst, status)
-            self._list.addItem(item)
-            self._items[inst.id] = item
+            self._add_row(inst, status)
 
         self._list.blockSignals(False)
 
         if self._list.count() > 0:
             self._list.setCurrentRow(0)
 
+    def _add_row(self, instance: ServerInstance, status: str) -> InstanceItem:
+        item = InstanceItem(instance, status)
+        self._list.addItem(item)
+        # QListWidget still paints the QListWidgetItem beneath a transparent
+        # item widget. Clear the item's own icon/text so there is only one
+        # visual identity row rather than two overlapping renderers.
+        item.setText("")
+        item.setIcon(QIcon())
+        row_widget = InstanceRowWidget(instance, status)
+        self._row_widgets[instance.id] = row_widget
+        self._list.setItemWidget(item, row_widget)
+        self._items[instance.id] = item
+        return item
+
     def update_status(self, instance_id: str, status: str) -> None:
-        """Update the status dot for one instance without rebuilding the list."""
+        """Update the readable status label for one instance without rebuilding the list."""
         if item := self._items.get(instance_id):
             item.update_status(status)
+            widget = self._row_widgets.get(instance_id)
+            if widget is not None:
+                widget.set_status(status)
+            self._list.update()
+
+    def refresh_instance_icon(self, instance_id: str) -> None:
+        """Re-resolve a row's image after a custom/pack/default choice changes."""
+        if item := self._items.get(instance_id):
+            item._refresh()
+            widget = self._row_widgets.get(instance_id)
+            if widget is not None:
+                widget.refresh()
             self._list.update()
 
     def update_all_statuses(self, status_map: dict[str, str]) -> None:
@@ -276,11 +438,10 @@ class Sidebar(QWidget):
             self.update_status(iid, status)
 
     def add_instance(self, inst: ServerInstance, status: str = "stopped") -> None:
-        item = InstanceItem(inst, status)
-        self._list.addItem(item)
-        self._items[inst.id] = item
+        self._add_row(inst, status)
 
     def remove_instance(self, instance_id: str) -> None:
+        self._row_widgets.pop(instance_id, None)
         if item := self._items.pop(instance_id, None):
             row = self._list.row(item)
             self._list.takeItem(row)
@@ -306,8 +467,10 @@ class Sidebar(QWidget):
     def _on_selection_changed(
         self, current: QListWidgetItem, _prev: QListWidgetItem
     ) -> None:
-        if isinstance(current, InstanceItem):
-            self.instance_selected.emit(current.instance)
+        selected = current.instance if isinstance(current, InstanceItem) else None
+        self._appearance_btn.setEnabled(selected is not None)
+        if selected is not None:
+            self.instance_selected.emit(selected)
 
     def _on_context_menu(self, pos) -> None:
         item = self._list.itemAt(pos)
@@ -320,34 +483,43 @@ class Sidebar(QWidget):
         menu.setStyleSheet(
             "QMenu { background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; "
             "border-radius: 6px; padding: 4px; }"
-            "QMenu::item { padding: 6px 20px 6px 12px; border-radius: 4px; }"
+            "QMenu::item { padding: 9px 24px 9px 14px; min-width: 190px; border-radius: 4px; }"
             "QMenu::item:selected { background: #313244; }"
-            "QMenu::separator { height: 1px; background: #45475a; margin: 3px 8px; }"
+            "QMenu::item:disabled { color: #6c7086; }"
+            "QMenu::separator { height: 1px; background: #45475a; margin: 5px 8px; }"
+            "QMenu::section { color: #a6adc8; font-size: 10px; font-weight: 700; padding: 8px 12px 3px 12px; }"
         )
 
-        title_act = menu.addAction(f"  {inst.name}")
+        title_act = menu.addAction(inst.name)
         title_act.setEnabled(False)
         menu.addSeparator()
 
-        rename_act = menu.addAction("Rename server…")
-        start_act   = menu.addAction("▶  Start")
-        stop_act    = menu.addAction("■  Stop")
-        restart_act = menu.addAction("↺  Restart")
-        menu.addSeparator()
-        open_folder_act  = menu.addAction("📂  Open server folder")
-        open_backups_act = menu.addAction("💾  Open backups folder")
-        copy_path_act    = menu.addAction("📋  Copy server path")
-        menu.addSeparator()
-        fixload_act = menu.addAction("🩺  Fix loading errors…")
-        export_act  = menu.addAction("📤  Share with players…")
-        menu.addSeparator()
-        remove_act  = menu.addAction("🗑  Remove from Crucible…")
+        icon_root = Path(__file__).resolve().parent / "assets" / "menu-icons"
 
-        running = (status == "running")
-        stopped = (status == "stopped")
+        def action_icon(name: str) -> QIcon:
+            return QIcon(str(icon_root / f"{name}.svg"))
+
+        rename_act = menu.addAction(action_icon("edit"), "Rename server…")
+        menu.addSection("LIFECYCLE")
+        start_act = menu.addAction(action_icon("play"), "Start server")
+        stop_act = menu.addAction(action_icon("stop"), "Stop server")
+        menu.addSection("FILES & LOCATION")
+        open_folder_act = menu.addAction(action_icon("folder"), "Open server folder")
+        open_backups_act = menu.addAction(action_icon("archive"), "Open fleet backups folder")
+        copy_path_act = menu.addAction(action_icon("copy"), "Copy server path")
+        menu.addSection("DIAGNOSTICS")
+        inspect_act = menu.addAction(action_icon("search-log"), "Inspect server logs…")
+        repair_act = menu.addAction(action_icon("repair"), "Check loading repair…")
+        menu.addSection("REMOVE")
+        remove_act = menu.addAction(action_icon("remove"), "Remove server…")
+        remove_act.setToolTip(
+            "Remove this instance from Crucible or permanently delete its server files."
+        )
+
+        running = status in ("running", "starting")
+        stopped = status == "stopped"
         start_act.setEnabled(stopped)
         stop_act.setEnabled(running)
-        restart_act.setEnabled(running or stopped)
 
         chosen = menu.exec(self._list.mapToGlobal(pos))
         if chosen == rename_act:
@@ -356,18 +528,16 @@ class Sidebar(QWidget):
             self.start_requested.emit(inst)
         elif chosen == stop_act:
             self.stop_requested.emit(inst)
-        elif chosen == restart_act:
-            self.restart_requested.emit(inst)
         elif chosen == open_folder_act:
             self._open_folder(inst.path)
         elif chosen == open_backups_act:
             self._open_backups_folder(inst)
         elif chosen == copy_path_act:
             QApplication.clipboard().setText(inst.path)
-        elif chosen == fixload_act:
+        elif chosen == inspect_act:
+            self.inspect_logs_requested.emit(inst)
+        elif chosen == repair_act:
             self.fix_loading_requested.emit(inst)
-        elif chosen == export_act:
-            self.export_requested.emit(inst)
         elif chosen == remove_act:
             self.remove_requested.emit(inst)
 
@@ -381,8 +551,9 @@ class Sidebar(QWidget):
         if p.is_dir():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
 
-    def _open_backups_folder(self, inst: ServerInstance) -> None:
-        # BackupManager creates this directory on first use if it does not
-        # already exist, so there is always something to open here.
-        backup_dir = BackupManager(inst).backup_dir()
-        self._open_folder(str(backup_dir))
+    def _open_backups_folder(self, _inst: ServerInstance) -> None:
+        # All server snapshots share one global fleet store and two-generation
+        # retention policy. Do not send owners back to the retired per-server
+        # ZIP folders.
+        DEFAULT_FLEET_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        self._open_folder(str(DEFAULT_FLEET_BACKUP_DIR))

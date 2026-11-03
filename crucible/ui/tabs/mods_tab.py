@@ -9,19 +9,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
+from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout,
-    QTableWidget, QTableWidgetItem, QHeaderView,
-    QLabel, QPushButton, QLineEdit, QAbstractItemView,
-    QFileDialog, QMessageBox, QCheckBox, QInputDialog,
+    QAbstractItemView,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ...data.instance_model import ServerInstance
-from ...mods.mod_manager import ModManager, ModEntry
+from ...mods.mod_manager import ModEntry, ModManager
 from .. import theme
 from ..thread_lifecycle import connect_thread_cleanup
-
 
 # Background inspection worker
 
@@ -67,8 +77,6 @@ class ModsTab(QWidget):
     _COL_NAME    = 1
     _COL_VERSION = 2
     _COL_SIDE    = 3
-    _COL_SIZE    = 4
-    _COL_ACTIONS = 5
 
     def __init__(self, instance_manager=None, parent=None):
         super().__init__(parent)
@@ -91,126 +99,204 @@ class ModsTab(QWidget):
     # UI
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(9)
+        scroll.setWidget(content)
+        root_layout.addWidget(scroll)
 
-        # Toolbar
-        toolbar = QHBoxLayout()
-
+        # Search and add are the top-level inventory controls.
+        add_row = QHBoxLayout()
         self._filter = QLineEdit()
-        self._filter.setPlaceholderText("Filter mods…")
+        self._filter.setPlaceholderText("Filter installed mods by name, ID, or filename…")
         self._filter.textChanged.connect(self._apply_filter)
-        toolbar.addWidget(self._filter, stretch=1)
+        add_row.addWidget(self._filter, stretch=1)
 
-        add_btn = QPushButton("Add .jar…")
+        add_btn = QPushButton("Add local JAR…")
+        add_btn.setToolTip("Copy one local .jar file into this server's mods folder. Does not search online.")
         add_btn.clicked.connect(self._pick_file)
-        toolbar.addWidget(add_btn)
-        platform_btn = QPushButton("Server version…")
-        platform_btn.setToolTip("Set the Minecraft and loader versions used to filter compatible mods")
-        platform_btn.clicked.connect(self._edit_platform)
-        toolbar.addWidget(platform_btn)
+        add_row.addWidget(add_btn)
 
-        # One-click "find and install a mod" (searches Modrinth automatically).
-        addmod_btn = QPushButton("✨ Add a mod")
-        addmod_btn.setToolTip("Search Modrinth and install a mod (with its "
-                              "dependencies) automatically.")
+        addmod_btn = QPushButton("Find a mod…")
+        addmod_btn.setToolTip(
+            "Search the configured mod provider and install a compatible release with required dependencies."
+        )
         addmod_btn.clicked.connect(self._open_add_mod)
-        toolbar.addWidget(addmod_btn)
-        layout.addLayout(toolbar)
-        toolbar = QHBoxLayout()
-        version_btn = QPushButton("Change version…")
-        version_btn.setToolTip("Select a mod, then upgrade or downgrade to a compatible release")
-        version_btn.clicked.connect(self._change_selected_version)
-        toolbar.addWidget(version_btn)
-        identify_btn = QPushButton("Identify online")
-        identify_btn.setToolTip("Match installed JARs by exact file hash. Unmatched custom builds stay unlinked.")
-        identify_btn.clicked.connect(self._identify_online)
-        toolbar.addWidget(identify_btn)
+        add_row.addWidget(addmod_btn)
+        layout.addLayout(add_row)
 
-        # Default player-facing action: build, review, then upload a Prism ZIP.
-        client_btn = QPushButton("📤 Share with players…")
+        # Actions are grouped by scope. Split the groups across two readable
+        # rows instead of squeezing three headings and their buttons together.
+        from PyQt6.QtWidgets import QGroupBox
+        inventory_row = QHBoxLayout()
+        inventory_row.setSpacing(8)
+
+        inventory_group = QGroupBox("Installed mod inventory")
+        inventory_layout = QHBoxLayout(inventory_group)
+        inventory_layout.setContentsMargins(10, 22, 10, 8)
+        inventory_layout.setSpacing(6)
+
+        identify_btn = QPushButton("Identify installed mods")
+        identify_btn.setToolTip(
+            "Hash and identify all installed manageable JARs against exact online file records. "
+            "Unmatched custom builds are left unlinked; no name-only matching."
+        )
+        identify_btn.clicked.connect(self._identify_online)
+        inventory_layout.addWidget(identify_btn)
+
+        verify_btn = QPushButton("Verify dependencies")
+        verify_btn.setToolTip(
+            "Check dependencies of already-linked installed mods. May download missing dependencies; "
+            "the server must be stopped."
+        )
+        verify_btn.clicked.connect(self._verify_deps)
+        inventory_layout.addWidget(verify_btn)
+
+        refresh_btn = QPushButton("Refresh mod list")
+        refresh_btn.setToolTip("Re-read files and JAR metadata. Does not change mod files.")
+        refresh_btn.clicked.connect(self.refresh)
+        inventory_layout.addWidget(refresh_btn)
+        inventory_row.addWidget(inventory_group, 3)
+
+        compatibility_group = QGroupBox("Server compatibility")
+        compatibility_layout = QHBoxLayout(compatibility_group)
+        compatibility_layout.setContentsMargins(10, 22, 10, 8)
+        platform_btn = QPushButton("Set server version…")
+        platform_btn.setToolTip(
+            "Describe the Minecraft and loader versions already installed. This does not upgrade Minecraft."
+        )
+        platform_btn.clicked.connect(self._edit_platform)
+        compatibility_layout.addWidget(platform_btn)
+        inventory_row.addWidget(compatibility_group, 1)
+        layout.addLayout(inventory_row)
+
+        pack_group = QGroupBox("Whole server pack")
+        pack_layout = QHBoxLayout(pack_group)
+        pack_layout.setContentsMargins(10, 22, 10, 8)
+        pack_layout.setSpacing(6)
+
+        client_btn = QPushButton("Share client pack…")
         client_btn.setToolTip(
-            "Build a Prism ZIP, review every included file/privacy warning, then "
-            "upload to Gofile only after you approve the review."
+            "Build and review the client pack for this server, then offer the configured upload flow. "
+            "This is not a single-mod action."
         )
         client_btn.clicked.connect(self._open_share_players)
-        toolbar.addWidget(client_btn)
+        pack_layout.addWidget(client_btn)
 
-        # Other export formats remain available to advanced users.
-        advanced_btn = QPushButton("Advanced export…")
-        advanced_btn.setToolTip("Export Prism, Modrinth, or CurseForge archives without uploading.")
-        advanced_btn.clicked.connect(self._open_make_client)
-        toolbar.addWidget(advanced_btn)
-
-        # Shown only when the imported pack shipped a download index.
-        self._dl_btn = QPushButton("⬇  Download from pack")
-        self._dl_btn.setToolTip(
-            "This pack listed mods to download rather than bundling them. "
-            "Try to fetch them now (needs internet)."
+        advanced_btn = QPushButton("Advanced client export…")
+        advanced_btn.setToolTip(
+            "Export this server's client pack to a local archive format. Does not change server mods."
         )
-        self._dl_btn.clicked.connect(self._download_from_pack)
-        self._dl_btn.hide()
-        toolbar.addWidget(self._dl_btn)
+        advanced_btn.clicked.connect(self._open_make_client)
+        pack_layout.addWidget(advanced_btn)
 
-        # Update the whole modpack (not individual mods).
-        update_btn = QPushButton("⬆  Update pack…")
+        update_btn = QPushButton("Update entire modpack…")
         update_btn.setToolTip(
-            "Update this server's whole modpack — from its release list or "
-            "from a link or file you supply. Shows the plan before installing."
+            "Update this server's whole modpack, not the selected mod. Shows a plan before applying changes."
         )
         update_btn.setAccessibleName("Update modpack")
         update_btn.clicked.connect(self._open_pack_update)
-        toolbar.addWidget(update_btn)
+        pack_layout.addWidget(update_btn)
 
-        refresh_btn = QPushButton("↻")
-        refresh_btn.setFixedWidth(36)
-        refresh_btn.setToolTip("Refresh mod list")
-        refresh_btn.setAccessibleName("Refresh mod list")
-        refresh_btn.clicked.connect(self.refresh)
-        toolbar.addWidget(refresh_btn)
+        self._dl_btn = QPushButton("Download listed mods…")
+        self._dl_btn.setToolTip(
+            "Fetch files listed by this pack's download index. This operates on the whole server pack."
+        )
+        self._dl_btn.clicked.connect(self._download_from_pack)
+        self._dl_btn.hide()
+        pack_layout.addWidget(self._dl_btn)
+        layout.addWidget(pack_group)
 
-        layout.addLayout(toolbar)
-
-        # Table
+        # Dense, sortable inventory: no file-size column and no repeated delete
+        # buttons. Full details and selected-mod actions live below the list.
         self._table = QTableWidget()
-        self._table.setColumnCount(6)
+        self._table.setColumnCount(4)
         self._table.setHorizontalHeaderLabels(
-            ["", "Mod Name", "Version", "Runs on", "Size", ""]
+            ["State", "Mod", "Version", "Runs on"]
         )
-        self._table.horizontalHeader().setSectionResizeMode(
-            self._COL_NAME, QHeaderView.ResizeMode.Stretch
-        )
-        self._table.horizontalHeader().setSectionResizeMode(
-            self._COL_ENABLED, QHeaderView.ResizeMode.Fixed
-        )
-        self._table.setColumnWidth(self._COL_ENABLED, 40)
-        self._table.setColumnWidth(self._COL_VERSION, 120)
-        self._table.setColumnWidth(self._COL_SIDE, 105)
-        self._table.setColumnWidth(self._COL_SIZE,    80)
-        self._table.setColumnWidth(self._COL_ACTIONS, 100)
-
+        header = self._table.horizontalHeader()
+        header.setSectionResizeMode(self._COL_NAME, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(self._COL_ENABLED, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(self._COL_VERSION, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(self._COL_SIDE, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(self._COL_ENABLED, 92)
+        self._table.setColumnWidth(self._COL_VERSION, 160)
+        self._table.setColumnWidth(self._COL_SIDE, 126)
+        self._table.setMinimumHeight(180)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.setAlternatingRowColors(True)
         self._table.verticalHeader().setVisible(False)
         self._table.setShowGrid(False)
         self._table.setSortingEnabled(True)
-        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._table.customContextMenuRequested.connect(self._show_context_menu)
-
+        self._table.itemSelectionChanged.connect(self._on_selection_changed)
         layout.addWidget(self._table, stretch=1)
 
-        # Footer
+        # Visible, persistent selected-mod details and actions; no RMB required.
+        details = QWidget()
+        details.setObjectName("SelectedModDetails")
+        details.setStyleSheet(
+            f"QWidget#SelectedModDetails {{ background: {theme.MANTLE}; "
+            f"border: 1px solid {theme.SURFACE1}; border-radius: 5px; }}"
+        )
+        details_layout = QVBoxLayout(details)
+        details_layout.setContentsMargins(12, 8, 12, 8)
+        details_layout.setSpacing(5)
+
+        detail_header = QHBoxLayout()
+        self._detail_title = QLabel("Select a mod to inspect it")
+        self._detail_title.setStyleSheet(
+            f"color: {theme.TEXT}; font-size: 13px; font-weight: 700;"
+        )
+        detail_header.addWidget(self._detail_title, 1)
+
+        self._change_selected_btn = QPushButton("Change selected mod version…")
+        self._change_selected_btn.setToolTip(
+            "Resolve the selected mod's exact online identity and review a compatible replacement. "
+            "The original JAR is retained in mod-history."
+        )
+        self._change_selected_btn.clicked.connect(self._change_selected_version)
+        self._change_selected_btn.setEnabled(False)
+        detail_header.addWidget(self._change_selected_btn)
+
+        self._remove_selected_btn = QPushButton("Remove selected mod…")
+        self._remove_selected_btn.setObjectName("DangerButton")
+        self._remove_selected_btn.setToolTip(
+            "Remove only the selected mod JAR. The server must be stopped; this cannot be undone."
+        )
+        self._remove_selected_btn.clicked.connect(self._remove_selected_mod)
+        self._remove_selected_btn.setEnabled(False)
+        detail_header.addWidget(self._remove_selected_btn)
+        details_layout.addLayout(detail_header)
+
+        self._detail_summary = QLabel(
+            "Select one row to see its mod ID, filename, version, side evidence, and file size."
+        )
+        self._detail_summary.setWordWrap(True)
+        self._detail_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._detail_summary.setStyleSheet(
+            f"color: {theme.SUBTEXT}; font-size: 11px;"
+        )
+        details_layout.addWidget(self._detail_summary)
+        layout.addWidget(details)
+
         self._count_label = QLabel("")
         self._count_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         layout.addWidget(self._count_label)
 
-        # Drop hint
         self._drop_hint = QLabel("Drop .jar files here to add mods")
         self._drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._drop_hint.setStyleSheet(
-            f"color: {theme.SURFACE2}; font-size: 12px; padding: 4px;"
+            f"color: {theme.SURFACE2}; font-size: 11px; padding: 3px;"
         )
         layout.addWidget(self._drop_hint)
 
@@ -248,7 +334,7 @@ class ModsTab(QWidget):
         try:
             from ...importers.downloader import has_downloadable_index
             self._dl_btn.setVisible(has_downloadable_index(instance.path))
-        except Exception:
+        except (ImportError, OSError, ValueError, TypeError):
             self._dl_btn.hide()
         self.refresh()
 
@@ -261,7 +347,7 @@ class ModsTab(QWidget):
             dlg = PackUpdateDialog(inst, manager=self._instance_manager, parent=self)
             dlg.start_check()
             dlg.exec()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - report dialog construction/start failures without killing the GUI event loop.
             QMessageBox.warning(
                 self, "Update pack",
                 f"Could not open the modpack updater:\n{exc}"
@@ -280,7 +366,7 @@ class ModsTab(QWidget):
             dlg = DownloadModsDialog(inst.path, inst.name, parent=self)
             dlg.start()
             dlg.exec()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - report dialog construction/start failures without killing the GUI event loop.
             QMessageBox.warning(self, "Download mods", f"Could not start download:\n{exc}")
         self.refresh()
 
@@ -305,36 +391,44 @@ class ModsTab(QWidget):
             is_bundled = getattr(mod, "bundled", False)
 
             if is_bundled:
-                # Bundled jars: informational row, no toggle/delete actions
-                # Show a lock icon in the enabled column
-                lock_label = QLabel("🔒")
-                lock_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                lock_label.setToolTip(
-                    f"Bundled library inside mods/{mod.path.parent.name}/\n"
-                    "Not manageable via the mods tab — edit manually."
+                bundled_label = QLabel("Bundled")
+                bundled_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                bundled_label.setToolTip(
+                    f"Nested library inside mods/{mod.path.parent.name}/. "
+                    "It is managed by its parent modpack and cannot be toggled or removed here."
                 )
-                self._table.setCellWidget(row, self._COL_ENABLED, lock_label)
+                bundled_label.setStyleSheet(
+                    f"color: {theme.SUBTEXT}; font-size: 10px; font-weight: 600;"
+                )
+                self._table.setCellWidget(row, self._COL_ENABLED, bundled_label)
             else:
-                # Normal mod: enable/disable checkbox
-                cb = QCheckBox()
-                cb.setChecked(mod.enabled)
-                cb.setToolTip("Enable / disable this mod")
-                cb.setAccessibleName(f"Enable {mod.display_name}")
-                cb_container = QWidget()
-                cb_layout = QHBoxLayout(cb_container)
-                cb_layout.addWidget(cb)
-                cb_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                cb_layout.setContentsMargins(0, 0, 0, 0)
-                cb.toggled.connect(lambda checked, m=mod, r=row: self._toggle_mod(m, r, checked))
-                self._table.setCellWidget(row, self._COL_ENABLED, cb_container)
+                state_btn = QPushButton("Enabled" if mod.enabled else "Disabled")
+                state_btn.setCheckable(True)
+                state_btn.setChecked(mod.enabled)
+                state_btn.setFixedHeight(25)
+                state_btn.setObjectName("ModEnabledButton")
+                state_btn.setStyleSheet(
+                    f"QPushButton {{ color: {theme.GREEN if mod.enabled else theme.SUBTEXT}; "
+                    f"background: {theme.SURFACE0}; border: 1px solid "
+                    f"{theme.GREEN if mod.enabled else theme.SURFACE1}; "
+                    "border-radius: 4px; padding: 2px 5px; font-size: 10px; font-weight: 600; }"
+                    f"QPushButton:checked {{ color: {theme.GREEN}; }}"
+                )
+                state_btn.setAccessibleName(
+                    f"{'Disable' if mod.enabled else 'Enable'} {mod.display_name}"
+                )
+                state_btn.setToolTip(
+                    f"Click to {'disable' if mod.enabled else 'enable'} this mod. "
+                    "Changes require the server to be stopped."
+                )
+                state_btn.toggled.connect(
+                    lambda checked, selected=mod: self._set_enabled(selected, checked)
+                )
+                self._table.setCellWidget(row, self._COL_ENABLED, state_btn)
 
-            # Name
-            if is_bundled:
-                display = f"{mod.display_name}  [bundled in {mod.path.parent.name}/]"
-            else:
-                display = mod.display_name
+            display = mod.display_name
             name_item = QTableWidgetItem(display)
-            name_item.setToolTip(str(mod.path))
+            name_item.setToolTip(f"{mod.filename}\n{mod.path}")
             name_item.setData(Qt.ItemDataRole.UserRole, mod)
             if is_bundled:
                 name_item.setForeground(Qt.GlobalColor.darkCyan)
@@ -342,37 +436,38 @@ class ModsTab(QWidget):
                 name_item.setForeground(Qt.GlobalColor.gray)
             self._table.setItem(row, self._COL_NAME, name_item)
 
-            # Version (filled later by inspect pass)
             ver_item = QTableWidgetItem(mod.version or "—")
             ver_item.setForeground(Qt.GlobalColor.gray)
+            ver_item.setToolTip(mod.version or "Version not declared in JAR metadata.")
             self._table.setItem(row, self._COL_VERSION, ver_item)
 
-            side_item = QTableWidgetItem("? Unknown")
-            self._table.setItem(row, self._COL_SIDE, side_item)
-            # Size
-            size_item = QTableWidgetItem(mod.size_mb)
-            size_item.setTextAlignment(
-                int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            side_item = QTableWidgetItem("Not declared")
+            side_item.setToolTip(
+                "Execution side is shown only when the JAR explicitly declares it. "
+                "Unknown does not imply compatibility."
             )
-            self._table.setItem(row, self._COL_SIZE, size_item)
-
-            # Actions column: no button for bundled jars
-            if not is_bundled:
-                del_btn = QPushButton("Delete")
-                del_btn.setObjectName("DangerButton")
-                del_btn.setFixedHeight(26)
-                del_btn.clicked.connect(lambda _, m=mod, r=row: self._delete_mod(m, r))
-                self._table.setCellWidget(row, self._COL_ACTIONS, del_btn)
-
-            self._table.setRowHeight(row, 36)
+            self._table.setItem(row, self._COL_SIDE, side_item)
+            self._render_side(row, mod)
+            self._table.setRowHeight(row, 33)
 
         self._table.setSortingEnabled(True)
+        if self._table.rowCount():
+            self._table.selectRow(0)
+        self._on_selection_changed()
 
     def _render_side(self, row, mod):
         item = self._table.item(row, self._COL_SIDE)
         if item:
-            item.setText({"client":"⚠ Client only", "server":"◆ Server only", "both":"✓ Both"}.get(mod.side, "? Unknown"))
-            item.setToolTip("Declared by the JAR's loader metadata. Unknown means unverified, not compatible.")
+            label = {
+                "client": "Client only",
+                "server": "Server only",
+                "both": "Both sides",
+            }.get(mod.side, "Not declared")
+            item.setText(label)
+            item.setToolTip(
+                "Reported by the JAR's explicit loader metadata. "
+                "Not declared means Crucible cannot infer compatibility."
+            )
             if mod.side == "client":
                 from PyQt6.QtGui import QColor
                 item.setForeground(QColor(theme.ORANGE))
@@ -383,8 +478,14 @@ class ModsTab(QWidget):
             item = self._table.item(row, self._COL_NAME)
             if item is None:
                 continue
-            match = (not text) or (text in item.text().lower())
-            self._table.setRowHidden(row, not match)
+            mod = item.data(Qt.ItemDataRole.UserRole)
+            haystack = " ".join((
+                item.text(),
+                str(getattr(mod, "mod_id", "")),
+                str(getattr(mod, "filename", "")),
+                str(getattr(mod, "version", "")),
+            )).lower()
+            self._table.setRowHidden(row, bool(text) and text not in haystack)
 
     def _update_count(self) -> None:
         enabled  = sum(1 for m in self._mods if m.enabled)
@@ -398,25 +499,31 @@ class ModsTab(QWidget):
     # Mod actions
 
     def _toggle_mod(self, mod: ModEntry, row: int, enable: bool) -> None:
+        """Compatibility wrapper for callers that still supply a row index."""
+        self._set_enabled(mod, enable)
+
+    def _set_enabled(self, mod: ModEntry, enable: bool) -> None:
         if not self._require_stopped():
+            self.refresh()
             return
-        if self._manager is None:
+        if self._manager is None or getattr(mod, "bundled", False):
             return
         try:
             if enable:
-                updated = self._manager.enable(mod)
+                self._manager.enable(mod)
             else:
-                updated = self._manager.disable(mod)
-            # Update the row's mod reference and name color
-            if row < len(self._mods):
-                self._mods[row] = updated
-            name_item = self._table.item(row, self._COL_NAME)
-            if name_item:
-                name_item.setForeground(
-                    Qt.GlobalColor.white if enable else Qt.GlobalColor.gray
-                )
+                self._manager.disable(mod)
+            selected_name = mod.filename
+            self.refresh()
+            for row in range(self._table.rowCount()):
+                item = self._table.item(row, self._COL_NAME)
+                current = item.data(Qt.ItemDataRole.UserRole) if item else None
+                if current is not None and current.filename == selected_name:
+                    self._table.selectRow(row)
+                    break
         except OSError as exc:
-            QMessageBox.critical(self, "Error", f"Could not toggle mod:\n{exc}")
+            QMessageBox.critical(self, "Mod state", f"Could not change mod state:\n{exc}")
+            self.refresh()
 
     def _delete_mod(self, mod: ModEntry, _row: int) -> None:
         if not self._require_stopped():
@@ -425,8 +532,8 @@ class ModsTab(QWidget):
             return
         reply = QMessageBox.question(
             self,
-            "Delete Mod",
-            f"Permanently delete:\n{mod.filename}\n\nThis cannot be undone.",
+            "Remove selected mod",
+            f"Remove this JAR from the server's mods folder?\n\n{mod.filename}\n\nThis cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
         )
         if reply == QMessageBox.StandardButton.Yes:
@@ -434,7 +541,7 @@ class ModsTab(QWidget):
                 self._manager.delete(mod)
                 self.refresh()
             except OSError as exc:
-                QMessageBox.critical(self, "Error", f"Could not delete:\n{exc}")
+                QMessageBox.critical(self, "Remove failed", f"Could not remove the selected JAR:\n{exc}")
 
     # Right-click context menu (Prism-style)
 
@@ -452,27 +559,13 @@ class ModsTab(QWidget):
         if mod is None:
             return
 
-        is_bundled = getattr(mod, "bundled", False)
         menu = QMenu(self)
-        if not is_bundled:
-            if mod.enabled:
-                menu.addAction("Disable").triggered.connect(
-                    lambda: self._set_enabled(mod, False))
-            else:
-                menu.addAction("Enable").triggered.connect(
-                    lambda: self._set_enabled(mod, True))
-            menu.addSeparator()
-            menu.addAction("Change version / downgrade…").triggered.connect(
-                lambda: self._change_version(mod))
-            menu.addAction("Verify dependencies").triggered.connect(
-                lambda: self._verify_deps())
-            menu.addSeparator()
+        # Essential operations are already directly visible: enabled state is
+        # a named cell control, version replacement/removal live in the
+        # selected-mod detail panel, and dependency checks are in the inventory
+        # action group. Keep the context menu to the one contextual browse action.
         menu.addAction("Open on Modrinth").triggered.connect(
             lambda: self._open_mod_page(mod))
-        if not is_bundled:
-            menu.addSeparator()
-            menu.addAction("Delete").triggered.connect(
-                lambda: self._delete_mod(mod, row))
         menu.exec(self._table.viewport().mapToGlobal(pos))
 
     def _set_enabled(self, mod: ModEntry, enable: bool) -> None:
@@ -493,7 +586,7 @@ class ModsTab(QWidget):
     def _edit_platform(self):
         if self._instance_manager is None or not self._require_stopped():
             return
-        from PyQt6.QtWidgets import QDialog, QFormLayout, QComboBox, QDialogButtonBox
+        from PyQt6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout
         inst = self._instance
         dlg = QDialog(self)
         dlg.setWindowTitle("Server version · compatibility filters")
@@ -527,18 +620,79 @@ class ModsTab(QWidget):
             QMessageBox.warning(self, "Could not save server version", str(exc))
 
     def _selected_mod(self):
-        item = self._table.item(self._table.currentRow(), self._COL_NAME)
+        row = self._table.currentRow()
+        item = self._table.item(row, self._COL_NAME) if row >= 0 else None
         return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _on_selection_changed(self) -> None:
+        mod = self._selected_mod()
+        if mod is None:
+            self._detail_title.setText("Select a mod to inspect it")
+            self._detail_summary.setText(
+                "Select one row to see its mod ID, filename, version, side evidence, and file size."
+            )
+            self._change_selected_btn.setEnabled(False)
+            self._remove_selected_btn.setEnabled(False)
+            return
+
+        bundled = bool(getattr(mod, "bundled", False))
+        self._detail_title.setText(mod.display_name)
+        side = {
+            "client": "Client only",
+            "server": "Server only",
+            "both": "Both sides",
+        }.get(mod.side, "Not declared")
+        identity = "not linked to an exact online project"
+        try:
+            from ...mods.modrinth import added_mods
+            record = added_mods(self._instance.path).get(mod.filename, {})
+            if record.get("project_id"):
+                identity = f"linked online as {record.get('project_id')}"
+        except (ImportError, OSError, ValueError, TypeError):
+            pass
+        self._detail_summary.setText(
+            f"Mod ID: {mod.mod_id or 'not declared'}    ·    "
+            f"Version: {mod.version or 'not declared'}    ·    "
+            f"Runs on: {side}    ·    Size: {mod.size_mb}\n"
+            f"File: {mod.filename}    ·    {identity}\n"
+            f"Location: {mod.path}"
+        )
+        self._detail_summary.setToolTip(
+            f"{mod.description}\n{mod.path}" if mod.description else str(mod.path)
+        )
+        self._change_selected_btn.setEnabled(not bundled)
+        self._remove_selected_btn.setEnabled(not bundled)
 
     def _change_selected_version(self):
         mod = self._selected_mod()
         if mod is None:
-            QMessageBox.information(self, "Select a mod", "Select a mod in the list, then choose Change version.")
+            QMessageBox.information(
+                self, "Select a mod", "Select one manageable mod in the inventory first."
+            )
             return
         if mod.bundled:
-            QMessageBox.information(self, "Bundled library", "This nested library is managed by its parent modpack.")
+            QMessageBox.information(
+                self, "Bundled library",
+                "This nested library is managed by its parent modpack."
+            )
             return
         self._change_version(mod)
+
+    def _remove_selected_mod(self) -> None:
+        mod = self._selected_mod()
+        row = self._table.currentRow()
+        if mod is None:
+            QMessageBox.information(
+                self, "Select a mod", "Select one manageable mod in the inventory first."
+            )
+            return
+        if getattr(mod, "bundled", False):
+            QMessageBox.information(
+                self, "Bundled library",
+                "This nested library is managed by its parent modpack."
+            )
+            return
+        self._delete_mod(mod, row)
 
     def _require_stopped(self):
         from ...process.tmux_manager import TmuxManager
@@ -567,7 +721,12 @@ class ModsTab(QWidget):
         if not self._require_stopped():
             return
         from ...mods import modrinth
-        from ...mods.versions import identify_files, list_versions, resolve_selected, replace_files
+        from ...mods.versions import (
+            identify_files,
+            list_versions,
+            replace_files,
+            resolve_selected,
+        )
         inst = self._instance
         path, loader, mc = inst.path, inst.loader, inst.minecraft_version
         def work():
@@ -693,9 +852,10 @@ class ModsTab(QWidget):
         self._run_net(work, done, busy="Verifying dependencies…")
 
     def _open_mod_page(self, mod: ModEntry) -> None:
-        from PyQt6.QtGui import QDesktopServices
-        from PyQt6.QtCore import QUrl
         from urllib.parse import quote
+
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
         url = getattr(mod, "url", "") or ""
         if not url:
             term = getattr(mod, "name", "") or mod.filename
@@ -797,11 +957,20 @@ class ModsTab(QWidget):
                 item.setText(mod.name)
             from ...mods.modrinth import added_mods
             meta = added_mods(self._instance.path).get(mod.filename, {})
-            identity = "Exact online match" if meta.get("project_id") else "Not linked online · use Identify online"
-            item.setToolTip(f"{mod.filename}\n{mod.description}\n{identity}")
+            identity = (
+                "Exact online match" if meta.get("project_id")
+                else "Not linked online · use Identify installed mods"
+            )
+            item.setToolTip(
+                f"Filename: {mod.filename}\nMod ID: {mod.mod_id or 'not declared'}"
+                f"\n{mod.description}\n{identity}\n{mod.path}"
+            )
             version = self._table.item(current, self._COL_VERSION)
             if version and mod.version:
                 version.setText(mod.version)
+                version.setToolTip(mod.version)
             self._render_side(current, mod)
             self._table.setSortingEnabled(True)
+            if self._selected_mod() is mod:
+                self._on_selection_changed()
             break

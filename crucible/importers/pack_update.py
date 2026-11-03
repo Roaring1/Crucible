@@ -51,13 +51,12 @@ import re
 import shutil
 import ssl
 import subprocess
-import tempfile
 import threading
-import zipfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
@@ -1227,10 +1226,11 @@ def apply_update(
 ) -> UpdateResult:
     """Execute a plan as a stage-and-swap. Never raises.
 
-    backup_cb MUST take the mandatory world backup and return its path. It is
-    injected rather than imported so this module stays free of PyQt (the real
-    caller passes BackupManager.create_backup). Passing None is allowed only
-    for a server with no world yet.
+    backup_cb MUST create a verified, complete fleet generation and return
+    its path. It is injected rather than imported so this importer stays free
+    of PyQt and registry/UI concerns. There is no per-world backup fallback:
+    a pack update changes server files and must never proceed without a
+    fleet-wide restore point, even when the instance has no generated world.
 
     `archive` lets a caller reuse an already-downloaded zip (or a local file)
     instead of re-downloading. The server-running and port checks are repeated
@@ -1270,13 +1270,26 @@ def apply_update(
             res.failed_reason = blocker
             return res
 
-        # 1. Mandatory backup FIRST -- before a single byte is downloaded.
-        if backup_cb is not None:
-            log("Taking a verified world backup before touching anything...")
-            res.backup_path = str(backup_cb() or "")
-            log(f"Backup complete: {res.backup_path}")
-        else:
-            res.messages.append("No backup callback supplied; no world backup was taken.")
+        # 1. Mandatory complete fleet checkpoint FIRST -- before a single
+        # byte is downloaded or staged. No update is permitted to bypass the
+        # global two-generation retention/verification system.
+        if backup_cb is None:
+            res.failed_reason = (
+                "A verified fleet backup generation is required before updating "
+                "this server, but no fleet backup provider was supplied."
+            )
+            log(res.failed_reason)
+            return res
+        log("Creating a verified complete fleet backup generation before touching anything...")
+        res.backup_path = str(backup_cb() or "").strip()
+        if not res.backup_path:
+            res.failed_reason = (
+                "The fleet backup provider did not return a generation path; "
+                "the pack update was not started."
+            )
+            log(res.failed_reason)
+            return res
+        log(f"Fleet backup generation complete: {res.backup_path}")
 
         # 2. Acquire the pack: an explicit archive, one the plan already
         #    resolved on disk, or a fresh download.

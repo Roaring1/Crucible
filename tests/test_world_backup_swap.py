@@ -29,7 +29,9 @@ if "PyQt6" not in sys.modules:
 from crucible.data import backup_manager as backup_mod
 from crucible.data.backup_manager import BackupManager, SwapResult
 from crucible.data.instance_model import (
-    ServerInstance, dimension_label, is_dimension_dir_name,
+    ServerInstance,
+    dimension_label,
+    is_dimension_dir_name,
 )
 
 
@@ -225,6 +227,23 @@ class WorldSwapTests(unittest.TestCase):
         self.assertEqual(deleted, 1)
         self.assertFalse(result.pre_swap_dir.exists())
         self.assertEqual(mgr.list_pre_swap_dirs(), [])
+
+    def test_fleet_backed_world_archive_must_match_manifest_sha256(self):
+        tmp = Path(tempfile.mkdtemp())
+        server_dir = _make_server(tmp, level_name="World")
+        mgr = _manager(tmp, server_dir, "FleetSrv", "fleet-hash-backups")
+        backup_path = mgr.create_backup(slot_name="Fleet world")
+        entry = next(
+            item for item in mgr.list_backups() if item.filename == backup_path.name
+        )
+        entry.sha256 = "0" * 64
+        entry.fleet_generation_id = "generation-hash-test"
+
+        with self.assertRaisesRegex(OSError, "SHA-256"):
+            mgr._verify_fleet_archive_hash(entry)
+
+        # Manifest mismatch is detected before the live world is moved.
+        self.assertTrue((server_dir / "World" / "level.dat").exists())
 
     def test_swap_refuses_mismatched_level_name(self):
         tmp = Path(tempfile.mkdtemp())

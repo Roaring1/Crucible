@@ -23,22 +23,39 @@ from __future__ import annotations
 
 import time
 
-from PyQt6.QtCore import QObject, Qt, QThread, QTimer, QMetaObject, pyqtSignal, pyqtSlot
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QMetaObject, QObject, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QTabWidget, QMessageBox, QMenu, QToolButton,
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QTabWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..data.instance_manager import InstanceManager
 from ..data.instance_model import ServerInstance
-from ..process.tmux_manager import TmuxManager
 from ..process.log_watcher import LogWatcher
-from ..process.watchdog import Watchdog
 from ..process.startup_patterns import RE_SERVER_DONE, stale_starting_should_promote
+from ..process.tmux_manager import TmuxManager
+from ..process.watchdog import Watchdog
 from . import theme
+from .tabs import (
+    BackupTab,
+    ConfigTab,
+    ConsoleTab,
+    InfoTab,
+    ModsTab,
+    NotesTab,
+    PlayersTab,
+    SetupTab,
+    WorldTab,
+)
 from .thread_lifecycle import connect_thread_cleanup
-from .tabs import ConsoleTab, ModsTab, NotesTab, InfoTab, ConfigTab, BackupTab, WorldTab, PlayersTab, SetupTab
 
 # Fallback "Done (Xs)!" detector used only while "starting", read straight off
 # the tmux pane. Shares the exact pattern with log_watcher's log-file parsing
@@ -89,6 +106,8 @@ class InstancePanel(QWidget):
     watchdog_watch_requested = pyqtSignal(object, bool)
     watchdog_unwatch_requested = pyqtSignal(str)
     watcher_reset_requested = pyqtSignal(object)
+    fix_loading_requested = pyqtSignal(object)
+    inspect_logs_requested = pyqtSignal(object)
 
     def __init__(self, manager: InstanceManager, parent=None):
         super().__init__(parent)
@@ -109,6 +128,9 @@ class InstancePanel(QWidget):
         self._tps_poll_inflight = False
 
         self._build_ui()
+        self._feedback_timer = QTimer(self)
+        self._feedback_timer.setSingleShot(True)
+        self._feedback_timer.timeout.connect(self._feedback_label.hide)
         self._show_empty()
         self._worker_threads: list[QThread]    = []  # keep refs alive until done
         self._workers:        list[_TmuxWorker] = []  # CRITICAL: prevent GC before thread runs
@@ -193,12 +215,14 @@ class InstancePanel(QWidget):
         name_col.addWidget(self._ver_label)
         h_layout.addLayout(name_col, stretch=1)
 
-        # Status label
+        # Status label: text remains explicit; color is only a secondary cue.
         self._status_label = QLabel("")
         self._status_label.setObjectName("StatusLabel")
-        self._status_label.setMinimumWidth(160)
+        self._status_label.setMinimumWidth(190)
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._status_label.setStyleSheet(f"color: {theme.SURFACE2}; font-size: 12px;")
+        self._status_label.setStyleSheet(
+            f"color: {theme.SURFACE2}; font-size: 13px; font-weight: 700;"
+        )
         h_layout.addWidget(self._status_label)
 
         # External IP copy button
@@ -214,32 +238,31 @@ class InstancePanel(QWidget):
         )
         self._btn_ip.clicked.connect(self._copy_external_ip)
         actions.addWidget(self._btn_ip)
+
+        self._feedback_label = QLabel("")
+        self._feedback_label.setObjectName("HeaderFeedback")
+        self._feedback_label.setStyleSheet(
+            f"color: {theme.SUBTEXT}; font-size: 11px; padding: 0 8px;"
+        )
+        self._feedback_label.setVisible(False)
+        actions.addWidget(self._feedback_label)
         actions.addStretch()
 
-        # Buttons -- Start/Stop are primary actions; Restart/Console are secondary.
-        # Heights differ intentionally: primary pair is 32px, secondary 28px.
-        self._btn_start   = QPushButton("▶  Start")
-        self._btn_stop    = QPushButton("■  Stop")
-        self._btn_restart = QPushButton("↺  Restart")
-        self._btn_attach  = QPushButton("Console")
-
+        # Manual lifecycle is deliberately explicit: Stop, confirm Stopped,
+        # then Start. There is no hidden one-click Restart path.
+        self._btn_start = QPushButton("▶  Start")
+        self._btn_stop = QPushButton("■  Stop")
         self._btn_start.setObjectName("PrimaryButton")
         self._btn_stop.setObjectName("DangerButton")
-        self._btn_restart.setObjectName("RestartButton")
-        self._btn_attach.setObjectName("AttachButton")
 
         for btn in (self._btn_start, self._btn_stop):
-            btn.setFixedHeight(32)
-            actions.addWidget(btn)
-
-        for btn in (self._btn_restart, self._btn_attach):
-            btn.setFixedHeight(28)
+            btn.setFixedHeight(44)
+            btn.setMinimumWidth(104)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
             actions.addWidget(btn)
 
         self._btn_start.clicked.connect(self._do_start)
         self._btn_stop.clicked.connect(self._do_stop)
-        self._btn_restart.clicked.connect(self._do_restart)
-        self._btn_attach.clicked.connect(self._do_attach)
 
         self._header = header
         layout.addWidget(header)
@@ -254,30 +277,27 @@ class InstancePanel(QWidget):
         self._notes   = NotesTab(self._manager)
         self._info    = InfoTab()
         self._config  = ConfigTab()
-        self._backup  = BackupTab()
-        self._world   = WorldTab()
+        self._backup  = BackupTab(self._manager)
+        self._world   = WorldTab(self._manager)
         self._players = PlayersTab()
 
-        # The primary pages are Setup, Console, Mods, World, and Backups.
-        # Config, Players, Notes, and Info remain available from More so the
-        # permanent navigation stays focused on common server tasks.
-        self._tabs.addTab(self._setup,   "🧭  Setup")
+        # Order the workspace around the normal session:
+        # Console first, then server content, with Setup and Diagnostics still
+        # visible rather than hidden behind a secondary menu.
         self._tabs.addTab(self._console, "Console")
         self._tabs.addTab(self._mods,    "Mods")
-        self._tabs.addTab(self._world,   "🌍  World")
-        self._tabs.addTab(self._config,  "⚙  Config")
-        self._tabs.addTab(self._backup,  "💾  Backups")
-        self._tabs.addTab(self._players, "👥  Players")
+        self._tabs.addTab(self._world,   "World")
+        self._tabs.addTab(self._backup,  "Backups")
+        self._tabs.addTab(self._setup,   "Setup")
+        self._tabs.addTab(self._info,    "Diagnostics")
+        self._tabs.addTab(self._config,  "Config")
+        self._tabs.addTab(self._players, "Players")
         self._tabs.addTab(self._notes,   "Notes")
-        self._tabs.addTab(self._info,    "Info")
-        # Keep the five most-used pages visible. Less-frequent configuration
-        # and reference pages remain one click away under More, rather than
-        # competing for space in the permanent navigation row.
+        # Only secondary configuration/reference pages live under More.
         self._more_tab_labels = {
-            4: "Config & settings",
-            6: "Players",
-            7: "Notes",
-            8: "Info & performance",
+            6: "Config & settings",
+            7: "Players",
+            8: "Notes",
         }
         self._more_tab_actions = {}
         self._more_menu = QMenu(self)
@@ -293,6 +313,8 @@ class InstancePanel(QWidget):
         self._more_tabs_button = QToolButton()
         self._more_tabs_button.setObjectName("MoreTabsButton")
         self._more_tabs_button.setText("More ▾")
+        self._more_tabs_button.setMinimumHeight(44)
+        self._more_tabs_button.setMinimumWidth(84)
         self._more_tabs_button.setMenu(self._more_menu)
         self._more_tabs_button.setPopupMode(
             QToolButton.ToolButtonPopupMode.InstantPopup
@@ -317,11 +339,15 @@ class InstancePanel(QWidget):
         self._world.set_config_guard(self._config.confirm_discard_or_save)
         self._world.set_config_reload(self._config.reload_from_disk)
 
-        # Poll TPS only while the Console tab is focused (see _update_tps_polling).
+        # Console is the primary workspace. Its optional external tmux
+        # terminal action stays inside the Console page, not in the global header.
         self._tabs.currentChanged.connect(self._on_tab_changed)
         self._console.lifecycle_command_sent.connect(
             self._on_console_lifecycle_command
         )
+        self._console.open_terminal_requested.connect(self._do_attach)
+        self._info.fix_loading_requested.connect(self.fix_loading_requested)
+        self._info.inspect_logs_requested.connect(self.inspect_logs_requested)
 
         layout.addWidget(self._tabs, stretch=1)
 
@@ -381,7 +407,7 @@ class InstancePanel(QWidget):
                 ip = public_host(timeout=5) or ""
             except Exception:
                 ip = ""
-            from PyQt6.QtCore import QMetaObject, Q_ARG
+            from PyQt6.QtCore import Q_ARG, QMetaObject
             QMetaObject.invokeMethod(
                 self, "_on_ip_fetched", Qt.ConnectionType.QueuedConnection,
                 Q_ARG(int, generation), Q_ARG(str, instance_id),
@@ -458,7 +484,7 @@ class InstancePanel(QWidget):
         if self._instance is not None and self.has_active_operations():
             QMessageBox.information(
                 self, "Operation in progress",
-                "Wait for the current start, stop, restart, backup, setup, or mod "
+                "Wait for the current start, stop, backup, setup, or mod "
                 "operation to finish before switching servers.",
             )
             return False
@@ -473,6 +499,12 @@ class InstancePanel(QWidget):
         self._btn_ip.setText("⧉  Copy IP")
 
         self._instance = instance
+        # Changing server selection always lands on the live console workspace.
+        # Block the tab signal here; the new instance's selected page is loaded
+        # once, after the per-instance loaded-tab cache is cleared below.
+        self._tabs.blockSignals(True)
+        self._tabs.setCurrentWidget(self._console)
+        self._tabs.blockSignals(False)
         self._header.show()
         self._dot.show()
         self._empty_state.hide()
@@ -506,6 +538,15 @@ class InstancePanel(QWidget):
 
     def current_instance_id(self) -> str | None:
         return self._instance.id if self._instance is not None else None
+
+    def show_feedback(self, message: str, duration_ms: int = 4_000) -> None:
+        """Show brief action feedback in the selected-server header, not a footer."""
+        self._feedback_label.setText(message)
+        self._feedback_label.setVisible(bool(message))
+        if message:
+            self._feedback_timer.start(max(1_000, duration_ms))
+        else:
+            self._feedback_timer.stop()
 
     def prepare_to_remove(self, instance: ServerInstance) -> bool:
         if self._instance is None or self._instance.id != instance.id:
@@ -571,12 +612,6 @@ class InstancePanel(QWidget):
             if not self.load(instance):
                 return
         self._do_stop()
-
-    def _do_restart_for(self, instance: ServerInstance) -> None:
-        if self._instance is None or self._instance.id != instance.id:
-            if not self.load(instance):
-                return
-        self._do_restart()
 
     # Watchdog lifecycle
 
@@ -883,8 +918,6 @@ class InstancePanel(QWidget):
         starting = (status in ("starting", "stopping"))
         self._btn_start.setEnabled(status == "stopped")
         self._btn_stop.setEnabled(running or starting)
-        self._btn_restart.setEnabled(status in ("running", "stopped"))
-        self._btn_attach.setEnabled(running or starting)
 
         # Drive (or stop) the fast transition poll based on the new state.
         if status in ("starting", "stopping"):
@@ -989,10 +1022,7 @@ class InstancePanel(QWidget):
     def _set_buttons_enabled(self, enabled: bool) -> None:
         # Hidden, rather than merely disabled, controls are less confusing when
         # no server exists or none is selected.
-        for btn in (
-            self._btn_ip, self._btn_start, self._btn_stop,
-            self._btn_restart, self._btn_attach,
-        ):
+        for btn in (self._btn_ip, self._btn_start, self._btn_stop):
             btn.setVisible(enabled)
             btn.setEnabled(enabled)
 
@@ -1140,72 +1170,6 @@ class InstancePanel(QWidget):
         self._run_tmux(
             lambda: self._tmux.stop(inst, graceful=True, timeout_s=90), _on_done
         )
-
-    def _do_restart(self) -> None:
-        if not self._instance:
-            return
-        self._btn_restart.setEnabled(False)
-        self._btn_restart.setText("Restarting…")
-        self._tps_timer.stop()
-        inst = self._instance
-
-        def _do_start_phase() -> None:
-            def _on_start_done(ok: bool, msg: str) -> None:
-                if ok:
-                    self._manager.update_instance(inst)
-                    self._update_status_display("starting")
-                    self.status_changed.emit(inst.id, "running")
-                else:
-                    QMessageBox.critical(self, "Could not start server", msg)
-                self._btn_restart.setText("↺  Restart")
-                self._btn_restart.setEnabled(True)
-            self._preflight_properties(inst)
-            self._run_tmux(lambda: self._tmux.start(inst), _on_start_done)
-
-        def _after_check(_ok: bool, state: str) -> None:
-            if state == "unknown":
-                QMessageBox.warning(
-                    self, "Restart",
-                    "Could not verify the tmux session. No stop or start command "
-                    "was issued; retry shortly.",
-                )
-                self._btn_restart.setText("↺  Restart")
-                self._btn_restart.setEnabled(True)
-                return
-            if state == "running":
-                if self._watchdog:
-                    self.watchdog_unwatch_requested.emit(inst.id)
-
-                def _on_stop_done(stop_ok: bool, stop_msg: str) -> None:
-                    if not stop_ok:
-                        if self._watchdog:
-                            self.watchdog_watch_requested.emit(
-                                inst, inst.auto_restart
-                            )
-                        QMessageBox.warning(
-                            self, "Restart", "Server did not stop cleanly:\n" + stop_msg
-                        )
-                        self._btn_restart.setText("↺  Restart")
-                        self._btn_restart.setEnabled(True)
-                        return
-                    _do_start_phase()
-
-                self._run_tmux(
-                    lambda: self._tmux.stop(inst, graceful=True, timeout_s=90),
-                    _on_stop_done,
-                )
-            else:
-                _do_start_phase()
-
-        def _probe_restart_state():
-            running = self._tmux.probe_running(inst)
-            state = (
-                "unknown" if running is None
-                else ("running" if running else "stopped")
-            )
-            return True, state
-
-        self._run_tmux(_probe_restart_state, _after_check)
 
     def _do_attach(self) -> None:
         if not self._instance:

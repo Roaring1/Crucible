@@ -1,33 +1,50 @@
 """Real PyQt interaction checks, isolated from legacy tests' optional-module stubs."""
 import json
 import tempfile
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
-from PyQt6.QtWidgets import QApplication, QMessageBox, QInputDialog, QMenu
+from unittest.mock import MagicMock, patch
+
+from PyQt6.QtCore import QMimeData, QPoint, Qt, QUrl
+from PyQt6.QtGui import QDragEnterEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtCore import Qt, QPoint, QPointF, QMimeData, QUrl
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+from PyQt6.QtWidgets import (
+ QApplication,
+ QGroupBox,
+ QInputDialog,
+ QMenu,
+ QPushButton,
+ QStatusBar,
+)
+
 from crucible.data.instance_manager import InstanceManager
 from crucible.data.instance_model import ServerInstance
-from crucible.ui.main_window import MainWindow
-from crucible.ui.instance_panel import InstancePanel
-from crucible.ui.tabs.console_tab import ConsoleTab
-from crucible.ui.tabs.players_tab import PlayersTab
-from crucible.ui.tabs.mods_tab import ModsTab
-from crucible.ui.tabs.system_tab import SystemTab
-from crucible.ui.add_mod_dialog import AddModDialog, _SearchWorker
-from crucible.ui.add_dialog import AddInstanceDialog
-from crucible.ui.new_server_dialog import NewServerDialog
-from crucible.ui.modpack_dialog import ModpackDialog, _PackInstallWorker
-import threading
 from crucible.mods.mod_manager import ModEntry
 from crucible.ui import theme
+from crucible.ui.add_dialog import AddInstanceDialog
+from crucible.ui.add_mod_dialog import AddModDialog, _SearchWorker
+from crucible.ui.instance_panel import InstancePanel
+from crucible.ui.main_window import MainWindow
+from crucible.ui.modpack_dialog import ModpackDialog, _PackInstallWorker
+from crucible.ui.new_server_dialog import NewServerDialog
+from crucible.ui.sidebar import Sidebar
+from crucible.ui.tabs.console_tab import ConsoleTab
+from crucible.ui.tabs.mods_tab import ModsTab
+from crucible.ui.tabs.players_tab import PlayersTab
 
 app=QApplication([]);app.setStyleSheet(theme.STYLESHEET)
 root=Path(tempfile.mkdtemp(prefix='crucible-qt-test-'))
 inst=ServerInstance(str(root/'server'),'Test server',minecraft_version='1.21.1',loader='fabric',loader_version='0.16.10')
+rail=Sidebar();rail.populate([inst],{inst.id:'stopped'})
+rail_item=rail._items[inst.id];rail_widget=rail._row_widgets[inst.id]
+assert rail_item.text()=='' and rail_item.icon().isNull()
+assert rail_widget._status_label.text()=='Stopped'
+rail.update_status(inst.id,'running')
+assert rail_widget._status_label.text()=='Running'
+assert rail_item.text()=='' and rail_item.icon().isNull(), 'status polling must not restore duplicate item text/icons'
+rail.close()
 box=ConsoleTab();box._instance=inst;box.resize(760,500);box.show();box._cmd_input.setFocus();QTest.qWait(30)
 QTest.keyClicks(box._cmd_input,'gameru')
 assert box._suggestions.isVisible() and box._suggestions.item(0).text()=='gamerule'
@@ -58,13 +75,36 @@ players.close()
 
 # Sorting may move metadata results: data must follow the mod, not its original row number.
 mods=ModsTab();first=ModEntry('z.jar',root/'z.jar',True,10);second=ModEntry('a.jar',root/'a.jar',True,10)
-mods._instance=inst;mods._populate_table([first,second]);mods._table.sortItems(mods._COL_NAME)
+mods._instance=inst;mods._manager=MagicMock();mods._populate_table([first,second])
+assert mods._table.columnCount()==4
+assert [mods._table.horizontalHeaderItem(i).text() for i in range(4)]==['State','Mod','Version','Runs on']
+assert mods._table.currentRow()>=0
+assert mods._change_selected_btn.isEnabled() and mods._remove_selected_btn.isEnabled()
+assert mods._table.cellWidget(0,mods._COL_ENABLED).text() in {'Enabled','Disabled'}
+assert not any(button.text().strip()=='Delete' for button in mods._table.findChildren(QPushButton))
+assert mods.findChild(__import__('PyQt6.QtWidgets',fromlist=['QScrollArea']).QScrollArea) is not None
+context_actions=[]
+with patch.object(QMenu,'exec',lambda menu,*args:context_actions.extend(action.text() for action in menu.actions())):
+ rect=mods._table.visualItemRect(mods._table.item(0,mods._COL_NAME))
+ mods._show_context_menu(rect.center())
+assert 'Delete' not in context_actions, context_actions
+assert 'Change version / downgrade…' not in context_actions, context_actions
+group_titles={group.title() for group in mods.findChildren(QGroupBox)}
+assert {'Installed mod inventory','Server compatibility','Whole server pack'} <= group_titles
+mods._table.sortItems(mods._COL_NAME)
 first.name='Zeta';first.version='2';first.side='client'
 mods._on_inspect_result(mods._inspect_generation,0,first)
 for row in range(mods._table.rowCount()):
  item=mods._table.item(row,mods._COL_NAME)
  if item.data(Qt.ItemDataRole.UserRole) is first:
   assert item.text()=='Zeta' and 'Client only' in mods._table.item(row,mods._COL_SIDE).text()
+  assert mods._table.item(row,mods._COL_VERSION).toolTip()=='2'
+mods._filter.setText('z.jar');app.processEvents()
+assert any(
+ not mods._table.isRowHidden(row)
+ and mods._table.item(row,mods._COL_NAME).data(Qt.ItemDataRole.UserRole) is first
+ for row in range(mods._table.rowCount())
+), 'mod filter must match filenames as well as display names'
 mods.close()
 
 # Consecutive network workflows must be allowed after native thread retirement.
@@ -236,22 +276,25 @@ pack_ui.close();pack_ui.deleteLater();QTest.qWait(20)
 
 with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  window=MainWindow(m);window.resize(900,600);window.show();QTest.qWait(80)
- # Keep five primary pages visible and move infrequent references under More.
+ # The six destinations used during ordinary server operation remain visible.
+ # Console is the default landing page; only configuration/reference pages use More.
  panel=window._panel;tabs=panel._tabs;bar=tabs.tabBar()
  visible=[tabs.tabText(i) for i in range(tabs.count()) if bar.isTabVisible(i)]
- assert len(visible)==5, visible
- assert any('Setup' in label for label in visible)
- assert any('Console' in label for label in visible)
- assert any('Mods' in label for label in visible)
- assert any('World' in label for label in visible)
- assert any('Backups' in label for label in visible)
- assert all(not bar.isTabVisible(i) for i in (4,6,7,8))
- panel._more_tab_actions[4].trigger();app.processEvents()
+ assert visible==['Console','Mods','World','Backups','Setup','Diagnostics'], visible
+ assert tabs.currentWidget() is panel._console
+ assert panel._btn_start.height() >= 44 and panel._btn_stop.height() >= 44
+ assert all(not bar.isTabVisible(i) for i in (6,7,8))
+ panel._more_tab_actions[6].trigger();app.processEvents()
  assert tabs.currentWidget() is panel._config
  assert panel._more_tabs_button.text().startswith('More: Config')
- assert panel._more_tab_actions[4].isChecked()
+ assert panel._more_tab_actions[6].isChecked()
  tabs.setCurrentWidget(panel._setup);app.processEvents()
  assert panel._more_tabs_button.text()=='More ▾'
+ tabs.setCurrentWidget(panel._info);app.processEvents()
+ assert panel._info._inspect_logs_btn.isEnabled()
+ assert panel._info._fix_loading_btn.isEnabled()
+ assert not any(button.text().strip() in {'Restart', 'Console'} for button in panel.findChildren(QPushButton))
+ assert not window.findChildren(QStatusBar)
  # The add-server action is a small menu, not a chooser dialog stacked in front
  # of the actual workflow. Keep all three labels explicit and verify each route.
  for choice, module_path in (
@@ -288,7 +331,7 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
   window._on_add_requested()
  assert window._sidebar._list.count()==previous_count
  assert window._sidebar.selected_instance().id==inst.id
- assert 'selected existing server' in window.statusBar().currentMessage().lower()
+ assert 'selected existing server' in panel._feedback_label.text().lower()
 
  # Previewing an imported pack must not write a registry entry until Add server.
  target=root/'not-yet-registered-pack'
@@ -334,13 +377,16 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
   window._import_dropped_path(dropdir)
  assert m.instances[-1].name==dropdir.name
  # Compact header keeps its action controls inside the panel.
- for btn in (window._panel._btn_start,window._panel._btn_stop,window._panel._btn_restart):
+ for btn in (window._panel._btn_start,window._panel._btn_stop):
   assert btn.geometry().right()<=btn.parentWidget().width()
+ assert not hasattr(window._panel,'_btn_restart')
+ assert not hasattr(window._panel,'_btn_attach')
  window.close();QTest.qWait(250)
 # Destroy Qt objects while QApplication and SIP are still fully initialized.
 # Python 3.14 interpreter finalization otherwise destroys global wrappers in an
 # undefined order, occasionally crashing after every assertion already passed.
 from PyQt6.QtCore import QCoreApplication, QEvent
+
 for widget in app.topLevelWidgets():
  widget.close()
  widget.deleteLater()

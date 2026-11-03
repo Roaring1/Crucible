@@ -19,9 +19,7 @@ from __future__ import annotations
 
 import ast
 import shutil
-import sys
 import tempfile
-import types
 import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -404,41 +402,33 @@ class RollbackModelTests(ServerDirCase):
 
 
 class BackupCallbackTests(ServerDirCase):
-    """The mandatory pre-update backup, injected rather than imported."""
+    """Pack-update dialogs use the same complete fleet snapshot engine."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (ROOT / "crucible/ui/pack_update_dialog.py").read_text(
+            encoding="utf-8"
+        )
+        cls.model_source = (ROOT / "crucible/ui/pack_update_model.py").read_text(
+            encoding="utf-8"
+        )
 
     def _plan(self) -> UpdatePlan:
         return UpdatePlan(instance_path=str(self.tmp), current=_identity(),
                           target=_release(), variant=VARIANT_JAVA17)
 
-    def test_a_world_gets_a_labelled_backup(self):
-        seen = {}
+    def test_pack_update_uses_a_complete_fleet_checkpoint_not_a_world_zip(self):
+        self.assertNotIn("backup_callback", self.source)
+        self.assertIn("FleetBackupManager", self.source)
+        self.assertIn("fleet_operation_lock", self.source)
+        self.assertIn("operation_lock_held=True", self.source)
+        self.assertIn("complete fleet checkpoint", self.source.lower())
 
-        class FakeBackupManager:
-            def __init__(self, instance):
-                seen["instance"] = instance
-
-            def create_backup(self, slot_name=""):
-                seen["slot"] = slot_name
-                return Path("/tmp/backups/before-update.tar.zst")
-
-        callback = model.backup_callback(self.inst, self._plan())
-        self.assertIsNotNone(callback)
-        # crucible.data.backup_manager imports PyQt6, so stand in for the
-        # whole module: the callback must reach it by name at call time.
-        stub = types.ModuleType("crucible.data.backup_manager")
-        stub.BackupManager = FakeBackupManager
-        with mock.patch.dict(sys.modules,
-                             {"crucible.data.backup_manager": stub}):
-            path = callback()
-
-        self.assertEqual(path, "/tmp/backups/before-update.tar.zst")
-        self.assertIs(seen["instance"], self.inst)
-        self.assertIn("2.8.4", seen["slot"])
-        self.assertIn("2.9.0", seen["slot"])
-
-    def test_no_world_means_no_backup_step(self):
-        shutil.rmtree(self.tmp / "world")
-        self.assertIsNone(model.backup_callback(self.inst, self._plan()))
+    def test_per_world_pre_update_backup_helper_has_been_removed(self):
+        self.assertFalse(
+            hasattr(model, "backup_callback"),
+            "pack updates must not create hidden per-instance world ZIP backups",
+        )
 
 
 class HumanBytesTests(unittest.TestCase):
@@ -544,6 +534,9 @@ class DialogContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = cls.DIALOG_PATH.read_text(encoding="utf-8")
+        cls.model_source = (
+            ROOT / "crucible/ui/pack_update_model.py"
+        ).read_text(encoding="utf-8")
         cls.tree = ast.parse(cls.source)
 
     def _blocking_calls_outside_workers(self, node) -> list:
@@ -588,9 +581,14 @@ class DialogContractTests(unittest.TestCase):
         self.assertIn("def closeEvent", self.source)
         self.assertIn("def reject", self.source)
 
-    def test_backups_are_delegated_not_reimplemented(self):
-        self.assertNotIn("BackupManager", self.source)
-        self.assertIn("model.backup_callback", self.source)
+    def test_backups_are_delegated_to_the_shared_fleet_snapshot_engine(self):
+        self.assertNotIn(
+            "from ..data.backup_manager import BackupManager", self.source
+        )
+        self.assertIn("FleetBackupManager", self.source)
+        self.assertIn("fleet_operation_lock", self.source)
+        self.assertNotIn("model.backup_callback", self.source)
+        self.assertNotIn("def backup_callback", self.model_source)
 
     def test_cancelling_is_offered_and_honoured(self):
         self.assertIn("threading.Event()", self.source)

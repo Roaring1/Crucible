@@ -24,7 +24,7 @@ ORANGE    = "#fab387"
 
 STATUS_COLORS = {
     "running":      GREEN,
-    "stopped":      SURFACE2,
+    "stopped":      SUBTEXT,
     "tmux_missing": YELLOW,
     "missing":      RED,
     "unmanaged":    YELLOW,
@@ -211,9 +211,15 @@ QTabBar {{
 QTabBar::tab {{
     background-color: {CRUST};
     color: {SUBTEXT};
-    padding: 7px 16px;
+    padding: 12px 20px;
+    min-height: 44px;
     border: none;
-    font-size: 13px;
+    font-size: 14px;
+    font-weight: 600;
+}}
+QTabBar::tab:focus {{
+    outline: 2px solid {ACCENT};
+    outline-offset: -3px;
 }}
 QTabBar::tab:selected {{
     background-color: {BASE};

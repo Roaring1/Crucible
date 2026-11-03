@@ -16,9 +16,11 @@ The default output is ~/.cache/crucible/ui-previews.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,8 +33,11 @@ def capture_previews(output: Path) -> list[Path]:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
     from PyQt6.QtCore import QCoreApplication, QEvent, QPoint
+    from PyQt6.QtGui import QImage
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QMenu
+
+    from crucible.data.fleet_backup import GenerationSummary
     from crucible.data.instance_manager import InstanceManager
     from crucible.ui import theme
     from crucible.ui.add_dialog import AddInstanceDialog
@@ -105,12 +110,35 @@ def capture_previews(output: Path) -> list[Path]:
         server_root = root / "demo-server"
         server_root.mkdir()
         (server_root / "server.properties").write_text(
-            "server-port=25565\nmax-players=20\n",
+            "server-port=25565\nmax-players=20\nlevel-name=preview-world\n",
             encoding="utf-8",
         )
         (server_root / "eula.txt").write_text("eula=false\n", encoding="utf-8")
         (server_root / "start.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-        manager.add_instance(
+
+        # Real local JAR metadata makes the Mods preview exercise production
+        # inspection while remaining synthetic and network-free.
+        mods_dir = server_root / "mods"
+        mods_dir.mkdir()
+        for index in range(218):
+            metadata = [{
+                "modid": f"preview_mod_{index:02d}",
+                "name": f"Example Mod {index:02d}",
+                "version": (
+                    "2026.11.2-build-1234567890" if index % 5 == 0
+                    else f"{1 + index % 3}.4.{index}"
+                ),
+                "description": "Synthetic local visual-audit fixture.",
+            }]
+            with zipfile.ZipFile(
+                mods_dir / f"preview_mod_{index:02d}.jar", "w", zipfile.ZIP_DEFLATED
+            ) as archive:
+                archive.writestr("mcmod.info", json.dumps(metadata))
+
+        world_root = server_root / "preview-world"
+        (world_root / "region").mkdir(parents=True)
+        (world_root / "level.dat").write_bytes(b"synthetic preview world metadata")
+        instance = manager.add_instance(
             str(server_root),
             "Example Server",
             version="Minecraft 1.21.1",
@@ -118,9 +146,225 @@ def capture_previews(output: Path) -> list[Path]:
             loader="neoforge",
             loader_version="21.1.233",
         )
-        with patch.object(MainWindow, "_run_crash_recovery", lambda self: None):
+
+        # Several independent fixtures exercise real image sources and status
+        # text. These are visual states only: no subprocess or tmux process is
+        # started, queried or manipulated by the preview harness.
+        icon_image = QImage(96, 96, QImage.Format.Format_ARGB32)
+        icon_image.fill(0xFF427A9B)
+
+        pack_root = root / "pack-server"
+        pack_root.mkdir()
+        (pack_root / "server-icon.png").parent.mkdir(parents=True, exist_ok=True)
+        assert icon_image.save(str(pack_root / "server-icon.png"), "PNG")
+        pack_instance = manager.add_instance(
+            str(pack_root),
+            "Pack icon server",
+            version="Synthetic pack",
+            pack_source="manual",
+            minecraft_version="1.21.1",
+            loader="fabric",
+        )
+
+        prism_root = root / "PrismLauncher"
+        prism_instance_root = prism_root / "instances" / "Prism icon server"
+        prism_instance_root.mkdir(parents=True)
+        (prism_instance_root / "instance.cfg").write_text(
+            "name=Prism icon server\niconKey=preview_pack\n",
+            encoding="utf-8",
+        )
+        (prism_root / "prismlauncher.cfg").write_text(
+            "IconsDir=icons\n",
+            encoding="utf-8",
+        )
+        prism_icons = prism_root / "icons"
+        prism_icons.mkdir()
+        prism_icon = QImage(96, 96, QImage.Format.Format_ARGB32)
+        prism_icon.fill(0xFF8B5CA8)
+        assert prism_icon.save(str(prism_icons / "preview_pack.png"), "PNG")
+        prism_server_root = root / "prism-server"
+        prism_server_root.mkdir()
+        prism_instance = manager.add_instance(
+            str(prism_server_root),
+            "Prism artwork",
+            version="Synthetic Prism import",
+            pack_source="prism_instance",
+            prism_source=str(prism_instance_root),
+        )
+
+        # A missing folder and an unmanaged process are shown as explicit
+        # states, rather than indistinguishable colored dots.
+        missing_instance = manager.add_instance(
+            str(root / "missing-server-folder"),
+            "Missing files",
+            version="Synthetic",
+        )
+        unmanaged_root = root / "unmanaged-server"
+        unmanaged_root.mkdir()
+        unmanaged_instance = manager.add_instance(
+            str(unmanaged_root),
+            "Unmanaged process",
+            version="Synthetic",
+        )
+        tmux_missing_root = root / "tmux-missing-server"
+        tmux_missing_root.mkdir()
+        tmux_missing_instance = manager.add_instance(
+            str(tmux_missing_root),
+            "tmux unavailable",
+            version="Synthetic",
+        )
+        unknown_root = root / "unknown-server"
+        unknown_root.mkdir()
+        unknown_instance = manager.add_instance(
+            str(unknown_root),
+            "Status unavailable",
+            version="Synthetic",
+        )
+
+        from crucible.process.tmux_manager import TmuxManager
+        from crucible.ui.tabs.backup_tab import BackupTab
+
+        preview_statuses = {
+            instance.id: "stopped",
+            pack_instance.id: "running",
+            prism_instance.id: "starting",
+            missing_instance.id: "missing",
+            unmanaged_instance.id: "unmanaged",
+            tmux_missing_instance.id: "tmux_missing",
+            unknown_instance.id: "unknown",
+        }
+
+        # The backup page normally reads the fleet generation store. For a
+        # preview, provide two fake generation summaries directly so this
+        # renderer never reads or writes the owner's real backup directory.
+        preview_generations = [
+            GenerationSummary(
+                generation_id="20261102T232000000000Z-preview02",
+                path=root / "preview-backups" / "generations" / "preview02",
+                created_at="2026-11-02T23:20:00.000000Z",
+                server_count=7,
+                file_count=112,
+                logical_bytes=18_400_000,
+                bytes_copied=180_000,
+            ),
+            GenerationSummary(
+                generation_id="20261102T231000000000Z-preview01",
+                path=root / "preview-backups" / "generations" / "preview01",
+                created_at="2026-11-02T23:10:00.000000Z",
+                server_count=7,
+                file_count=108,
+                logical_bytes=18_100_000,
+                bytes_copied=18_100_000,
+            ),
+        ]
+        preview_backup_data = {
+            "generations": preview_generations,
+            "issues": [],
+            "legacy_sources": [
+                {
+                    "path": "retired-instance-id/old-world.zip",
+                    "kind": "retired_instance_world_archive",
+                    "instance_id": None,
+                    "instance_name": None,
+                    "status": "unassigned",
+                    "bytes": 5_000_000,
+                    "files": 1,
+                    "reason": "Retired instance ownership needs an explicit mapping.",
+                },
+                {
+                    "path": "manual/Example-Server-before-import",
+                    "kind": "manual_server_snapshot",
+                    "instance_id": instance.id,
+                    "instance_name": instance.name,
+                    "status": "mapped_pending",
+                    "bytes": 15_000_000,
+                    "files": 64,
+                    "reason": "Historical full-server folder is not yet in both fleet generations.",
+                },
+            ],
+            "state": {
+                "last_status": "success",
+                "last_completed_at_utc": "2026-11-02T23:20:00.000000Z",
+                "registered_servers": 7,
+                "legacy_archive_migration": {
+                    "source_archives_removed": 3,
+                    "source_bytes_removed": 640_000_000,
+                    "source_archives_pending": 1,
+                    "source_bytes_pending": 150_000_000,
+                    "cleanup_errors": [],
+                },
+            },
+            "scheduler": {
+                "active": "false",
+                "enabled": "false",
+                "next": "",
+                "detail": "Preview only · live systemd status disabled",
+            },
+        }
+
+        def preview_backup_list(tab, *_args):
+            tab._render_inventory(preview_backup_data)
+
+        with (
+            patch.object(MainWindow, "_run_crash_recovery", lambda self: None),
+            patch.object(BackupTab, "_run_job", preview_backup_list),
+            patch.object(
+                TmuxManager, "get_status",
+                lambda self, server: preview_statuses.get(server.id, "stopped"),
+            ),
+            patch.object(TmuxManager, "tmux_available", lambda self: True),
+        ):
             selected = MainWindow(manager)
-            save(selected, "main-selected.png", 1200, 760)
+            panel = selected._panel
+            selected._sidebar.update_status(pack_instance.id, "running")
+            selected._sidebar.update_status(prism_instance.id, "starting")
+            selected._sidebar.update_status(missing_instance.id, "missing")
+            selected._sidebar.update_status(unmanaged_instance.id, "unmanaged")
+            selected._sidebar.update_status(tmux_missing_instance.id, "tmux_missing")
+            selected._sidebar.update_status(unknown_instance.id, "unknown")
+            save(selected, "main-selected.png", 1440, 900)
+            save(selected, "main-selected-compact.png", 900, 600)
+
+            # Capture the live server workspace at a larger desktop size.
+            panel._tabs.setCurrentWidget(panel._console)
+            save(selected, "workspace-console.png", 1440, 900)
+
+            panel._tabs.setCurrentWidget(panel._mods)
+            QTest.qWait(350)  # deterministic local JAR inspection
+            save(selected, "workspace-mods.png", 1440, 900)
+            save(selected, "workspace-mods-compact.png", 900, 600)
+
+            panel._tabs.setCurrentWidget(panel._world)
+            save(selected, "workspace-world.png", 1440, 900)
+
+            panel._tabs.setCurrentWidget(panel._backup)
+            panel._backup._render_inventory(preview_backup_data)
+            save(selected, "workspace-backups.png", 1440, 900)
+            save(selected, "workspace-backups-compact.png", 900, 600)
+
+            panel._tabs.setCurrentWidget(panel._info)
+            save(selected, "workspace-diagnostics.png", 1440, 900)
+
+            # Right-click is now a shortcut menu; the primary actions are also
+            # visible in the selected-server workspace.
+            def capture_server_menu(menu, *_args) -> None:
+                item = selected._sidebar._list.currentItem()
+                rect = selected._sidebar._list.visualItemRect(item)
+                menu.popup(selected._sidebar._list.mapToGlobal(rect.center()))
+                QTest.qWait(40)
+                app.processEvents()
+                target = output / "server-rail-context-menu.png"
+                pixmap = menu.grab()
+                if pixmap.isNull() or not pixmap.save(str(target), "PNG"):
+                    raise RuntimeError(f"Could not capture server menu: {target}")
+                generated.append(target)
+                menu.hide()
+
+            with patch.object(QMenu, "exec", capture_server_menu):
+                item = selected._sidebar._list.currentItem()
+                rect = selected._sidebar._list.visualItemRect(item)
+                selected._sidebar._on_context_menu(rect.center())
+
             selected.close()
             QTest.qWait(80)
             selected.deleteLater()

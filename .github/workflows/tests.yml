@@ -45,6 +45,18 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:cacheprovider 2>&1 | tee "pytest-${{ matrix.python-version }}.log"
+      - name: Capture UI review screenshots
+        if: always()
+        run: |
+          python scripts/capture_ui_previews.py --output "ui-preview-artifacts"
+      - name: Upload UI review screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crucible-ui-review-py${{ matrix.python-version }}
+          path: ui-preview-artifacts/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Publish test summary
         if: always()
         env:
