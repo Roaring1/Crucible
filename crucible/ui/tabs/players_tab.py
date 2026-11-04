@@ -755,7 +755,9 @@ class _PlayerListWidget(QWidget):
             self._name_input.returnPressed.connect(self._add_player)
             self._add_btn = QPushButton("+ Add")
             self._add_btn.setAccessibleName(f"Add player to {self._filename}")
-            self._add_btn.setFixedWidth(64)
+            # The plus sign and label need a little more room under the
+            # styled font metrics used on Linux CI.
+            self._add_btn.setFixedWidth(68)
             self._add_btn.clicked.connect(self._add_player)
             add_row.addWidget(self._name_input, stretch=1)
             add_row.addWidget(self._add_btn)

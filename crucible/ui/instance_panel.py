@@ -353,6 +353,11 @@ class InstancePanel(QWidget):
 
         layout.addWidget(self._tabs, stretch=1)
 
+        # Make the keyboard transition from workspace navigation deterministic
+        # across Qt styles: Tab enters the current page at its first control.
+        # This is especially important for the primary Console landing page.
+        QWidget.setTabOrder(self._tabs.tabBar(), self._console._view)
+
         # A real empty state replaces the disabled server tabs on first launch.
         self._empty_state = QWidget()
         empty_layout = QVBoxLayout(self._empty_state)
