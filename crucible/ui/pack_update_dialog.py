@@ -150,6 +150,7 @@ class PackUpdateDialog(_JobDialog):
         self._installed = False
 
         self.setWindowTitle("Update modpack")
+        self.setAccessibleName("Update the selected server modpack")
         self.setMinimumSize(780, 620)
         self.setStyleSheet(theme.STYLESHEET)
         self._build_ui()
@@ -488,6 +489,7 @@ class RollbackDialog(_JobDialog):
         self._entries: list = []
 
         self.setWindowTitle("Roll back a modpack update")
+        self.setAccessibleName("Restore or prune retained server modpack installs")
         self.setMinimumSize(720, 540)
         self.setStyleSheet(theme.STYLESHEET)
         self._build_ui()

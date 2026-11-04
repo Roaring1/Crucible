@@ -664,6 +664,7 @@ banned_ui.deleteLater()
 # Update/rollback and server.properties repair dialogs expose each risky
 # choice by name. These fixtures never start the worker or apply a repair.
 update_ui=PackUpdateDialog(inst,manager=m)
+assert update_ui.accessibleName()=='Update the selected server modpack'
 assert update_ui._source.accessibleName()=='Modpack update source'
 assert update_ui._prerelease.accessibleName()==(
  'Include beta and release-candidate modpack versions'
@@ -685,6 +686,9 @@ assert update_ui._close_btn.accessibleName()=='Close modpack update dialog'
 update_ui.close();update_ui.deleteLater();QTest.qWait(10)
 
 rollback_ui=RollbackDialog(inst,manager=m)
+assert rollback_ui.accessibleName()==(
+ 'Restore or prune retained server modpack installs'
+)
 assert rollback_ui._list.accessibleName()=='Kept installs'
 assert rollback_ui._keep_world.accessibleName()==(
  'Carry the current live world into the restored older pack'
