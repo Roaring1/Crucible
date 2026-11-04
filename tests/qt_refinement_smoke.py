@@ -874,6 +874,13 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
   'Find previous match','Find next match','Close find bar'
  ):
   assert name in console_actions, f'Console action missing a semantic name: {name}'
+ terminal_action=console_actions[
+  'Open the selected server tmux session in a terminal'
+ ]
+ assert terminal_action.text()=='Open terminal'
+ assert terminal_action.toolTip().startswith(
+  "Open this server's managed tmux session"
+ )
  assert console._autoscroll_cb.accessibleName()=='Automatically follow new console output'
  assert console._hide_perf_cb.accessibleName()=='Hide repeating TPS poll replies from console output'
 

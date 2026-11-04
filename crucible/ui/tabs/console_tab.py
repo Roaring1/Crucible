@@ -369,7 +369,10 @@ class ConsoleTab(QWidget):
         open_log_btn.clicked.connect(self._open_log)
         actions_row.addWidget(open_log_btn)
 
-        terminal_btn = QPushButton("Open tmux in terminal")
+        # Keep the visible action label concise enough for the compact
+        # workspace. The tooltip and accessible name retain the full scope.
+        terminal_btn = QPushButton("Open terminal")
+        terminal_btn.setObjectName("ConsoleOpenTerminalButton")
         terminal_btn.setAccessibleName("Open the selected server tmux session in a terminal")
         terminal_btn.setToolTip(
             "Open this server's managed tmux session in a separate terminal window."
