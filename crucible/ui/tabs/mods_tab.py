@@ -116,16 +116,19 @@ class ModsTab(QWidget):
         # Search and add are the top-level inventory controls.
         add_row = QHBoxLayout()
         self._filter = QLineEdit()
+        self._filter.setAccessibleName("Filter installed mods by name, ID or filename")
         self._filter.setPlaceholderText("Filter installed mods by name, ID, or filename…")
         self._filter.textChanged.connect(self._apply_filter)
         add_row.addWidget(self._filter, stretch=1)
 
         add_btn = QPushButton("Add local JAR…")
+        add_btn.setAccessibleName("Add a local JAR to the selected server")
         add_btn.setToolTip("Copy one local .jar file into this server's mods folder. Does not search online.")
         add_btn.clicked.connect(self._pick_file)
         add_row.addWidget(add_btn)
 
         addmod_btn = QPushButton("Find a mod…")
+        addmod_btn.setAccessibleName("Find and install a compatible mod online")
         addmod_btn.setToolTip(
             "Search the configured mod provider and install a compatible release with required dependencies."
         )
@@ -140,11 +143,13 @@ class ModsTab(QWidget):
         inventory_row.setSpacing(8)
 
         inventory_group = QGroupBox("Installed mod inventory")
+        inventory_group.setAccessibleName("Installed mod inventory actions")
         inventory_layout = QHBoxLayout(inventory_group)
         inventory_layout.setContentsMargins(10, 22, 10, 8)
         inventory_layout.setSpacing(6)
 
         identify_btn = QPushButton("Identify installed mods")
+        identify_btn.setAccessibleName("Identify installed mods using exact provider file matches")
         identify_btn.setToolTip(
             "Hash and identify all installed manageable JARs against exact online file records. "
             "Unmatched custom builds are left unlinked; no name-only matching."
@@ -153,6 +158,7 @@ class ModsTab(QWidget):
         inventory_layout.addWidget(identify_btn)
 
         verify_btn = QPushButton("Verify dependencies")
+        verify_btn.setAccessibleName("Verify dependencies of installed mods")
         verify_btn.setToolTip(
             "Check dependencies of already-linked installed mods. May download missing dependencies; "
             "the server must be stopped."
@@ -161,15 +167,18 @@ class ModsTab(QWidget):
         inventory_layout.addWidget(verify_btn)
 
         refresh_btn = QPushButton("Refresh mod list")
+        refresh_btn.setAccessibleName("Refresh installed mod inventory")
         refresh_btn.setToolTip("Re-read files and JAR metadata. Does not change mod files.")
         refresh_btn.clicked.connect(self.refresh)
         inventory_layout.addWidget(refresh_btn)
         inventory_row.addWidget(inventory_group, 3)
 
         compatibility_group = QGroupBox("Server compatibility")
+        compatibility_group.setAccessibleName("Selected server compatibility")
         compatibility_layout = QHBoxLayout(compatibility_group)
         compatibility_layout.setContentsMargins(10, 22, 10, 8)
         platform_btn = QPushButton("Set server version…")
+        platform_btn.setAccessibleName("Describe the selected server Minecraft and loader versions")
         platform_btn.setToolTip(
             "Describe the Minecraft and loader versions already installed. This does not upgrade Minecraft."
         )
@@ -179,11 +188,13 @@ class ModsTab(QWidget):
         layout.addLayout(inventory_row)
 
         pack_group = QGroupBox("Whole server pack")
+        pack_group.setAccessibleName("Whole server pack actions")
         pack_layout = QHBoxLayout(pack_group)
         pack_layout.setContentsMargins(10, 22, 10, 8)
         pack_layout.setSpacing(6)
 
         client_btn = QPushButton("Share client pack…")
+        client_btn.setAccessibleName("Build and share the selected server client pack")
         client_btn.setToolTip(
             "Build and review the client pack for this server, then offer the configured upload flow. "
             "This is not a single-mod action."
@@ -192,6 +203,7 @@ class ModsTab(QWidget):
         pack_layout.addWidget(client_btn)
 
         advanced_btn = QPushButton("Advanced client export…")
+        advanced_btn.setAccessibleName("Export the selected server client pack to an archive")
         advanced_btn.setToolTip(
             "Export this server's client pack to a local archive format. Does not change server mods."
         )
@@ -202,11 +214,12 @@ class ModsTab(QWidget):
         update_btn.setToolTip(
             "Update this server's whole modpack, not the selected mod. Shows a plan before applying changes."
         )
-        update_btn.setAccessibleName("Update modpack")
+        update_btn.setAccessibleName("Update the entire selected server modpack")
         update_btn.clicked.connect(self._open_pack_update)
         pack_layout.addWidget(update_btn)
 
         self._dl_btn = QPushButton("Download listed mods…")
+        self._dl_btn.setAccessibleName("Download files listed by the selected server pack")
         self._dl_btn.setToolTip(
             "Fetch files listed by this pack's download index. This operates on the whole server pack."
         )
@@ -218,6 +231,11 @@ class ModsTab(QWidget):
         # Dense, sortable inventory: no file-size column and no repeated delete
         # buttons. Full details and selected-mod actions live below the list.
         self._table = QTableWidget()
+        self._table.setAccessibleName("Installed mods for the selected server")
+        self._table.setAccessibleDescription(
+            "Sortable inventory. Select one row to inspect exact file details and "
+            "use the selected-mod actions below. State controls toggle only that mod."
+        )
         self._table.setColumnCount(4)
         self._table.setHorizontalHeaderLabels(
             ["State", "Mod", "Version", "Runs on"]
@@ -244,6 +262,7 @@ class ModsTab(QWidget):
         # Visible, persistent selected-mod details and actions; no RMB required.
         details = QWidget()
         details.setObjectName("SelectedModDetails")
+        details.setAccessibleName("Selected mod details and actions")
         details.setStyleSheet(
             f"QWidget#SelectedModDetails {{ background: {theme.MANTLE}; "
             f"border: 1px solid {theme.SURFACE1}; border-radius: 5px; }}"
@@ -254,12 +273,14 @@ class ModsTab(QWidget):
 
         detail_header = QHBoxLayout()
         self._detail_title = QLabel("Select a mod to inspect it")
+        self._detail_title.setAccessibleName("Selected mod title")
         self._detail_title.setStyleSheet(
             f"color: {theme.TEXT}; font-size: 13px; font-weight: 700;"
         )
         detail_header.addWidget(self._detail_title, 1)
 
         self._change_selected_btn = QPushButton("Change selected mod version…")
+        self._change_selected_btn.setAccessibleName("Change the selected mod version")
         self._change_selected_btn.setToolTip(
             "Resolve the selected mod's exact online identity and review a compatible replacement. "
             "The original JAR is retained in mod-history."
@@ -269,6 +290,7 @@ class ModsTab(QWidget):
         detail_header.addWidget(self._change_selected_btn)
 
         self._remove_selected_btn = QPushButton("Remove selected mod…")
+        self._remove_selected_btn.setAccessibleName("Remove only the selected mod")
         self._remove_selected_btn.setObjectName("DangerButton")
         self._remove_selected_btn.setToolTip(
             "Remove only the selected mod JAR. The server must be stopped; this cannot be undone."
@@ -281,6 +303,7 @@ class ModsTab(QWidget):
         self._detail_summary = QLabel(
             "Select one row to see its mod ID, filename, version, side evidence, and file size."
         )
+        self._detail_summary.setAccessibleName("Selected mod file details")
         self._detail_summary.setWordWrap(True)
         self._detail_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._detail_summary.setStyleSheet(

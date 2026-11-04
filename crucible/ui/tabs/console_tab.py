@@ -206,6 +206,7 @@ class ConsoleTab(QWidget):
 
         # Log view
         self._view = QPlainTextEdit()
+        self._view.setAccessibleName("Selected server live console output")
         self._view.setObjectName("ConsoleView")
         self._view.setReadOnly(True)
         self._view.setMaximumBlockCount(MAX_LINES)
@@ -236,6 +237,7 @@ class ConsoleTab(QWidget):
         fb_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         fb_layout.addWidget(fb_label)
         self._find_input = QLineEdit()
+        self._find_input.setAccessibleName("Find text in console output")
         self._find_input.setPlaceholderText("Search log…")
         self._find_input.returnPressed.connect(lambda: self._find(forward=True))
         self._find_input.textChanged.connect(self._on_find_text_changed)
@@ -266,10 +268,13 @@ class ConsoleTab(QWidget):
         sr_layout.setContentsMargins(8, 4, 8, 4)
 
         self._tps_label = QLabel("TPS: —")
+        self._tps_label.setAccessibleName("Current selected server ticks per second")
         self._tps_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         self._players_label = QLabel("Players: —")
+        self._players_label.setAccessibleName("Players currently connected to selected server")
         self._players_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         self._server_state_label = QLabel("")
+        self._server_state_label.setAccessibleName("Selected server lifecycle status")
         self._server_state_label.setStyleSheet("font-size: 11px; font-weight: 600;")
 
         sr_layout.addWidget(self._tps_label)
@@ -306,6 +311,7 @@ class ConsoleTab(QWidget):
         cr_layout.addWidget(prompt)
 
         self._cmd_input = _CommandLineEdit(self)
+        self._cmd_input.setAccessibleName("Send a command to the selected server")
         self._cmd_input.setObjectName("CommandInput")
         self._cmd_input.setPlaceholderText("Send command…  (Tab to complete · ↑↓ history)")
         self._cmd_input.returnPressed.connect(self._send_command)
@@ -314,6 +320,7 @@ class ConsoleTab(QWidget):
         cr_layout.addWidget(self._cmd_input, stretch=1)
 
         send_btn = QPushButton("Send")
+        send_btn.setAccessibleName("Send command to the selected server")
         send_btn.setFixedWidth(64)
         send_btn.clicked.connect(self._send_command)
         cr_layout.addWidget(send_btn)
@@ -326,20 +333,24 @@ class ConsoleTab(QWidget):
         or_layout.setSpacing(12)
 
         self._autoscroll_cb = QCheckBox("Auto-scroll")
+        self._autoscroll_cb.setAccessibleName("Automatically follow new console output")
         self._autoscroll_cb.setChecked(True)
         self._autoscroll_cb.toggled.connect(self._on_autoscroll_toggle)
         or_layout.addWidget(self._autoscroll_cb)
 
         clear_btn = QPushButton("Clear")
+        clear_btn.setAccessibleName("Clear visible console output")
         clear_btn.setFixedWidth(60)
         clear_btn.clicked.connect(self._view.clear)
         or_layout.addWidget(clear_btn)
 
         open_log_btn = QPushButton("Open log file")
+        open_log_btn.setAccessibleName("Open the selected server log file")
         open_log_btn.clicked.connect(self._open_log)
         or_layout.addWidget(open_log_btn)
 
         terminal_btn = QPushButton("Open tmux in terminal")
+        terminal_btn.setAccessibleName("Open the selected server tmux session in a terminal")
         terminal_btn.setToolTip(
             "Open this server's managed tmux session in a separate terminal window."
         )
@@ -347,11 +358,13 @@ class ConsoleTab(QWidget):
         or_layout.addWidget(terminal_btn)
 
         copy_btn = QPushButton("Copy log")
+        copy_btn.setAccessibleName("Copy visible console output")
         copy_btn.setFixedWidth(72)
         copy_btn.clicked.connect(self._copy_log)
         or_layout.addWidget(copy_btn)
 
         self._hide_perf_cb = QCheckBox("Hide TPS poll output")
+        self._hide_perf_cb.setAccessibleName("Hide repeating TPS poll replies from console output")
         self._hide_perf_cb.setChecked(True)
         self._hide_perf_cb.setToolTip(
             "Hide the repeating TPS / tick-query responses from the console.\n"

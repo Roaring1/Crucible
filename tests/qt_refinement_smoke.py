@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
  QApplication,
  QGroupBox,
  QInputDialog,
+ QLabel,
  QMenu,
  QMessageBox,
  QPushButton,
@@ -495,6 +496,146 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  assert bar.accessibleName()=='Server workspace navigation'
  assert panel._more_tabs_button.accessibleName()=='More workspace tabs'
  assert 'QToolButton#MoreTabsButton:focus' in panel._more_tabs_button.styleSheet()
+ mods=panel._mods
+ assert mods._filter.accessibleName()=='Filter installed mods by name, ID or filename'
+ assert mods._table.accessibleName()=='Installed mods for the selected server'
+ assert mods._table.accessibleDescription()
+ assert mods._detail_title.accessibleName()=='Selected mod title'
+ assert mods._detail_summary.accessibleName()=='Selected mod file details'
+ assert mods._change_selected_btn.accessibleName()=='Change the selected mod version'
+ assert mods._remove_selected_btn.accessibleName()=='Remove only the selected mod'
+ mods_actions={
+  child.accessibleName():child
+  for child in mods.findChildren(QPushButton)
+  if child.accessibleName()
+ }
+ for name in (
+  'Add a local JAR to the selected server',
+  'Find and install a compatible mod online',
+  'Identify installed mods using exact provider file matches',
+  'Verify dependencies of installed mods',
+  'Refresh installed mod inventory',
+  'Describe the selected server Minecraft and loader versions',
+  'Build and share the selected server client pack',
+  'Export the selected server client pack to an archive',
+  'Update the entire selected server modpack',
+ ):
+  assert name in mods_actions, f'Mods page action missing a scoped accessible name: {name}'
+
+ console=panel._console
+ assert console._view.accessibleName()=='Selected server live console output'
+ assert console._find_input.accessibleName()=='Find text in console output'
+ assert console._cmd_input.accessibleName()=='Send a command to the selected server'
+ assert console._tps_label.accessibleName()=='Current selected server ticks per second'
+ assert console._players_label.accessibleName()=='Players currently connected to selected server'
+ assert console._server_state_label.accessibleName()=='Selected server lifecycle status'
+ assert console._suggestions.accessibleName().startswith('Command suggestions;')
+ console_actions={
+  child.accessibleName():child
+  for child in console.findChildren(QPushButton)
+  if child.accessibleName()
+ }
+ for name in (
+  'Send command to the selected server',
+  'Clear visible console output',
+  'Open the selected server log file',
+  'Open the selected server tmux session in a terminal',
+  'Copy visible console output',
+  'Find previous match','Find next match','Close find bar'
+ ):
+  assert name in console_actions, f'Console action missing a semantic name: {name}'
+ assert console._autoscroll_cb.accessibleName()=='Automatically follow new console output'
+ assert console._hide_perf_cb.accessibleName()=='Hide repeating TPS poll replies from console output'
+
+ world=panel._world
+ assert world._world_label.accessibleName()=='Selected server active world'
+ assert world._seed_btn.accessibleName()=='Change the active world seed for newly generated chunks'
+ assert world._reset_btn.accessibleName()=='Reset the active world after a verified fleet checkpoint'
+ assert world._wipe_btn.accessibleName()=='Permanently wipe the active world after a verified fleet checkpoint'
+ assert world._table.accessibleName()=='Saved world archives'
+ assert world._table.accessibleDescription()
+ assert world._cleanup_btn.accessibleName()==(
+  'Create and verify a fleet snapshot before cleaning old world copies'
+ )
+ assert world._dims_toggle_btn.accessibleName()=='Show all world dimensions'
+ world._dims_expanded=True;world._set_dims_text([SimpleNamespace(name=f'DIM{i}') for i in range(8)])
+ assert world._dims_toggle_btn.accessibleName()=='Show fewer world dimensions'
+ world._dims_expanded=False;world._set_dims_text([SimpleNamespace(name=f'DIM{i}') for i in range(8)])
+ assert world._dims_toggle_btn.accessibleName()=='Show all world dimensions'
+
+ backup=panel._backup
+ assert backup._open_btn.accessibleName()=='Open Crucible fleet backup folder'
+ assert backup._scheduler_label.accessibleName()=='Automatic fleet backup schedule status'
+ assert backup._timer_btn.accessibleName()=='Enable ten-minute automatic fleet backups'
+ assert backup._timer_remove_btn.accessibleName()=='Disable automatic fleet backup schedule'
+ assert backup._backup_btn.accessibleName()=='Back up all registered servers now'
+ assert backup._verify_btn.accessibleName()=='Deep verify both retained fleet generations'
+ assert backup._progress.accessibleName()=='Fleet backup or verification progress'
+ assert backup._progress_label.accessibleName()=='Fleet backup operation status'
+ assert any(
+  label.accessibleName()=='Fleet backup coverage and exclusions'
+  for label in backup.findChildren(QLabel)
+ )
+ assert backup._last_result.accessibleName()=='Latest fleet backup result'
+ assert backup._last_completed.accessibleName()=='Latest fleet backup completion time'
+ assert backup._server_count.accessibleName()=='Registered server count in latest backup'
+ assert backup._migration_status.accessibleName()=='Legacy world archive migration status'
+ assert backup._other_legacy_sources.accessibleName()=='Other legacy backup source migration status'
+ assert backup._table.accessibleName()=='Retained complete fleet backup generations'
+ assert backup._restore_btn.accessibleName()=='Restore selected server snapshot to a new folder'
+
+ diagnostics=panel._info
+ assert diagnostics._inspect_logs_btn.accessibleName()=='Inspect server logs and crash reports'
+ assert diagnostics._fix_loading_btn.accessibleName()=='Check for safe server loading repairs'
+
+ config=panel._config
+ assert config._filter_edit.accessibleName()=='Filter server properties by name or value'
+ assert config._save_btn.accessibleName()=='Save selected server properties'
+ assert config._table.accessibleName()=='Selected server properties'
+ assert config._table.accessibleDescription()
+ config_actions={
+  child.accessibleName():child
+  for child in config.findChildren(QPushButton)
+  if child.accessibleName()
+ }
+ assert 'Reload server properties' in config_actions
+
+ setup=panel._setup
+ setup.load(inst)
+ assert setup._ip_btn.accessibleName()=='Copy the selected server connection address'
+ assert setup._xms_spin.accessibleName()=='Minimum Java heap size Xms'
+ assert setup._xms_unit.accessibleName()=='Minimum Java heap size unit'
+ assert setup._xmx_spin.accessibleName()=='Maximum Java heap size Xmx'
+ assert setup._xmx_unit.accessibleName()=='Maximum Java heap size unit'
+ assert setup._fml_combo.accessibleName()=='Forge startup question handling'
+ setup_buttons={
+  child.accessibleName():child
+  for child in setup.findChildren(QPushButton)
+  if child.accessibleName()
+ }
+ for name in (
+  'Open the selected server folder',
+  'Re-check selected server readiness',
+  'Save selected server Java memory settings',
+  'Apply suggested Java heap sizes',
+  'Download matching dedicated server software',
+  'Check the selected server modpack for updates',
+  'Update the selected server modpack from a link or file',
+  'Roll back the selected server to a retained modpack install',
+ ):
+  assert name in setup_buttons, f'Setup action missing an accessible name: {name}'
+ optional_pack_download=next(
+  (
+   button for button in setup.findChildren(QPushButton)
+   if button.text().startswith("Download server mods")
+  ),
+  None,
+ )
+ if optional_pack_download is not None:
+  assert optional_pack_download.accessibleName()==(
+   'Download the missing server-side files listed by this pack'
+  )
+ assert setup._mem_status.accessibleName()=='Selected server Java memory settings status'
 
  stopped_focus=focusable_widgets(window)
  stopped_order=(

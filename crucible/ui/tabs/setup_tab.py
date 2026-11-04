@@ -17,12 +17,21 @@ from __future__ import annotations
 
 import threading
 
-from PyQt6.QtCore import Qt, QUrl, QTimer, QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, Qt, QThread, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QPushButton, QFrame, QScrollArea, QApplication, QMessageBox,
-    QSpinBox, QComboBox,
+    QApplication,
+    QComboBox,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ...data.instance_manager import InstanceManager
@@ -105,6 +114,7 @@ class SetupTab(QWidget):
         self._layout.setSpacing(14)
 
         self._placeholder = QLabel("No instance selected.")
+        self._placeholder.setAccessibleName("Setup page selection status")
         self._placeholder.setStyleSheet(f"color: {theme.SURFACE2};")
         self._layout.addWidget(self._placeholder)
         self._layout.addStretch()
@@ -166,16 +176,19 @@ class SetupTab(QWidget):
         actions.setSpacing(8)
 
         open_btn = QPushButton("📁  Open server folder")
+        open_btn.setAccessibleName("Open the selected server folder")
         open_btn.clicked.connect(self._open_folder)
         actions.addWidget(open_btn)
 
         ip_btn = QPushButton("⧉  Copy connection address")
+        ip_btn.setAccessibleName("Copy the selected server connection address")
         ip_btn.setToolTip("Copies your public IP and port so friends can join")
         ip_btn.clicked.connect(self._copy_address)
         self._ip_btn = ip_btn
         actions.addWidget(ip_btn)
 
         refresh_btn = QPushButton("↻  Re-check")
+        refresh_btn.setAccessibleName("Re-check selected server readiness")
         refresh_btn.clicked.connect(self._rebuild)
         actions.addWidget(refresh_btn)
         actions.addStretch()
@@ -284,7 +297,9 @@ class SetupTab(QWidget):
 
         row.addWidget(QLabel("Min (Xms):"))
         self._xms_spin = QSpinBox()
+        self._xms_spin.setAccessibleName("Minimum Java heap size Xms")
         self._xms_unit = QComboBox()
+        self._xms_unit.setAccessibleName("Minimum Java heap size unit")
         self._xms_unit.addItems(["MB", "GB"])
         self._configure_memory_unit(
             self._xms_spin, self._xms_unit, xms_mb if xms_mb else 2048, initial=True,
@@ -297,7 +312,9 @@ class SetupTab(QWidget):
 
         row.addWidget(QLabel("Max (Xmx):"))
         self._xmx_spin = QSpinBox()
+        self._xmx_spin.setAccessibleName("Maximum Java heap size Xmx")
         self._xmx_unit = QComboBox()
+        self._xmx_unit.setAccessibleName("Maximum Java heap size unit")
         self._xmx_unit.addItems(["MB", "GB"])
         self._configure_memory_unit(
             self._xmx_spin, self._xmx_unit, xmx_mb if xmx_mb else 4096, initial=True,
@@ -309,6 +326,7 @@ class SetupTab(QWidget):
         row.addWidget(self._xmx_unit)
 
         save_btn = QPushButton("Save memory settings")
+        save_btn.setAccessibleName("Save selected server Java memory settings")
         save_btn.clicked.connect(self._save_memory)
         row.addWidget(save_btn)
         row.addStretch()
@@ -328,12 +346,14 @@ class SetupTab(QWidget):
         suggest_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         suggest_label.setWordWrap(True)
         apply_suggested_btn = QPushButton("Apply suggested")
+        apply_suggested_btn.setAccessibleName("Apply suggested Java heap sizes")
         apply_suggested_btn.clicked.connect(lambda: self._apply_suggested_memory(suggested_mb))
         suggest_row.addWidget(suggest_label, stretch=1)
         suggest_row.addWidget(apply_suggested_btn)
         self._layout.addLayout(suggest_row)
 
         self._mem_status = QLabel("")
+        self._mem_status.setAccessibleName("Selected server Java memory settings status")
         self._mem_status.setWordWrap(True)
         self._mem_status.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         self._layout.addWidget(self._mem_status)
@@ -456,20 +476,24 @@ class SetupTab(QWidget):
     def _make_fix_button(self, fix: str) -> QPushButton | None:
         if fix == "accept_eula":
             btn = QPushButton("Accept EULA")
+            btn.setAccessibleName("Accept the Minecraft EULA for the selected server")
             btn.setToolTip("Writes eula=true (you agree to the Minecraft EULA)")
             btn.clicked.connect(self._accept_eula)
             return btn
         if fix == "install_server":
             btn = QPushButton("Install server now")
+            btn.setAccessibleName("Download matching dedicated server software")
             btn.setToolTip("Download the matching dedicated server program (needs internet)")
             btn.clicked.connect(self._install_server)
             return btn
         if fix == "start_once":
             btn = QPushButton("Open folder")
+            btn.setAccessibleName("Open the selected server folder")
             btn.clicked.connect(self._open_folder)
             return btn
         if fix == "fix_properties":
             btn = QPushButton("Check settings")
+            btn.setAccessibleName("Check and repair selected server properties")
             btn.setToolTip("Find and fix invalid server.properties values")
             btn.clicked.connect(self._fix_properties)
             return btn
@@ -507,6 +531,7 @@ class SetupTab(QWidget):
         self._layout.addWidget(info)
 
         dl_btn = QPushButton("Download server mods…")
+        dl_btn.setAccessibleName("Download the missing server-side files listed by this pack")
         dl_btn.clicked.connect(self._download_mods)
         self._layout.addWidget(dl_btn, alignment=Qt.AlignmentFlag.AlignLeft)
 
@@ -521,6 +546,7 @@ class SetupTab(QWidget):
         self._layout.addWidget(info)
         row = QHBoxLayout(); row.addWidget(QLabel("When Forge asks:"))
         self._fml_combo = QComboBox()
+        self._fml_combo.setAccessibleName("Forge startup question handling")
         for label, value in (("Ask me when I press Start", "ask"), ("Continue automatically (confirm)", "confirm"), ("Cancel the Forge changes", "cancel")):
             self._fml_combo.addItem(label, value)
         self._fml_combo.setCurrentIndex(max(0, self._fml_combo.findData(inst.fml_query_result)))
@@ -586,6 +612,7 @@ class SetupTab(QWidget):
         row = QHBoxLayout()
         check_btn = QPushButton("Check for updates…")
         check_btn.setToolTip("Look for a newer version of this modpack (needs internet)")
+        check_btn.setAccessibleName("Check the selected server modpack for updates")
         check_btn.clicked.connect(self._check_pack_updates)
         row.addWidget(check_btn)
 
@@ -594,6 +621,7 @@ class SetupTab(QWidget):
             "Install a server pack you downloaded, or paste any pack link or "
             "version number"
         )
+        src_btn.setAccessibleName("Update the selected server modpack from a link or file")
         src_btn.clicked.connect(self._update_pack_from_source)
         row.addWidget(src_btn)
 
@@ -604,6 +632,7 @@ class SetupTab(QWidget):
             else "Nothing to roll back to yet — Crucible keeps the old install "
                  "the first time you update"
         )
+        rb_btn.setAccessibleName("Roll back the selected server to a retained modpack install")
         rb_btn.clicked.connect(self._open_rollback)
         row.addWidget(rb_btn)
 
@@ -837,7 +866,7 @@ class SetupTab(QWidget):
                 ip = public_host(timeout=5)
             except Exception:
                 ip = ""
-            from PyQt6.QtCore import QMetaObject, Q_ARG
+            from PyQt6.QtCore import Q_ARG, QMetaObject
             QMetaObject.invokeMethod(
                 self, "_on_address_ready", Qt.ConnectionType.QueuedConnection,
                 Q_ARG(int, generation), Q_ARG(str, instance_id),

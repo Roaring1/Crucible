@@ -227,6 +227,7 @@ class BackupTab(QWidget):
         policy_grid.addWidget(retention_value, 1, 1, 1, 3)
 
         self._scheduler_label = QLabel("Checking automatic backup timer…")
+        self._scheduler_label.setAccessibleName("Automatic fleet backup schedule status")
         self._scheduler_label.setStyleSheet(
             f"color: {theme.SUBTEXT}; font-size: 11px;"
         )
@@ -259,6 +260,7 @@ class BackupTab(QWidget):
             "session locks, symbolic links, and non-regular filesystem objects. "
             "Every excluded path and reason is recorded in the generation manifest."
         )
+        coverage.setAccessibleName("Fleet backup coverage and exclusions")
         coverage.setWordWrap(True)
         coverage.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         coverage.setStyleSheet(
@@ -289,10 +291,12 @@ class BackupTab(QWidget):
         layout.addLayout(action_row)
 
         self._progress_label = QLabel("")
+        self._progress_label.setAccessibleName("Fleet backup operation status")
         self._progress_label.setStyleSheet(
             f"color: {theme.SUBTEXT}; font-size: 11px;"
         )
         self._progress = QProgressBar()
+        self._progress.setAccessibleName("Fleet backup or verification progress")
         self._progress.setRange(0, 0)
         self._progress.setTextVisible(False)
         self._progress_label.hide()
@@ -306,18 +310,22 @@ class BackupTab(QWidget):
         summary_grid.setHorizontalSpacing(14)
         summary_grid.addWidget(QLabel("Last result"), 0, 0)
         self._last_result = QLabel("No backup has run yet")
+        self._last_result.setAccessibleName("Latest fleet backup result")
         self._last_result.setStyleSheet(
             f"color: {theme.TEXT}; font-weight: 600;"
         )
         summary_grid.addWidget(self._last_result, 0, 1)
         summary_grid.addWidget(QLabel("Completed"), 1, 0)
         self._last_completed = QLabel("—")
+        self._last_completed.setAccessibleName("Latest fleet backup completion time")
         summary_grid.addWidget(self._last_completed, 1, 1)
         summary_grid.addWidget(QLabel("Registered servers"), 2, 0)
         self._server_count = QLabel("—")
+        self._server_count.setAccessibleName("Registered server count in latest backup")
         summary_grid.addWidget(self._server_count, 2, 1)
         summary_grid.addWidget(QLabel("Legacy world archives"), 3, 0)
         self._migration_status = QLabel("Migration status not available yet")
+        self._migration_status.setAccessibleName("Legacy world archive migration status")
         self._migration_status.setWordWrap(True)
         self._migration_status.setStyleSheet(
             f"color: {theme.SUBTEXT}; font-size: 11px;"
@@ -325,6 +333,7 @@ class BackupTab(QWidget):
         summary_grid.addWidget(self._migration_status, 3, 1)
         summary_grid.addWidget(QLabel("Other legacy sources"), 4, 0)
         self._other_legacy_sources = QLabel("Inventory not available yet")
+        self._other_legacy_sources.setAccessibleName("Other legacy backup source migration status")
         self._other_legacy_sources.setWordWrap(True)
         self._other_legacy_sources.setStyleSheet(
             f"color: {theme.SUBTEXT}; font-size: 11px;"

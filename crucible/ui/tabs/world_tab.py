@@ -335,10 +335,12 @@ class WorldTab(QWidget):
 
         info_row = QHBoxLayout()
         self._world_label = QLabel("World: -")
+        self._world_label.setAccessibleName("Selected server active world")
         # Was theme.SUBTEXT (low-contrast grey) -- promoted to TEXT since this
         # is primary information users specifically said was hard to read.
         self._world_label.setStyleSheet(f"color: {theme.TEXT}; font-size: 12px;")
         refresh_btn = QPushButton("Refresh")
+        refresh_btn.setAccessibleName("Refresh selected server world inventory")
         refresh_btn.clicked.connect(self._refresh)
         info_row.addWidget(self._world_label)
         info_row.addStretch()
@@ -351,6 +353,7 @@ class WorldTab(QWidget):
         self._dims_label.setWordWrap(True)
         dims_row.addWidget(self._dims_label, stretch=1)
         self._dims_toggle_btn = QPushButton("Show all")
+        self._dims_toggle_btn.setAccessibleName("Show all world dimensions")
         self._dims_toggle_btn.setFixedWidth(80)
         self._dims_toggle_btn.clicked.connect(self._toggle_dims_expanded)
         self._dims_toggle_btn.hide()
@@ -375,15 +378,18 @@ class WorldTab(QWidget):
         actions_row = QHBoxLayout()
         actions_row.setSpacing(8)
         self._seed_btn = QPushButton("\U0001F331  Set Seed\u2026")
+        self._seed_btn.setAccessibleName("Change the active world seed for newly generated chunks")
         self._seed_btn.setToolTip("Change level-seed in server.properties (affects newly-generated chunks only)")
         self._seed_btn.clicked.connect(self._set_seed)
         self._reset_btn = QPushButton("Reset world\u2026")
+        self._reset_btn.setAccessibleName("Reset the active world after a verified fleet checkpoint")
         self._reset_btn.setToolTip(
             "Create and verify a complete fleet checkpoint, then reset the active world. "
             "The previous world remains recoverable from the two retained generations."
         )
         self._reset_btn.clicked.connect(self._confirm_and_reset)
         self._wipe_btn = QPushButton("Wipe world\u2026")
+        self._wipe_btn.setAccessibleName("Permanently wipe the active world after a verified fleet checkpoint")
         self._wipe_btn.setObjectName("DangerButton")
         self._wipe_btn.setToolTip(
             "After a complete fleet checkpoint is verified, permanently remove the "
@@ -404,6 +410,7 @@ class WorldTab(QWidget):
         self._progress_lbl = QLabel("")
         self._progress_lbl.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
         self._progress = QProgressBar()
+        self._progress.setAccessibleName("World maintenance progress")
         self._progress.setRange(0, 100)
         self._progress.setTextVisible(True)
         self._progress_lbl.hide()
@@ -427,6 +434,11 @@ class WorldTab(QWidget):
         layout.addWidget(slots_info)
 
         self._table = QTableWidget(0, 4)
+        self._table.setAccessibleName("Saved world archives")
+        self._table.setAccessibleDescription(
+            "Legacy world-only archives retained within fleet generations. "
+            "Select a row to swap to or rename an archive."
+        )
         self._table.setHorizontalHeaderLabels(["Name", "Size", "Created", ""])
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -448,6 +460,9 @@ class WorldTab(QWidget):
         self._presafe_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         self._presafe_label.setWordWrap(True)
         self._cleanup_btn = QPushButton("Snapshot, then clean up old world copies")
+        self._cleanup_btn.setAccessibleName(
+            "Create and verify a fleet snapshot before cleaning old world copies"
+        )
         self._cleanup_btn.clicked.connect(self._cleanup_pre_swap_dirs)
         presafe_row.addWidget(self._presafe_label, stretch=1)
         presafe_row.addWidget(self._cleanup_btn)
@@ -580,6 +595,7 @@ class WorldTab(QWidget):
         if self._dims_expanded:
             self._dims_label.setText(f"Dimensions found ({len(dims) + 1} total): Overworld, {full_parts}")
             self._dims_toggle_btn.setText("Show less")
+            self._dims_toggle_btn.setAccessibleName("Show fewer world dimensions")
         else:
             short_parts = ", ".join(
                 f"{d.name} ({dimension_label(d.name)})" for d in dims[:_DIMS_COLLAPSE_THRESHOLD]
@@ -590,6 +606,7 @@ class WorldTab(QWidget):
                 f"and {remaining} more\u2026"
             )
             self._dims_toggle_btn.setText("Show all")
+            self._dims_toggle_btn.setAccessibleName("Show all world dimensions")
 
     def _toggle_dims_expanded(self) -> None:
         self._dims_expanded = not self._dims_expanded

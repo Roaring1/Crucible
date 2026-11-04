@@ -632,7 +632,10 @@ class TabWiringTests(unittest.TestCase):
     def test_mods_tab_offers_a_pack_update(self):
         self.assertIn("Update pack", self.mods_tab)
         self.assertIn("def _open_pack_update", self.mods_tab)
-        self.assertIn('setAccessibleName("Update modpack")', self.mods_tab)
+        self.assertIn(
+            'setAccessibleName("Update the entire selected server modpack")',
+            self.mods_tab,
+        )
 
     def test_mods_tab_keeps_the_two_managers_apart(self):
         """self._manager is the ModManager; the registry gets its own name."""
