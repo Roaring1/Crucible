@@ -7,7 +7,7 @@ Layout
 ──────
   QSplitter (horizontal)
     │
-    ├── Sidebar (240px, fixed) ── instance list, status dots
+    ├── Sidebar (240px, resizable) ── server artwork, names, and text status
     │
     └── InstancePanel (stretches) ── header + tabbed content
 
@@ -23,16 +23,27 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import (
+    QEasingCurve,
     QEvent,
     QObject,
     QPoint,
+    QPropertyAnimation,
+    QRect,
+    QSettings,
     Qt,
     QThread,
     QTimer,
     pyqtSignal,
     pyqtSlot,
 )
-from PyQt6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent, QFontMetrics
+from PyQt6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QDragEnterEvent,
+    QDropEvent,
+    QFontMetrics,
+    QPixmap,
+)
 from PyQt6.QtWidgets import (
     QFileDialog,
     QInputDialog,
@@ -47,6 +58,7 @@ from ..data.instance_manager import InstanceManager, validate_delete_target
 from ..data.instance_model import ServerInstance
 from ..process.crash_recovery import reconcile as reconcile_crash_recovery
 from ..process.tmux_manager import TmuxManager
+from . import theme
 from .add_dialog import AddInstanceDialog
 from .instance_panel import InstancePanel
 from .sidebar import Sidebar
@@ -80,6 +92,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._manager = manager
         self._tmux = TmuxManager()
+        self._settings = QSettings("Crucible", "Crucible")
+        self._reduce_motion = self._settings.value(
+            "ui/reduce_motion", False, type=bool
+        )
+        theme.set_motion_enabled(not self._reduce_motion)
+        self._identity_transition = None
         # One persistent health thread for the entire window lifetime.
         # Previously every 5-second poll created a QThread and a queued
         # finished callback nulled the last Python reference. During a sidebar
@@ -102,6 +120,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)  # drag in Prism instances / packs / server dirs
 
         self._build_ui()
+        self._build_view_menu()
         from PyQt6.QtWidgets import QApplication
         QApplication.instance().installEventFilter(self)
         self._populate_sidebar()
@@ -156,6 +175,99 @@ class MainWindow(QMainWindow):
 
         # The persistent instance/tmux footer has been removed. Genuine
         # action feedback appears briefly in the selected-server header.
+
+    def _build_view_menu(self) -> None:
+        menu = self.menuBar().addMenu("&View")
+        menu.setAccessibleName("View options")
+        self._reduce_motion_action = QAction("Reduce motion", self)
+        self._reduce_motion_action.setCheckable(True)
+        self._reduce_motion_action.setChecked(self._reduce_motion)
+        self._reduce_motion_action.setStatusTip(
+            "Use immediate server and workspace changes without animated transitions."
+        )
+        self._reduce_motion_action.setToolTip(
+            "Disable selection and server-identity movement animations."
+        )
+        self._reduce_motion_action.toggled.connect(self._set_reduce_motion)
+        menu.addAction(self._reduce_motion_action)
+
+    def _set_reduce_motion(self, enabled: bool) -> None:
+        self._reduce_motion = bool(enabled)
+        self._settings.setValue("ui/reduce_motion", self._reduce_motion)
+        theme.set_motion_enabled(not self._reduce_motion)
+        self._sidebar.set_motion_enabled(not self._reduce_motion)
+        if self._reduce_motion:
+            self._cancel_identity_transition()
+
+    def _cancel_identity_transition(self) -> None:
+        transition = self._identity_transition
+        self._identity_transition = None
+        if transition is None:
+            return
+        overlay, animation, target, original_pixmap = transition
+        animation.stop()
+        current_instance = self._panel._instance
+        if current_instance is not None and target is self._panel._identity_icon:
+            # A newer selection may already have loaded while the previous
+            # shared-element animation was in flight. Restore the current
+            # server, not the image that was current when the old animation began.
+            self._panel._set_identity_icon(current_instance)
+        else:
+            target.setPixmap(original_pixmap)
+        overlay.deleteLater()
+
+    def _animate_server_identity(self, instance_id: str) -> None:
+        """Carry the selected server's artwork from its rail row into the workspace header."""
+        self._cancel_identity_transition()
+        if not theme.MOTION_ENABLED or self.isMinimized():
+            return
+        row = self._sidebar._row_widgets.get(instance_id)
+        target = self._panel._identity_icon
+        if row is None or not row.isVisible() or not target.isVisible():
+            return
+        source = row._icon
+        pixmap = source.pixmap()
+        if pixmap is None or pixmap.isNull():
+            return
+
+        start_pos = source.mapTo(self, QPoint(0, 0))
+        end_pos = target.mapTo(self, QPoint(0, 0))
+        start_rect = QRect(start_pos, source.size())
+        end_rect = QRect(end_pos, target.size())
+        original_pixmap = target.pixmap()
+        if original_pixmap is None or original_pixmap.isNull():
+            return
+
+        overlay = QLabel(self)
+        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        overlay.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        overlay.setStyleSheet("background: transparent; border: none;")
+        overlay.setPixmap(pixmap)
+        overlay.setScaledContents(True)
+        overlay.setGeometry(start_rect)
+        target.setPixmap(QPixmap())  # preserve its fixed geometry while the image travels
+        overlay.show()
+        overlay.raise_()
+
+        animation = QPropertyAnimation(overlay, b"geometry", self)
+        animation.setDuration(205)
+        animation.setStartValue(start_rect)
+        animation.setEndValue(end_rect)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._identity_transition = (
+            overlay, animation, target, original_pixmap
+        )
+
+        def finish() -> None:
+            current = self._identity_transition
+            if current is None or current[1] is not animation:
+                return
+            self._identity_transition = None
+            target.setPixmap(original_pixmap)
+            overlay.deleteLater()
+
+        animation.finished.connect(finish)
+        animation.start()
 
     # Population
 
@@ -291,8 +403,12 @@ class MainWindow(QMainWindow):
     def _on_instance_selected(self, instance: ServerInstance) -> None:
         previous_id = self._panel.current_instance_id()
         status_hint = self._sidebar.status_for(instance.id)
-        if not self._panel.load(instance, status_hint=status_hint) and previous_id:
-            QTimer.singleShot(0, lambda: self._sidebar.select_by_id(previous_id))
+        if not self._panel.load(instance, status_hint=status_hint):
+            if previous_id:
+                QTimer.singleShot(0, lambda: self._sidebar.select_by_id(previous_id))
+            return
+        if previous_id is not None and previous_id != instance.id:
+            self._animate_server_identity(instance.id)
 
     def _on_appearance_requested(self, instance: ServerInstance) -> None:
         """Change only the selected server's Crucible rail image."""
@@ -560,7 +676,7 @@ class MainWindow(QMainWindow):
         self._sidebar.update_status(instance_id, status)
 
     def _on_remove_requested(self, instance) -> None:
-        # Destructive decisions never trust the periodically cached sidebar dot.
+        # Destructive decisions never trust the periodically cached sidebar status.
         # Probe the exact tmux target now and fail closed on timeout/error.
         safe, reason = self._tmux.safe_to_remove(instance)
         if not safe:
@@ -758,6 +874,7 @@ class MainWindow(QMainWindow):
             )
             event.ignore()
             return
+        self._cancel_identity_transition()
         self._health_timer.stop()
         if self._health_thread.isRunning():
             self._health_thread.quit()

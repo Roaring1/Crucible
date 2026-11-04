@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from PyQt6.QtCore import QMimeData, QPoint, Qt, QUrl
+from PyQt6.QtCore import QMimeData, QPoint, QSettings, Qt, QUrl
 from PyQt6.QtGui import QDragEnterEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
@@ -199,6 +199,11 @@ assert empty_panel._empty_state.isVisible() and empty_panel._tabs.isHidden() and
 assert not empty_panel._btn_start.isVisible() and not empty_panel._btn_ip.isVisible()
 empty_panel.close();empty_panel.deleteLater();QTest.qWait(10)
 inst=m.add_instance(str(root/'server'),'Before',minecraft_version='1.21.1',loader='fabric')
+second_server=root/'second-server';second_server.mkdir()
+(second_server/'server.properties').write_text('server-port=25566\\n',encoding='utf-8')
+second_inst=m.add_instance(
+ str(second_server),'Second server',minecraft_version='1.21.1',loader='neoforge'
+)
 
 # The fleet backup workspace exposes restore as a clearly scoped action and
 # names its non-overwrite boundary. Preview with synthetic generation data;
@@ -733,6 +738,65 @@ properties_ui.reject();properties_ui.deleteLater();QTest.qWait(10)
 
 with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  window=MainWindow(m);window.resize(900,600);window.show();QTest.qWait(80)
+ # Persisted Reduce Motion is tested against a temporary settings file, not
+ # the user's actual ~/.config settings.
+ original_settings=window._settings
+ window._settings=QSettings(str(root/'motion-settings.ini'),QSettings.Format.IniFormat)
+ window._reduce_motion_action.setChecked(False)
+ window._set_reduce_motion(False)
+ assert theme.MOTION_ENABLED
+ assert window._reduce_motion_action.isCheckable()
+ # Selecting another server carries its real configured icon into the header.
+ first_identity=window._panel._identity_icon.pixmap()
+ assert first_identity is not None and not first_identity.isNull()
+ window._sidebar.select_by_id(second_inst.id)
+ assert window._panel.current_instance_id()==second_inst.id
+ assert window._identity_transition is not None, (
+  'server selection should create the short identity transition'
+ )
+ assert window._panel._identity_icon.pixmap().isNull(), (
+  'the header identity is represented by the travelling icon until arrival'
+ )
+ QTest.qWait(240);app.processEvents()
+ assert window._identity_transition is None
+ second_identity=window._panel._identity_icon.pixmap()
+ assert second_identity is not None and not second_identity.isNull()
+ second_row=window._sidebar._row_widgets[second_inst.id]
+ assert second_row._selected and second_row._selection_progress==1.0
+ # Rapidly switch twice while the first icon is still travelling. The older
+ # overlay must not restore a stale image over the current server's artwork.
+ window._sidebar.select_by_id(inst.id)
+ assert window._identity_transition is not None
+ QTest.qWait(30)
+ window._sidebar.select_by_id(second_inst.id)
+ assert window._identity_transition is not None
+ QTest.qWait(240);app.processEvents()
+ assert window._identity_transition is None
+ assert window._panel._identity_icon.pixmap().toImage()==(
+  window._sidebar._row_widgets[second_inst.id]._icon.pixmap().toImage()
+ ), 'rapid server changes must leave the latest selected server artwork in the header'
+ # Reduce Motion must also cancel an animation already in progress and
+ # restore the currently selected identity immediately.
+ window._sidebar.select_by_id(inst.id)
+ assert window._identity_transition is not None
+ window._reduce_motion_action.setChecked(True)
+ assert window._reduce_motion and not theme.MOTION_ENABLED
+ assert window._identity_transition is None
+ assert window._settings.value('ui/reduce_motion',False,type=bool) is True
+ first_row=window._sidebar._row_widgets[inst.id]
+ assert window._panel._identity_icon.pixmap().toImage()==(
+  first_row._icon.pixmap().toImage()
+ ), 'reducing motion mid-flight must restore the selected server artwork'
+ assert first_row._selected and first_row._selection_progress==1.0
+ window._sidebar.select_by_id(second_inst.id)
+ assert window._identity_transition is None
+ assert window._panel._identity_icon.pixmap().toImage()==(
+  window._sidebar._row_widgets[second_inst.id]._icon.pixmap().toImage()
+ )
+ window._reduce_motion_action.setChecked(False)
+ assert theme.MOTION_ENABLED
+ assert window._settings.value('ui/reduce_motion',True,type=bool) is False
+ window._settings=original_settings
  rail_row=window._sidebar._row_widgets[inst.id]
  assert rail_row.objectName()=='ServerRailRow'
  assert rail_row.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -801,6 +865,7 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  assert panel._btn_stop.accessibleName()=='Stop selected server'
  assert tabs.accessibleName()=='Selected server workspace pages'
  assert bar.accessibleName()=='Server workspace navigation'
+ assert not bar.drawBase(), 'native QTabBar base must not draw a stray line beside More'
  assert panel._more_tabs_button.accessibleName()=='More workspace tabs'
  assert 'QToolButton#MoreTabsButton:focus' in panel._more_tabs_button.styleSheet()
  mods=panel._mods

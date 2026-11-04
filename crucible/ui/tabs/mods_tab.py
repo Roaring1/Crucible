@@ -494,7 +494,7 @@ class ModsTab(QWidget):
             )
             if mod.side == "client":
                 from PyQt6.QtGui import QColor
-                item.setForeground(QColor(theme.ORANGE))
+                item.setForeground(QColor(theme.YELLOW))
 
     def _apply_filter(self, text: str) -> None:
         text = text.lower().strip()

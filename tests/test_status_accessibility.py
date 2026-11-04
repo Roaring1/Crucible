@@ -43,6 +43,13 @@ def test_every_server_status_has_readable_text_and_accessible_label():
     assert expected <= set(theme.STATUS_COLORS)
 
 
+def test_theme_uses_a_non_orange_progress_accent():
+    assert not hasattr(theme, "ORANGE")
+    assert theme.PROGRESS not in {"#c8903a", "#d9a048", "#fab387"}
+    assert theme.STATUS_COLORS["starting"] == theme.PROGRESS
+    assert theme.STATUS_COLORS["stopping"] == theme.PROGRESS
+
+
 def test_server_status_text_meets_wcag_aa_contrast_on_app_surfaces():
     # The sidebar and selected-server header render on MANTLE. BASE is also
     # checked because it is used by other workspace surfaces/status contexts.
@@ -53,6 +60,19 @@ def test_server_status_text_meets_wcag_aa_contrast_on_app_surfaces():
                 f"{status} status label has only {ratio:.2f}:1 contrast "
                 f"({foreground} on {background})"
             )
+
+
+def test_selected_surface_and_primary_action_keep_readable_contrast():
+    assert _contrast_ratio(theme.TEXT, theme.SELECTED) >= 4.5
+    assert _contrast_ratio(theme.CRUST, theme.ACCENT) >= 4.5
+
+
+def test_global_styles_do_not_paint_opaque_child_widget_backgrounds():
+    stylesheet = theme.STYLESHEET
+    assert "QWidget {\n    background-color:" not in stylesheet
+    assert "QLabel {\n    background: transparent;" in stylesheet
+    assert "QMenu::item:selected" in stylesheet
+    assert "QMenuBar::item:selected" in stylesheet
 
 
 def test_keyboard_focus_indicators_cover_primary_interactive_widgets():

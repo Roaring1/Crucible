@@ -2,7 +2,7 @@
 crucible/ui/instance_panel.py
 
 Right-hand panel shown when an instance is selected.
-Header: name, version badge, Start/Stop/Restart/Console buttons, status dot.
+Header: server identity artwork, name, version, explicit text status, Start/Stop actions.
 Body: primary tabs Setup, Console, Mods, World, Backups. Less-frequent
 Config, Players, Notes, and Info pages live under a compact More menu. Info
 includes live System performance stats -- System is no longer a separate tab.
@@ -23,7 +23,17 @@ from __future__ import annotations
 
 import time
 
-from PyQt6.QtCore import QMetaObject, QObject, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import (
+    QMetaObject,
+    QObject,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    pyqtSignal,
+    pyqtSlot,
+)
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -195,6 +205,23 @@ class InstancePanel(QWidget):
         h_layout.setContentsMargins(16, 8, 16, 8)
         h_layout.setSpacing(12)
 
+        # Server identity emblem. The source image is the same artwork used
+        # in the rail; MainWindow can animate that identity into this anchor
+        # when a different server is selected.
+        self._identity_icon = QLabel()
+        self._identity_icon.setObjectName("ServerIdentityIcon")
+        self._identity_icon.setFixedSize(46, 46)
+        self._identity_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._identity_icon.setStyleSheet(
+            f"background: {theme.SURFACE0}; border: 1px solid {theme.SURFACE1}; "
+            f"border-radius: 8px; padding: 2px;"
+        )
+        self._identity_icon.setAccessibleName("Selected server artwork")
+        self._identity_icon.setAccessibleDescription(
+            "The same server icon shown in the server list."
+        )
+        h_layout.addWidget(self._identity_icon)
+
         # Name + version
         name_col = QVBoxLayout()
         name_col.setSpacing(2)
@@ -268,6 +295,11 @@ class InstancePanel(QWidget):
         self._tabs.setAccessibleName("Selected server workspace pages")
         self._tabs.tabBar().setAccessibleName("Server workspace navigation")
         self._tabs.setDocumentMode(True)
+        # Qt otherwise draws its native tab-bar base in the unused space to
+        # the right of the last visible tab, which looks like a stray bright
+        # line beneath the More corner widget. Crucible draws one quiet rule
+        # through the tab-bar stylesheet instead.
+        self._tabs.tabBar().setDrawBase(False)
 
         self._setup   = SetupTab(self._manager)
         self._console = ConsoleTab()
@@ -482,6 +514,18 @@ class InstancePanel(QWidget):
 
     # Public API
 
+    def _set_identity_icon(self, instance: ServerInstance) -> None:
+        """Keep the workspace identity artwork in sync with the selected instance."""
+        from ..data.server_icons import resolve_icon_path
+
+        self._identity_icon.setPixmap(
+            QIcon(str(resolve_icon_path(instance))).pixmap(QSize(40, 40))
+        )
+        self._identity_icon.setAccessibleName(f"{instance.name} server artwork")
+        self._identity_icon.setAccessibleDescription(
+            f"Configured artwork for {instance.name}; the same image is used in the server list."
+        )
+
     def load(self, instance: ServerInstance, status_hint: str | None = None) -> bool:
         """Switch panels safely; return False when the old view must remain."""
         if self._instance is not None and self._instance.id == instance.id:
@@ -504,6 +548,7 @@ class InstancePanel(QWidget):
         self._btn_ip.setText("⧉  Copy IP")
 
         self._instance = instance
+        self._set_identity_icon(instance)
         # Changing server selection always lands on the live console workspace.
         # Block the tab signal here; the new instance's selected page is loaded
         # once, after the per-instance loaded-tab cache is cleared below.

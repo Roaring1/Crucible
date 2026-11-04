@@ -569,13 +569,13 @@ class ConsoleTab(QWidget):
 
     @pyqtSlot(float)
     def _on_server_started(self, secs: float) -> None:
-        self._set_state(f"● Online  (started in {secs:.1f}s)", theme.GREEN)
+        self._set_state(f"Online — started in {secs:.1f}s", theme.GREEN)
 
     @pyqtSlot()
     def _on_server_stopping(self) -> None:
         self._active_players.clear()
         self._update_player_label()
-        self._set_state("● Stopping…", theme.ORANGE)
+        self._set_state("Stopping…", theme.PROGRESS)
 
     @pyqtSlot()
     def _on_log_rotated(self) -> None:
@@ -585,7 +585,7 @@ class ConsoleTab(QWidget):
         self._last_tps = None
         self._last_mspt = None
         self._render_tps()
-        self._set_state("○ Restarting…", theme.YELLOW)
+        self._set_state("Restarting…", theme.PROGRESS)
 
     @pyqtSlot()
     def _on_log_missing(self) -> None:
@@ -611,18 +611,18 @@ class ConsoleTab(QWidget):
         always reflected even if no log signal fires.
         """
         mapping = {
-            "running":  ("● Online",      theme.GREEN),
-            "starting": ("⚡ Starting…",   theme.YELLOW),
-            "stopping": ("◌ Stopping…",   theme.ORANGE),
-            "stopped":  ("○ Offline",     theme.SURFACE2),
-            "tmux_missing": ("⚠ tmux missing", theme.RED),
-            "missing": ("⚠ Server files missing", theme.RED),
-            "unmanaged": ("⚠ Running outside managed tmux", theme.YELLOW),
-            "unknown": ("? Status check unavailable", theme.YELLOW),
+            "running":  ("Online", theme.GREEN),
+            "starting": ("Starting…", theme.PROGRESS),
+            "stopping": ("Stopping…", theme.PROGRESS),
+            "stopped":  ("Offline", theme.SURFACE2),
+            "tmux_missing": ("tmux unavailable", theme.RED),
+            "missing": ("Server files missing", theme.RED),
+            "unmanaged": ("Running outside managed tmux", theme.YELLOW),
+            "unknown": ("Status check unavailable", theme.YELLOW),
         }
         text, color = mapping.get(status, (status.capitalize(), theme.SURFACE2))
         # Don't clobber a more-specific log-watcher message for running state --
-        # e.g. "● Online  (started in 12.3s)" should survive a health-check ping.
+        # e.g. "Online — started in 12.3s" should survive a health-check ping.
         current = self._server_state_label.text()
         if status == "running" and "Online" in current:
             return

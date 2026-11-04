@@ -1,7 +1,7 @@
 """
 crucible/ui/sidebar.py
 
-Left sidebar: lists registered server instances with live status dots.
+Left sidebar: lists registered server instances with explicit text statuses.
 """
 
 from __future__ import annotations
@@ -9,8 +9,16 @@ from __future__ import annotations
 from pathlib import Path
 from types import MappingProxyType
 
-from PyQt6.QtCore import QMimeData, QSize, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QDrag, QIcon
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QMimeData,
+    QSize,
+    Qt,
+    QUrl,
+    QVariantAnimation,
+    pyqtSignal,
+)
+from PyQt6.QtGui import QColor, QDesktopServices, QDrag, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -37,8 +45,8 @@ class InstanceItem(QListWidgetItem):
         "running":      theme.GREEN,
         "stopped":      theme.SUBTEXT,
         "tmux_missing": theme.YELLOW,
-        "starting":     theme.ORANGE,
-        "stopping":     theme.ORANGE,
+        "starting":     theme.PROGRESS,
+        "stopping":     theme.PROGRESS,
         "missing":      theme.RED,
         "unmanaged":    theme.YELLOW,
         "unknown":      theme.YELLOW,
@@ -86,6 +94,77 @@ class InstanceItem(QListWidgetItem):
             self._refresh()
 
 
+class ServerIconLabel(QLabel):
+    """A server emblem with a restrained one-shot selection motion."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scale = 1.0
+        self._selection_animation: QVariantAnimation | None = None
+        self.setFixedSize(44, 44)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+    def set_motion_enabled(self, enabled: bool) -> None:
+        if enabled:
+            return
+        if self._selection_animation is not None:
+            self._selection_animation.stop()
+            self._selection_animation = None
+        self._scale = 1.0
+        self.update()
+
+    def animate_selection(self) -> None:
+        if not theme.MOTION_ENABLED or not self.isVisible():
+            self._scale = 1.0
+            self.update()
+            return
+        if self._selection_animation is not None:
+            self._selection_animation.stop()
+        animation = QVariantAnimation(self)
+        animation.setDuration(175)
+        animation.setStartValue(0.96)
+        animation.setKeyValueAt(0.62, 1.055)
+        animation.setEndValue(1.0)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.valueChanged.connect(self._set_scale)
+        animation.finished.connect(
+            lambda current=animation: self._finish_selection_animation(current)
+        )
+        self._selection_animation = animation
+        animation.start()
+
+    def _set_scale(self, value) -> None:
+        self._scale = float(value)
+        self.update()
+
+    def _finish_selection_animation(self, animation) -> None:
+        if animation is self._selection_animation:
+            self._selection_animation = None
+        self._scale = 1.0
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        pixmap = self.pixmap()
+        if pixmap is None or pixmap.isNull():
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        base_size = min(40, self.width(), self.height())
+        width = base_size * self._scale
+        height = base_size * self._scale
+        # The tiny horizontal settle gives the icon a sense of arrival without
+        # moving its row or making neighboring content jump. The 44px label
+        # provides breathing room for the 40px artwork at the scale peak.
+        offset_x = (1.0 - min(1.0, self._scale)) * 18.0
+        x = (self.width() - width) / 2.0 + offset_x
+        y = (self.height() - height) / 2.0
+        from PyQt6.QtCore import QRectF
+        painter.drawPixmap(
+            QRectF(x, y, width, height), pixmap, QRectF(pixmap.rect())
+        )
+
+
 class InstanceRowWidget(QWidget):
     """Visible server identity row: image, name, and a text status chip."""
 
@@ -108,6 +187,9 @@ class InstanceRowWidget(QWidget):
 
         self._instance = instance
         self._status = status
+        self._selected = False
+        self._selection_progress = 0.0
+        self._selection_animation: QVariantAnimation | None = None
         self.setObjectName("ServerRailRow")
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -120,9 +202,11 @@ class InstanceRowWidget(QWidget):
         layout.setContentsMargins(10, 7, 8, 7)
         layout.setSpacing(10)
 
-        self._icon = QLabel()
-        self._icon.setFixedSize(40, 40)
-        self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._icon = ServerIconLabel()
+        self._icon.setAccessibleName(f"{instance.name} server artwork")
+        self._icon.setAccessibleDescription(
+            "The selected server's configured artwork."
+        )
         self._icon.setPixmap(QIcon(str(resolve_icon_path(instance))).pixmap(40, 40))
         layout.addWidget(self._icon)
 
@@ -155,6 +239,70 @@ class InstanceRowWidget(QWidget):
         layout.addLayout(text, 1)
         self.setMinimumHeight(60)
         self.set_status(status)
+
+    def set_selected(self, selected: bool) -> None:
+        selected = bool(selected)
+        if self._selected == selected:
+            return
+        self._selected = selected
+        target = 1.0 if selected else 0.0
+        if not theme.MOTION_ENABLED or not self.isVisible():
+            self._selection_progress = target
+            self.update()
+            if selected:
+                self._icon.animate_selection()
+            return
+        if self._selection_animation is not None:
+            self._selection_animation.stop()
+        animation = QVariantAnimation(self)
+        animation.setDuration(155)
+        animation.setStartValue(self._selection_progress)
+        animation.setEndValue(target)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.valueChanged.connect(self._set_selection_progress)
+        animation.finished.connect(
+            lambda current=animation: self._finish_selection_animation(current)
+        )
+        self._selection_animation = animation
+        animation.start()
+        if selected:
+            self._icon.animate_selection()
+
+    def set_motion_enabled(self, enabled: bool) -> None:
+        self._icon.set_motion_enabled(enabled)
+        if enabled:
+            return
+        if self._selection_animation is not None:
+            self._selection_animation.stop()
+            self._selection_animation = None
+        self._selection_progress = 1.0 if self._selected else 0.0
+        self.update()
+
+    def _set_selection_progress(self, value) -> None:
+        self._selection_progress = float(value)
+        self.update()
+
+    def _finish_selection_animation(self, animation) -> None:
+        if animation is self._selection_animation:
+            self._selection_animation = None
+        self._selection_progress = 1.0 if self._selected else 0.0
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        if self._selection_progress <= 0.001:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        fill = QColor(theme.SELECTED)
+        fill.setAlpha(round(250 * self._selection_progress))
+        edge = QColor(theme.ACCENT)
+        edge.setAlpha(round(58 * self._selection_progress))
+        painter.setBrush(fill)
+        painter.setPen(QPen(edge, 1.0))
+        from PyQt6.QtCore import QRectF
+        painter.drawRoundedRect(
+            QRectF(self.rect()).adjusted(2, 1, -2, -1), 7, 7
+        )
 
     def _fit_text(self) -> None:
         from PyQt6.QtGui import QFontMetrics
@@ -432,6 +580,10 @@ class Sidebar(QWidget):
                 widget.refresh()
             self._list.update()
 
+    def set_motion_enabled(self, enabled: bool) -> None:
+        for row in self._row_widgets.values():
+            row.set_motion_enabled(enabled)
+
     def update_all_statuses(self, status_map: dict[str, str]) -> None:
         for iid, status in status_map.items():
             self.update_status(iid, status)
@@ -467,6 +619,13 @@ class Sidebar(QWidget):
         self, current: QListWidgetItem, _prev: QListWidgetItem
     ) -> None:
         selected = current.instance if isinstance(current, InstanceItem) else None
+        previous = _prev.instance if isinstance(_prev, InstanceItem) else None
+        if previous is not None:
+            if row := self._row_widgets.get(previous.id):
+                row.set_selected(False)
+        if selected is not None:
+            if row := self._row_widgets.get(selected.id):
+                row.set_selected(True)
         self._appearance_btn.setEnabled(selected is not None)
         if selected is not None:
             self.instance_selected.emit(selected)
@@ -479,15 +638,6 @@ class Sidebar(QWidget):
         status = item.data(Qt.ItemDataRole.UserRole + 1)
 
         menu = QMenu(self)
-        menu.setStyleSheet(
-            "QMenu { background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; "
-            "border-radius: 6px; padding: 4px; }"
-            "QMenu::item { padding: 9px 24px 9px 14px; min-width: 190px; border-radius: 4px; }"
-            "QMenu::item:selected { background: #313244; }"
-            "QMenu::item:disabled { color: #6c7086; }"
-            "QMenu::separator { height: 1px; background: #45475a; margin: 5px 8px; }"
-            "QMenu::section { color: #a6adc8; font-size: 10px; font-weight: 700; padding: 8px 12px 3px 12px; }"
-        )
 
         title_act = menu.addAction(inst.name)
         title_act.setEnabled(False)

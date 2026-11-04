@@ -549,7 +549,7 @@ class AddModDialog(QDialog):
                 "⚠ Client-only mod — this usually has no effect on a "
                 "dedicated server.")
             self._d_compat.setStyleSheet(
-                f"color:{theme.ORANGE}; font-size:12px; font-weight:600;")
+                f"color:{theme.YELLOW}; font-size:12px; font-weight:600;")
         elif hit.server_label():
             self._d_compat.setText("✓ " + hit.server_label())
             self._d_compat.setStyleSheet(

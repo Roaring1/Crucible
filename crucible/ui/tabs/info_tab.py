@@ -175,8 +175,8 @@ class InfoTab(QWidget):
         status_color = {
             "running":      theme.GREEN,
             "stopped":      theme.SUBTEXT,
-            "starting":     theme.ORANGE,
-            "stopping":     theme.ORANGE,
+            "starting":     theme.PROGRESS,
+            "stopping":     theme.PROGRESS,
             "tmux_missing": theme.YELLOW,
             "missing":      theme.RED,
             "unmanaged":    theme.YELLOW,
