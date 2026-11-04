@@ -325,45 +325,27 @@ class ConsoleTab(QWidget):
         send_btn.clicked.connect(self._send_command)
         cr_layout.addWidget(send_btn)
 
-        # Options row
+        # Console options are split into two calm rows so compact windows
+        # don't squeeze action labels into narrower-than-text buttons.
         opts_row = QWidget()
         opts_row.setStyleSheet(f"background-color: {theme.MANTLE};")
-        or_layout = QHBoxLayout(opts_row)
+        or_layout = QVBoxLayout(opts_row)
         or_layout.setContentsMargins(8, 0, 8, 6)
-        or_layout.setSpacing(12)
+        or_layout.setSpacing(2)
+        toggles_row = QHBoxLayout()
+        toggles_row.setContentsMargins(0, 0, 0, 0)
+        toggles_row.setSpacing(12)
+        actions_row = QHBoxLayout()
+        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.setSpacing(8)
+        or_layout.addLayout(toggles_row)
+        or_layout.addLayout(actions_row)
 
         self._autoscroll_cb = QCheckBox("Auto-scroll")
         self._autoscroll_cb.setAccessibleName("Automatically follow new console output")
         self._autoscroll_cb.setChecked(True)
         self._autoscroll_cb.toggled.connect(self._on_autoscroll_toggle)
-        or_layout.addWidget(self._autoscroll_cb)
-
-        clear_btn = QPushButton("Clear")
-        clear_btn.setAccessibleName("Clear visible console output")
-        clear_btn.setFixedWidth(60)
-        clear_btn.clicked.connect(self._view.clear)
-        or_layout.addWidget(clear_btn)
-
-        open_log_btn = QPushButton("Open log file")
-        open_log_btn.setAccessibleName("Open the selected server log file")
-        open_log_btn.clicked.connect(self._open_log)
-        or_layout.addWidget(open_log_btn)
-
-        terminal_btn = QPushButton("Open tmux in terminal")
-        terminal_btn.setAccessibleName("Open the selected server tmux session in a terminal")
-        terminal_btn.setToolTip(
-            "Open this server's managed tmux session in a separate terminal window."
-        )
-        terminal_btn.clicked.connect(self.open_terminal_requested)
-        or_layout.addWidget(terminal_btn)
-
-        copy_btn = QPushButton("Copy log")
-        copy_btn.setObjectName("ConsoleCopyLogButton")
-        copy_btn.setAccessibleName("Copy visible console output")
-        # Let Qt's styled size hint provide the full label plus padding. A
-        # fixed 72px width was 8px narrower than the actual 80px requirement.
-        copy_btn.clicked.connect(self._copy_log)
-        or_layout.addWidget(copy_btn)
+        toggles_row.addWidget(self._autoscroll_cb)
 
         self._hide_perf_cb = QCheckBox("Hide TPS poll output")
         self._hide_perf_cb.setAccessibleName("Hide repeating TPS poll replies from console output")
@@ -373,9 +355,34 @@ class ConsoleTab(QWidget):
             "They're still used for the TPS readout above."
         )
         self._hide_perf_cb.toggled.connect(self._on_hide_perf_toggle)
-        or_layout.addWidget(self._hide_perf_cb)
+        toggles_row.addWidget(self._hide_perf_cb)
+        toggles_row.addStretch()
 
-        or_layout.addStretch()
+        clear_btn = QPushButton("Clear")
+        clear_btn.setAccessibleName("Clear visible console output")
+        clear_btn.setFixedWidth(60)
+        clear_btn.clicked.connect(self._view.clear)
+        actions_row.addWidget(clear_btn)
+
+        open_log_btn = QPushButton("Open log file")
+        open_log_btn.setAccessibleName("Open the selected server log file")
+        open_log_btn.clicked.connect(self._open_log)
+        actions_row.addWidget(open_log_btn)
+
+        terminal_btn = QPushButton("Open tmux in terminal")
+        terminal_btn.setAccessibleName("Open the selected server tmux session in a terminal")
+        terminal_btn.setToolTip(
+            "Open this server's managed tmux session in a separate terminal window."
+        )
+        terminal_btn.clicked.connect(self.open_terminal_requested)
+        actions_row.addWidget(terminal_btn)
+
+        copy_btn = QPushButton("Copy log")
+        copy_btn.setObjectName("ConsoleCopyLogButton")
+        copy_btn.setAccessibleName("Copy visible console output")
+        copy_btn.clicked.connect(self._copy_log)
+        actions_row.addWidget(copy_btn)
+        actions_row.addStretch()
 
         layout.addWidget(cmd_row)
         layout.addWidget(opts_row)
