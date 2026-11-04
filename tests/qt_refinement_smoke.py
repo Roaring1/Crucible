@@ -33,6 +33,8 @@ from crucible.ui.instance_panel import InstancePanel
 from crucible.ui.main_window import MainWindow
 from crucible.ui.modpack_dialog import ModpackDialog, _PackInstallWorker
 from crucible.ui.new_server_dialog import NewServerDialog
+from crucible.ui.pack_update_dialog import PackUpdateDialog, RollbackDialog
+from crucible.ui.properties_dialog import PropertiesFixDialog
 from crucible.ui.sidebar import Sidebar
 from crucible.ui.tabs.backup_tab import BackupTab
 from crucible.ui.tabs.console_tab import ConsoleTab
@@ -467,6 +469,72 @@ pack_ui._accept_requested=False
 pack_ui._on_installed(duplicate_result)
 assert pack_ui.result_instance.id==inst.id and pack_ui._accept_requested
 pack_ui.close();pack_ui.deleteLater();QTest.qWait(20)
+
+# Update/rollback and server.properties repair dialogs expose each risky
+# choice by name. These fixtures never start the worker or apply a repair.
+update_ui=PackUpdateDialog(inst,manager=m)
+assert update_ui._source.accessibleName()=='Modpack update source'
+assert update_ui._prerelease.accessibleName()==(
+ 'Include beta and release-candidate modpack versions'
+)
+assert update_ui._keep_previous.accessibleName()==(
+ 'Keep the previous server install for rollback'
+)
+assert update_ui._check_btn.accessibleName()==(
+ 'Check the selected server modpack and build an update plan'
+)
+assert update_ui._plan_view.accessibleName()=='Update plan'
+assert update_ui._progress.accessibleName()=='Server modpack update progress'
+assert update_ui._confirm.accessibleName()=='Type the new version to confirm'
+assert update_ui._apply_btn.accessibleName()==(
+ 'Install the reviewed update for the selected server modpack'
+)
+assert update_ui._stop_btn.accessibleName()=='Stop the current modpack update safely'
+assert update_ui._close_btn.accessibleName()=='Close modpack update dialog'
+update_ui.close();update_ui.deleteLater();QTest.qWait(10)
+
+rollback_ui=RollbackDialog(inst,manager=m)
+assert rollback_ui._list.accessibleName()=='Kept installs'
+assert rollback_ui._keep_world.accessibleName()==(
+ 'Carry the current live world into the restored older pack'
+)
+assert rollback_ui._log.accessibleName()=='Rollback details'
+assert rollback_ui._progress.accessibleName()==(
+ 'Server modpack rollback or pruning progress'
+)
+assert rollback_ui._rollback_btn.accessibleName()==(
+ 'Restore the selected retained server modpack install'
+)
+assert rollback_ui._keep_spin.accessibleName()=='How many old installs to keep'
+assert rollback_ui._prune_btn.accessibleName()==(
+ 'Delete older retained server modpack installs and keep the selected count'
+)
+assert rollback_ui._close_btn.accessibleName()=='Close rollback dialog'
+rollback_ui.close();rollback_ui.deleteLater();QTest.qWait(10)
+
+properties_path=root/'repair-properties'/'server.properties'
+properties_path.parent.mkdir()
+properties_path.write_text(
+ 'server-port=notaport\\nview-distance=banana\\n',encoding='utf-8'
+)
+properties_ui=PropertiesFixDialog(properties_path,minecraft_version='1.21.1')
+assert properties_ui.accessibleName()=='Selected server properties repair'
+assert properties_ui._rows
+for issue,combo in properties_ui._rows:
+ assert combo.accessibleName()==(
+  f'Replacement choice for server property {issue.key}'
+ )
+assert properties_ui.findChild(QScrollArea).accessibleName()==(
+ 'Server properties issues and replacement choices'
+)
+repair_buttons={
+ child.accessibleName():child
+ for child in properties_ui.findChildren(QPushButton)
+ if child.accessibleName()
+}
+assert 'Cancel server properties repairs' in repair_buttons
+assert 'Apply selected server.properties replacements' in repair_buttons
+properties_ui.reject();properties_ui.deleteLater();QTest.qWait(10)
 
 with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  window=MainWindow(m);window.resize(900,600);window.show();QTest.qWait(80)

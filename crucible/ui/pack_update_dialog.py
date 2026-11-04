@@ -194,9 +194,18 @@ class PackUpdateDialog(_JobDialog):
 
         opts = QHBoxLayout()
         self._prerelease = QCheckBox("Offer beta and release-candidate versions")
+        self._prerelease.setAccessibleName(
+            "Include beta and release-candidate modpack versions"
+        )
         self._keep_previous = QCheckBox("Keep the old install so I can roll back")
+        self._keep_previous.setAccessibleName(
+            "Keep the previous server install for rollback"
+        )
         self._keep_previous.setChecked(True)
         self._check_btn = QPushButton("Check for updates")
+        self._check_btn.setAccessibleName(
+            "Check the selected server modpack and build an update plan"
+        )
         self._check_btn.setDefault(True)
         self._check_btn.clicked.connect(self._start_check)
         opts.addWidget(self._prerelease)
@@ -214,6 +223,7 @@ class PackUpdateDialog(_JobDialog):
         root.addWidget(self._plan_view, 1)
 
         self._progress = QProgressBar()
+        self._progress.setAccessibleName("Server modpack update progress")
         self._progress.setRange(0, 0)
         self._progress.setTextVisible(False)
         self._progress.hide()
@@ -226,6 +236,9 @@ class PackUpdateDialog(_JobDialog):
         self._confirm.setAccessibleName("Type the new version to confirm")
         self._confirm.textChanged.connect(self._on_confirm_changed)
         self._apply_btn = QPushButton("Install update")
+        self._apply_btn.setAccessibleName(
+            "Install the reviewed update for the selected server modpack"
+        )
         self._apply_btn.setEnabled(False)
         self._apply_btn.clicked.connect(self._start_apply)
         confirm_row.addWidget(self._confirm_label)
@@ -235,12 +248,14 @@ class PackUpdateDialog(_JobDialog):
 
         bottom = QHBoxLayout()
         self._stop_btn = QPushButton("Stop")
+        self._stop_btn.setAccessibleName("Stop the current modpack update safely")
         self._stop_btn.setEnabled(False)
         self._stop_btn.setToolTip(
             "Stop after the current step. Nothing is swapped in until the new "
             "install has been verified.")
         self._stop_btn.clicked.connect(self._request_cancel)
         self._close_btn = QPushButton("Close")
+        self._close_btn.setAccessibleName("Close modpack update dialog")
         self._close_btn.clicked.connect(self.close)
         bottom.addWidget(self._stop_btn)
         bottom.addStretch()
@@ -506,6 +521,9 @@ class RollbackDialog(_JobDialog):
 
         self._keep_world = QCheckBox(
             "Carry the current world onto the restored pack")
+        self._keep_world.setAccessibleName(
+            "Carry the current live world into the restored older pack"
+        )
         self._keep_world.setToolTip(
             "Off by default: if the newer pack damaged the world, bringing it "
             "back carries the damage with it.")
@@ -518,6 +536,7 @@ class RollbackDialog(_JobDialog):
         root.addWidget(self._log)
 
         self._progress = QProgressBar()
+        self._progress.setAccessibleName("Server modpack rollback or pruning progress")
         self._progress.setRange(0, 0)
         self._progress.setTextVisible(False)
         self._progress.hide()
@@ -525,6 +544,9 @@ class RollbackDialog(_JobDialog):
 
         actions = QHBoxLayout()
         self._rollback_btn = QPushButton("Roll back to selected")
+        self._rollback_btn.setAccessibleName(
+            "Restore the selected retained server modpack install"
+        )
         self._rollback_btn.setEnabled(False)
         self._rollback_btn.clicked.connect(self._start_rollback)
         actions.addWidget(self._rollback_btn)
@@ -536,10 +558,13 @@ class RollbackDialog(_JobDialog):
         self._keep_spin.setAccessibleName("How many old installs to keep")
         actions.addWidget(self._keep_spin)
         self._prune_btn = QPushButton("Delete the rest\u2026")
-        self._prune_btn.setAccessibleName("Delete old installs")
+        self._prune_btn.setAccessibleName(
+            "Delete older retained server modpack installs and keep the selected count"
+        )
         self._prune_btn.clicked.connect(self._start_prune)
         actions.addWidget(self._prune_btn)
         self._close_btn = QPushButton("Close")
+        self._close_btn.setAccessibleName("Close rollback dialog")
         self._close_btn.clicked.connect(self.close)
         actions.addWidget(self._close_btn)
         root.addLayout(actions)
