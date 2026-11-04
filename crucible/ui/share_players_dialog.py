@@ -12,25 +12,30 @@ import time
 import zipfile
 from pathlib import Path
 
-from ..mods import distribution_catalog
-from PyQt6.QtCore import QObject, QThread, QTimer, QStandardPaths, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QStandardPaths, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
-    QPushButton,
     QProgressBar,
-    QFileDialog,
+    QPushButton,
     QVBoxLayout,
 )
 
 from ..exporters import client_export
-from ..sharing.gofile import GofileProvider, GofileUploadError, UploadCancelled, GofileUploadResult
+from ..mods import distribution_catalog
+from ..sharing.gofile import (
+    GofileProvider,
+    GofileUploadError,
+    GofileUploadResult,
+    UploadCancelled,
+)
 from ..sharing.history import ShareHistoryError, ShareHistoryStore
 from ..sharing.provider import UploadProvider
 from . import theme
@@ -776,6 +781,7 @@ class SharePlayersDialog(QDialog):
         self._phase = "idle"
         self._review_text = ""
         self.setWindowTitle("Share with players")
+        self.setAccessibleName("Share the selected server client pack with players")
         self.setMinimumSize(760, 680)
         self.resize(880, 760)
         self.setStyleSheet(theme.STYLESHEET)
@@ -806,6 +812,7 @@ class SharePlayersDialog(QDialog):
         source_row = QHBoxLayout()
         source_row.addWidget(QLabel("Required working Prism client:"))
         self._source = QLineEdit()
+        self._source.setAccessibleName("Matching working Prism client profile source")
         self._source.setPlaceholderText("Choose a working Prism instance with mmc-pack.json")
         suggested = str(getattr(self._instance, "prism_source", "") or "")
         suggested_path = Path(suggested).expanduser() if suggested else None
@@ -813,12 +820,16 @@ class SharePlayersDialog(QDialog):
             self._source.setText(str(suggested_path))
         source_row.addWidget(self._source, 1)
         self._browse_source = QPushButton("Browse…")
+        self._browse_source.setAccessibleName("Choose the matching working Prism client profile")
         self._browse_source.clicked.connect(self._pick_source)
         source_row.addWidget(self._browse_source)
         root.addLayout(source_row)
 
         self._resourcepacks = QCheckBox(
             "Include resource packs from this Prism profile (off by default)"
+        )
+        self._resourcepacks.setAccessibleName(
+            "Include resource pack files from the selected Prism profile"
         )
         self._resourcepacks.setChecked(False)
         self._resourcepacks.setToolTip(
@@ -830,12 +841,18 @@ class SharePlayersDialog(QDialog):
         self._remember_source = QCheckBox(
             "Remember this client profile for future shares after it passes validation"
         )
+        self._remember_source.setAccessibleName(
+            "Remember the validated Prism client profile for future shares"
+        )
         self._remember_source.setChecked(True)
         self._remember_source.setEnabled(self._instance_manager is not None)
         root.addWidget(self._remember_source)
 
         self._use_api_token = QCheckBox(
             "Use an owner Gofile API token (optional; never saved)"
+        )
+        self._use_api_token.setAccessibleName(
+            "Use an unsaved owner Gofile API token for this upload only"
         )
         self._use_api_token.toggled.connect(self._toggle_api_token)
         root.addWidget(self._use_api_token)
@@ -854,20 +871,26 @@ class SharePlayersDialog(QDialog):
 
         actions = QHBoxLayout()
         self._prepare_btn = QPushButton("Build and review ZIP")
+        self._prepare_btn.setAccessibleName(
+            "Build the client pack ZIP locally for review before upload"
+        )
         self._prepare_btn.setObjectName("PrimaryButton")
         self._prepare_btn.clicked.connect(self._prepare_pack)
         actions.addWidget(self._prepare_btn)
         self._open_local_btn = QPushButton("Open local ZIP")
+        self._open_local_btn.setAccessibleName("Open the locally prepared client pack ZIP")
         self._open_local_btn.setEnabled(False)
         self._open_local_btn.clicked.connect(self._open_local)
         actions.addWidget(self._open_local_btn)
         self._history_btn = QPushButton("Share history…")
+        self._history_btn.setAccessibleName("View previous client pack shares and upload links")
         self._history_btn.clicked.connect(self._show_history)
         actions.addWidget(self._history_btn)
         actions.addStretch()
         root.addLayout(actions)
 
         self._progress = QProgressBar()
+        self._progress.setAccessibleName("Client pack preparation and upload progress")
         self._progress.setRange(0, 0)
         self._progress.setTextVisible(True)
         self._progress.setFormat("Preparing player pack…")
@@ -875,6 +898,7 @@ class SharePlayersDialog(QDialog):
         root.addWidget(self._progress)
 
         self._status = QLabel("Nothing is uploaded until you approve the review below.")
+        self._status.setAccessibleName("Client pack sharing status")
         self._status.setWordWrap(True)
         self._status.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:11px;")
         root.addWidget(self._status)
@@ -891,12 +915,18 @@ class SharePlayersDialog(QDialog):
         self._review_ack = QCheckBox(
             "I reviewed the exact included file list and privacy-scan findings."
         )
+        self._review_ack.setAccessibleName(
+            "Confirm review of the exact client pack file list and privacy findings"
+        )
         self._review_ack.stateChanged.connect(self._refresh_upload_enabled)
         self._review_ack.setEnabled(False)
         root.addWidget(self._review_ack)
 
         self._license_ack = QCheckBox(
             "I checked mod/config distribution rights and accept responsibility for sharing these files."
+        )
+        self._license_ack.setAccessibleName(
+            "Confirm mod and configuration distribution rights for these files"
         )
         self._license_ack.stateChanged.connect(self._refresh_upload_enabled)
         self._license_ack.setEnabled(False)
@@ -905,6 +935,9 @@ class SharePlayersDialog(QDialog):
         self._public_ack = QCheckBox(
             "I understand anyone with the Gofile link can access it, and free/guest storage may be ephemeral."
         )
+        self._public_ack.setAccessibleName(
+            "Confirm the Gofile link is accessible to anyone who receives it"
+        )
         self._public_ack.stateChanged.connect(self._refresh_upload_enabled)
         self._public_ack.setEnabled(False)
         root.addWidget(self._public_ack)
@@ -912,6 +945,7 @@ class SharePlayersDialog(QDialog):
         link_row = QHBoxLayout()
         link_row.addWidget(QLabel("Gofile link:"))
         self._link = QLineEdit()
+        self._link.setAccessibleName("Published Gofile client pack link")
         self._link.setReadOnly(True)
         self._link.setPlaceholderText("Appears after a successful upload")
         link_row.addWidget(self._link, 1)
@@ -919,28 +953,38 @@ class SharePlayersDialog(QDialog):
 
         link_actions = QHBoxLayout()
         self._upload_btn = QPushButton("Upload to Gofile")
+        self._upload_btn.setAccessibleName(
+            "Publish the reviewed client pack ZIP to Gofile"
+        )
         self._upload_btn.setObjectName("PrimaryButton")
         self._upload_btn.setEnabled(False)
         self._upload_btn.clicked.connect(self._start_upload)
         link_actions.addWidget(self._upload_btn)
         self._cancel_upload_btn = QPushButton("Cancel upload")
+        self._cancel_upload_btn.setAccessibleName("Cancel the current client pack upload")
         self._cancel_upload_btn.setEnabled(False)
         self._cancel_upload_btn.clicked.connect(self._cancel_upload)
         link_actions.addWidget(self._cancel_upload_btn)
         self._copy_link_btn = QPushButton("Copy link")
+        self._copy_link_btn.setAccessibleName("Copy the published Gofile client pack link")
         self._copy_link_btn.setEnabled(False)
         self._copy_link_btn.clicked.connect(self._copy_link)
         link_actions.addWidget(self._copy_link_btn)
         self._copy_instructions_btn = QPushButton("Copy player instructions")
+        self._copy_instructions_btn.setAccessibleName(
+            "Copy instructions for players to import the client pack"
+        )
         self._copy_instructions_btn.setEnabled(False)
         self._copy_instructions_btn.clicked.connect(self._copy_instructions)
         link_actions.addWidget(self._copy_instructions_btn)
         self._open_link_btn = QPushButton("Open link")
+        self._open_link_btn.setAccessibleName("Open the published Gofile client pack link")
         self._open_link_btn.setEnabled(False)
         self._open_link_btn.clicked.connect(self._open_link)
         link_actions.addWidget(self._open_link_btn)
         link_actions.addStretch()
         self._close_btn = QPushButton("Close")
+        self._close_btn.setAccessibleName("Close Share Client Pack dialog")
         self._close_btn.clicked.connect(self.reject)
         link_actions.addWidget(self._close_btn)
         root.addLayout(link_actions)

@@ -18,17 +18,32 @@ import json
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QObject, QSize, QThread, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, QSize, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QIcon, QPixmap
 from PyQt6.QtWidgets import (
-    QWidget, QSplitter, QVBoxLayout, QHBoxLayout,
-    QLabel, QListWidget, QListWidgetItem,
-    QTabWidget, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView,
-    QLineEdit, QPushButton, QMessageBox,
-    QMenu, QInputDialog,
-    QDialog, QComboBox, QRadioButton, QButtonGroup,
-    QFormLayout, QDialogButtonBox,
+    QAbstractItemView,
+    QButtonGroup,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QRadioButton,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ...data.instance_model import ServerInstance
@@ -125,6 +140,7 @@ class _TeleportDialog(QDialog):
         super().__init__(parent)
         self._name = name
         self.setWindowTitle(f"Teleport {name}")
+        self.setAccessibleName(f"Teleport player {name}")
         self.setModal(True)
         self.setMinimumWidth(360)
         self._build_ui(online_players)
@@ -137,8 +153,14 @@ class _TeleportDialog(QDialog):
         lay.addWidget(QLabel(f"Where should {self._name} go?"))
 
         self._coord_radio  = QRadioButton("To coordinates")
+        self._coord_radio.setAccessibleName(
+            f"Teleport {self._name} to coordinates and a dimension"
+        )
         self._coord_radio.setChecked(True)
         self._player_radio = QRadioButton("To another player")
+        self._player_radio.setAccessibleName(
+            f"Teleport {self._name} to another online player"
+        )
         grp = QButtonGroup(self)
         grp.addButton(self._coord_radio)
         grp.addButton(self._player_radio)
@@ -147,13 +169,19 @@ class _TeleportDialog(QDialog):
 
         form = QFormLayout()
         self._dim_combo = QComboBox()
+        self._dim_combo.setAccessibleName(
+            f"Destination dimension for player {self._name}"
+        )
         for label, _dimid in self._DIMS:
             self._dim_combo.addItem(label)
         form.addRow("Dimension:", self._dim_combo)
 
         self._x = QLineEdit("~")
+        self._x.setAccessibleName(f"Destination X coordinate for {self._name}")
         self._y = QLineEdit("~")
+        self._y.setAccessibleName(f"Destination Y coordinate for {self._name}")
         self._z = QLineEdit("~")
+        self._z.setAccessibleName(f"Destination Z coordinate for {self._name}")
         coord_row = QHBoxLayout()
         for axis, field in (("X", self._x), ("Y", self._y), ("Z", self._z)):
             coord_row.addWidget(QLabel(axis))
@@ -166,6 +194,9 @@ class _TeleportDialog(QDialog):
 
         lay.addWidget(self._player_radio)
         self._target_combo = QComboBox()
+        self._target_combo.setAccessibleName(
+            f"Online player destination for {self._name}"
+        )
         others = [p for p in online_players if p != self._name]
         self._target_combo.addItems(others)
         self._target_combo.setEnabled(False)
@@ -239,10 +270,18 @@ class PlayersTab(QWidget):
         layout.addWidget(hdr)
 
         self._online_list = QListWidget()
+        self._online_list.setAccessibleName("Players currently online on the selected server")
+        self._online_list.setAccessibleDescription(
+            "Select a player and open the context menu to grant operator access, "
+            "kick, ban, teleport or give an item."
+        )
         self._online_list.setMinimumHeight(72)
         self._online_list.setIconSize(QSize(20, 20))
+        self._online_list.setObjectName("OnlinePlayersList")
         self._online_list.setStyleSheet(
-            f"background: {theme.SURFACE0}; border-radius: 4px;"
+            f"background: {theme.SURFACE0}; border-radius: 4px; "
+            f"QListWidget#OnlinePlayersList:focus {{ "
+            f"border: 2px solid {theme.ACCENT}; }}"
         )
         # Click a player to act on them (op, kick, ban, teleport, give…).
         self._online_list.setContextMenuPolicy(
@@ -264,6 +303,7 @@ class PlayersTab(QWidget):
         layout.addWidget(hint)
 
         sub = QTabWidget()
+        sub.setAccessibleName("Whitelist, operator and banned player lists")
         sub.setDocumentMode(True)
         self._whitelist_w = _PlayerListWidget("whitelist.json",      allow_add=True)
         self._ops_w       = _PlayerListWidget("ops.json",            allow_add=True)
@@ -708,9 +748,13 @@ class _PlayerListWidget(QWidget):
         if self._allow_add:
             add_row = QHBoxLayout()
             self._name_input = QLineEdit()
+            self._name_input.setAccessibleName(
+                f"Player name to add to {self._filename}"
+            )
             self._name_input.setPlaceholderText("Player name…")
             self._name_input.returnPressed.connect(self._add_player)
             self._add_btn = QPushButton("+ Add")
+            self._add_btn.setAccessibleName(f"Add player to {self._filename}")
             self._add_btn.setFixedWidth(64)
             self._add_btn.clicked.connect(self._add_player)
             add_row.addWidget(self._name_input, stretch=1)
@@ -718,6 +762,11 @@ class _PlayerListWidget(QWidget):
             layout.addLayout(add_row)
 
         self._table = QTableWidget(0, 3)
+        self._table.setAccessibleName(f"Players in {self._filename}")
+        self._table.setAccessibleDescription(
+            "Player names and UUIDs. Use the Remove button in a row to "
+            f"remove that player from {self._filename}."
+        )
         self._table.setHorizontalHeaderLabels(["Name", "UUID", ""])
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -732,6 +781,7 @@ class _PlayerListWidget(QWidget):
         layout.addWidget(self._table, stretch=1)
 
         self._status = QLabel("")
+        self._status.setAccessibleName(f"{self._filename} player list status")
         self._status.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         layout.addWidget(self._status)
 

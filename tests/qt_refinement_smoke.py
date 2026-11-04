@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
  QPushButton,
  QScrollArea,
  QStatusBar,
+ QTabWidget,
 )
 
 from crucible.data.fleet_backup import GenerationSummary
@@ -29,17 +30,20 @@ from crucible.mods.mod_manager import ModEntry
 from crucible.ui import theme
 from crucible.ui.add_dialog import AddInstanceDialog
 from crucible.ui.add_mod_dialog import AddModDialog, _SearchWorker
+from crucible.ui.client_export_dialog import ClientExportDialog
+from crucible.ui.download_dialog import DownloadModsDialog
 from crucible.ui.instance_panel import InstancePanel
 from crucible.ui.main_window import MainWindow
 from crucible.ui.modpack_dialog import ModpackDialog, _PackInstallWorker
 from crucible.ui.new_server_dialog import NewServerDialog
 from crucible.ui.pack_update_dialog import PackUpdateDialog, RollbackDialog
 from crucible.ui.properties_dialog import PropertiesFixDialog
+from crucible.ui.share_players_dialog import SharePlayersDialog
 from crucible.ui.sidebar import Sidebar
 from crucible.ui.tabs.backup_tab import BackupTab
 from crucible.ui.tabs.console_tab import ConsoleTab
 from crucible.ui.tabs.mods_tab import ModsTab
-from crucible.ui.tabs.players_tab import PlayersTab
+from crucible.ui.tabs.players_tab import PlayersTab, _PlayerListWidget, _TeleportDialog
 
 app=QApplication([]);app.setStyleSheet(theme.STYLESHEET)
 
@@ -469,6 +473,164 @@ pack_ui._accept_requested=False
 pack_ui._on_installed(duplicate_result)
 assert pack_ui.result_instance.id==inst.id and pack_ui._accept_requested
 pack_ui.close();pack_ui.deleteLater();QTest.qWait(20)
+
+# Share/export/download dialogs expose their source, privacy, publication
+# and transfer controls. Construct only: never show Share (which can auto-build),
+# never click upload/export, and never start the download worker here.
+share_ui=SharePlayersDialog(
+ inst,manager=m,history_store=SimpleNamespace()
+)
+assert share_ui.accessibleName()=='Share the selected server client pack with players'
+assert share_ui._source.accessibleName()==(
+ 'Matching working Prism client profile source'
+)
+assert share_ui._browse_source.accessibleName()==(
+ 'Choose the matching working Prism client profile'
+)
+assert share_ui._resourcepacks.accessibleName()==(
+ 'Include resource pack files from the selected Prism profile'
+)
+assert share_ui._remember_source.accessibleName()==(
+ 'Remember the validated Prism client profile for future shares'
+)
+assert share_ui._use_api_token.accessibleName()==(
+ 'Use an unsaved owner Gofile API token for this upload only'
+)
+assert share_ui._api_token.accessibleName()=='Optional owner Gofile API token'
+assert share_ui._progress.accessibleName()==(
+ 'Client pack preparation and upload progress'
+)
+assert share_ui._status.accessibleName()=='Client pack sharing status'
+assert share_ui._review.accessibleName()=='Included files and pre-upload review'
+assert share_ui._review_ack.accessibleName()==(
+ 'Confirm review of the exact client pack file list and privacy findings'
+)
+assert share_ui._license_ack.accessibleName()==(
+ 'Confirm mod and configuration distribution rights for these files'
+)
+assert share_ui._public_ack.accessibleName()==(
+ 'Confirm the Gofile link is accessible to anyone who receives it'
+)
+assert share_ui._link.accessibleName()=='Published Gofile client pack link'
+share_buttons={
+ child.accessibleName():child
+ for child in share_ui.findChildren(QPushButton)
+ if child.accessibleName()
+}
+for name in (
+ 'Build the client pack ZIP locally for review before upload',
+ 'Open the locally prepared client pack ZIP',
+ 'View previous client pack shares and upload links',
+ 'Publish the reviewed client pack ZIP to Gofile',
+ 'Cancel the current client pack upload',
+ 'Copy the published Gofile client pack link',
+ 'Copy instructions for players to import the client pack',
+ 'Open the published Gofile client pack link',
+ 'Close Share Client Pack dialog',
+):
+ assert name in share_buttons, f'Share Client Pack control missing accessible name: {name}'
+share_ui.deleteLater();QTest.qWait(10)
+
+export_ui=ClientExportDialog(inst,manager=m)
+assert export_ui.accessibleName()=='Advanced client pack export'
+assert export_ui._fmt.accessibleName()=='Client pack archive format'
+assert export_ui._cfg.accessibleName()==(
+ 'Include server config and KubeJS files in client export'
+)
+assert export_ui._source.accessibleName()==(
+ 'Optional matching Prism client profile source'
+)
+assert export_ui._resourcepacks.accessibleName()==(
+ 'Include resource pack files from the selected Prism profile'
+)
+assert export_ui._remember_source.accessibleName()==(
+ 'Remember the selected Prism profile for future client exports'
+)
+assert export_ui._status.accessibleName()=='Client archive export status'
+assert export_ui._export_btn.accessibleName()==(
+ 'Build the selected server client pack archive'
+)
+assert export_ui._close_btn.accessibleName()=='Close client pack export dialog'
+export_ui.reject();export_ui.deleteLater();QTest.qWait(10)
+
+download_ui=DownloadModsDialog(root/'pack-download-target','Synthetic server')
+assert download_ui.accessibleName()==(
+ 'Download server-side mods from the selected pack index'
+)
+assert download_ui._bar.accessibleName()=='Server pack mod download progress'
+assert download_ui._log.accessibleName()==(
+ 'Server pack mod download results and missing files'
+)
+assert download_ui._cancel_btn.accessibleName()==(
+ 'Cancel server pack mod downloads'
+)
+assert download_ui._close_btn.accessibleName()==(
+ 'Close server pack mod download results'
+)
+download_ui.reject();download_ui.deleteLater();QTest.qWait(10)
+
+# Players tools are constructed only: no commands are sent and no JSON file is
+# opened. The Teleport mode switch is exercised in memory.
+players_ui=PlayersTab()
+assert players_ui._online_list.accessibleName()==(
+ 'Players currently online on the selected server'
+)
+assert players_ui._online_list.accessibleDescription()
+assert players_ui._online_list.objectName()=='OnlinePlayersList'
+assert 'QListWidget#OnlinePlayersList:focus' in players_ui._online_list.styleSheet()
+players_lists=players_ui.findChild(QTabWidget)
+assert players_lists is not None
+assert players_lists.accessibleName()==(
+ 'Whitelist, operator and banned player lists'
+)
+teleport_ui=_TeleportDialog('Alex',['Alex','Steve'])
+assert teleport_ui.accessibleName()=='Teleport player Alex'
+assert teleport_ui._coord_radio.accessibleName()==(
+ 'Teleport Alex to coordinates and a dimension'
+)
+assert teleport_ui._player_radio.accessibleName()==(
+ 'Teleport Alex to another online player'
+)
+assert teleport_ui._dim_combo.accessibleName()==(
+ 'Destination dimension for player Alex'
+)
+assert teleport_ui._x.accessibleName()=='Destination X coordinate for Alex'
+assert teleport_ui._y.accessibleName()=='Destination Y coordinate for Alex'
+assert teleport_ui._z.accessibleName()=='Destination Z coordinate for Alex'
+assert teleport_ui._target_combo.accessibleName()==(
+ 'Online player destination for Alex'
+)
+assert teleport_ui._target_combo.itemText(0)=='Steve'
+assert teleport_ui._dim_combo.isEnabled()
+assert not teleport_ui._target_combo.isEnabled()
+teleport_ui._player_radio.setChecked(True)
+assert not teleport_ui._dim_combo.isEnabled()
+assert teleport_ui._target_combo.isEnabled()
+assert teleport_ui.command()=='tp Alex Steve'
+teleport_ui.reject();teleport_ui.deleteLater();QTest.qWait(10)
+
+whitelist_ui=_PlayerListWidget('whitelist.json',allow_add=True)
+assert whitelist_ui._name_input.accessibleName()==(
+ 'Player name to add to whitelist.json'
+)
+assert whitelist_ui._add_btn.accessibleName()=='Add player to whitelist.json'
+assert whitelist_ui._table.accessibleName()=='Players in whitelist.json'
+assert whitelist_ui._table.accessibleDescription()
+whitelist_ui._data=[{'name':'Steve','uuid':'synthetic-uuid'}]
+whitelist_ui._refresh_table()
+assert whitelist_ui._table.cellWidget(0,2).accessibleName()==(
+ 'Remove Steve from whitelist.json'
+)
+assert whitelist_ui._status.accessibleName()=='whitelist.json player list status'
+whitelist_ui.deleteLater()
+ops_ui=_PlayerListWidget('ops.json',allow_add=True)
+assert ops_ui._name_input.accessibleName()=='Player name to add to ops.json'
+assert ops_ui._add_btn.accessibleName()=='Add player to ops.json'
+ops_ui.deleteLater()
+banned_ui=_PlayerListWidget('banned-players.json',allow_add=False)
+assert banned_ui._table.accessibleName()=='Players in banned-players.json'
+assert not hasattr(banned_ui,'_add_btn')
+banned_ui.deleteLater()
 
 # Update/rollback and server.properties repair dialogs expose each risky
 # choice by name. These fixtures never start the worker or apply a repair.

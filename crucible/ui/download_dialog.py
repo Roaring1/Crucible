@@ -13,8 +13,14 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QProgressBar, QPlainTextEdit, QMessageBox,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QVBoxLayout,
 )
 
 from . import theme
@@ -66,6 +72,7 @@ class DownloadModsDialog(QDialog):
         self._done = False
 
         self.setWindowTitle("Download Server Mods")
+        self.setAccessibleName("Download server-side mods from the selected pack index")
         self.setMinimumWidth(560)
         self.setModal(True)
         self._build_ui(server_name)
@@ -91,12 +98,14 @@ class DownloadModsDialog(QDialog):
         layout.addWidget(sub)
 
         self._bar = QProgressBar()
+        self._bar.setAccessibleName("Server pack mod download progress")
         self._bar.setRange(0, 100)
         self._bar.setValue(0)
         self._bar.setTextVisible(True)
         layout.addWidget(self._bar)
 
         self._log = QPlainTextEdit()
+        self._log.setAccessibleName("Server pack mod download results and missing files")
         self._log.setReadOnly(True)
         self._log.setMinimumHeight(220)
         self._log.setStyleSheet(
@@ -108,9 +117,11 @@ class DownloadModsDialog(QDialog):
         row = QHBoxLayout()
         row.addStretch()
         self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setAccessibleName("Cancel server pack mod downloads")
         self._cancel_btn.clicked.connect(self._on_cancel)
         row.addWidget(self._cancel_btn)
         self._close_btn = QPushButton("Close")
+        self._close_btn.setAccessibleName("Close server pack mod download results")
         self._close_btn.setEnabled(False)
         self._close_btn.clicked.connect(self.accept)
         row.addWidget(self._close_btn)

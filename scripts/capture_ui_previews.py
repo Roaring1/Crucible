@@ -377,6 +377,40 @@ def capture_previews(output: Path) -> list[Path]:
                     "inventory; the state-control focus boundary was not captured"
                 )
 
+            panel._tabs.setCurrentWidget(panel._players)
+            panel._players._online = {"PreviewPlayer"}
+            panel._players._refresh_online_list()
+            selected.resize(1440, 900)
+            selected.activateWindow()
+            selected.raise_()
+            app.setActiveWindow(selected)
+            panel._players._whitelist_w._name_input.setFocus(
+                Qt.FocusReason.OtherFocusReason
+            )
+            app.processEvents()
+            if app.focusWidget() is not panel._players._whitelist_w._name_input:
+                raise RuntimeError("Could not focus the Whitelist add-player baseline")
+            save(selected, "workspace-players.png", 1440, 900)
+
+            # The Online now list has a local stylesheet; verify its own focus
+            # boundary is visible separately from the ordinary Players view.
+            panel._players._online_list.setFocus(Qt.FocusReason.OtherFocusReason)
+            app.processEvents()
+            if app.focusWidget() is not panel._players._online_list:
+                raise RuntimeError("Could not focus the Online now player list")
+            save(selected, "workspace-players-keyboard-focus.png", 1440, 900)
+            normal_players = QImage(str(output / "workspace-players.png"))
+            focused_players = QImage(
+                str(output / "workspace-players-keyboard-focus.png")
+            )
+            if normal_players.isNull() or focused_players.isNull():
+                raise RuntimeError("Could not reload the Players focus review images")
+            if normal_players == focused_players:
+                raise RuntimeError(
+                    "Players keyboard-focus preview is pixel-identical to the "
+                    "normal Players page; the online-list focus boundary was not captured"
+                )
+
             panel._tabs.setCurrentWidget(panel._world)
             save(selected, "workspace-world.png", 1440, 900)
 
