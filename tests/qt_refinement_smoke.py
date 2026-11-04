@@ -733,6 +733,16 @@ properties_ui.reject();properties_ui.deleteLater();QTest.qWait(10)
 
 with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  window=MainWindow(m);window.resize(900,600);window.show();QTest.qWait(80)
+ rail_row=window._sidebar._row_widgets[inst.id]
+ assert rail_row.objectName()=='ServerRailRow'
+ assert rail_row.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+ assert 'background: transparent' in rail_row.styleSheet()
+ assert 'background: transparent' in rail_row._name.styleSheet()
+ assert 'background: transparent' in rail_row._status_label.styleSheet()
+ assert rail_row._status_label.text()=='Stopped'
+ assert not hasattr(rail_row,'_status_icon'), 'server rail should communicate state with text, not a dot glyph'
+ assert not hasattr(window._panel,'_dot'), 'selected-server header should not duplicate status with a dot'
+ assert 'SERVER OFFLINE' in window._panel._status_label.text()
  # Inspect the Server appearance choice dialog without entering a file picker
  # or selecting either mutation action.
  appearance_capture={}
@@ -741,6 +751,21 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
   appearance_capture['buttons']={
    button.text():button.accessibleName() for button in box.buttons()
   }
+  box.adjustSize();box.show();QTest.qWait(30);app.processEvents()
+  for button in box.buttons():
+   metrics=button.fontMetrics()
+   assert button.width() >= metrics.horizontalAdvance(button.text())+32, (
+    f'Server appearance button text clips: {button.text()!r} '
+    f'width={button.width()} required={metrics.horizontalAdvance(button.text())+32}'
+   )
+   assert button.height() >= metrics.height()+12, (
+    f'Server appearance button height clips: {button.text()!r}'
+   )
+  parent=box.parentWidget()
+  box.close()
+  if parent is not None:
+   parent.activateWindow();parent.raise_();app.setActiveWindow(parent)
+   QTest.qWait(20);app.processEvents()
   return 0
  with patch.object(QMessageBox,'exec',capture_appearance_box):
   window._on_appearance_requested(inst)
@@ -826,6 +851,15 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  assert console._players_label.accessibleName()=='Players currently connected to selected server'
  assert console._server_state_label.accessibleName()=='Selected server lifecycle status'
  assert console._suggestions.accessibleName().startswith('Command suggestions;')
+ copy_log_button=next(
+  child for child in console.findChildren(QPushButton)
+  if child.objectName()=='ConsoleCopyLogButton'
+ )
+ assert copy_log_button.accessibleName()=='Copy visible console output'
+ assert copy_log_button.width()>=copy_log_button.sizeHint().width(), (
+  f'Copy log button is narrower than Qt requires: '
+  f'{copy_log_button.width()} < {copy_log_button.sizeHint().width()}'
+ )
  console_actions={
   child.accessibleName():child
   for child in console.findChildren(QPushButton)

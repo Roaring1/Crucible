@@ -32,7 +32,7 @@ from PyQt6.QtCore import (
     pyqtSignal,
     pyqtSlot,
 )
-from PyQt6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent
+from PyQt6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent, QFontMetrics
 from PyQt6.QtWidgets import (
     QFileDialog,
     QInputDialog,
@@ -318,6 +318,24 @@ class MainWindow(QMainWindow):
         )
         cancel = box.addButton(QMessageBox.StandardButton.Cancel)
         cancel.setAccessibleName("Cancel server appearance change")
+
+        # QMessageBox can underestimate the width of custom button rows when
+        # a global stylesheet is active. Its computed width used to be 352px
+        # while its layout hint was 524px, shrinking the two long actions to
+        # 106px each. Size each button from its rendered text before showing.
+        appearance_buttons = box.buttons()
+        for button in appearance_buttons:
+            metrics = QFontMetrics(button.font())
+            button.setMinimumWidth(metrics.horizontalAdvance(button.text()) + 40)
+            button.setMinimumHeight(max(36, metrics.height() + 14))
+        required_row_width = (
+            sum(button.minimumWidth() for button in appearance_buttons)
+            + max(0, len(appearance_buttons) - 1) * 6
+            + 56
+        )
+        box.setMinimumWidth(max(box.sizeHint().width(), required_row_width))
+        box.setMinimumHeight(max(box.sizeHint().height(), 180))
+        box.adjustSize()
         box.setDefaultButton(choose)
         box.exec()
         picked = box.clickedButton()

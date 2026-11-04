@@ -33,7 +33,7 @@ from . import theme
 class InstanceItem(QListWidgetItem):
     """A single entry in the sidebar list."""
 
-    DOT_COLORS = {
+    STATUS_COLORS = {
         "running":      theme.GREEN,
         "stopped":      theme.SUBTEXT,
         "tmux_missing": theme.YELLOW,
@@ -51,7 +51,7 @@ class InstanceItem(QListWidgetItem):
         self._refresh()
 
     def _refresh(self) -> None:
-        color = self.DOT_COLORS.get(self._status, theme.SURFACE2)
+        color = self.STATUS_COLORS.get(self._status, theme.SURFACE2)
         # The item widget renders the visible icon/name/status. Keep the
         # underlying QListWidgetItem visually empty so status refreshes cannot
         # resurrect a second text/icon layer underneath that widget.
@@ -108,7 +108,14 @@ class InstanceRowWidget(QWidget):
 
         self._instance = instance
         self._status = status
+        self.setObjectName("ServerRailRow")
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet(
+            "QWidget#ServerRailRow { background: transparent; border: none; } "
+            "QLabel { background: transparent; border: none; }"
+        )
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 7, 8, 7)
         layout.setSpacing(10)
@@ -127,6 +134,7 @@ class InstanceRowWidget(QWidget):
         self._name.setWordWrap(False)
         self._name.setMinimumWidth(0)
         self._name.setStyleSheet(
+            f"background: transparent; border: none; "
             f"color: {theme.TEXT}; font-size: 12px; font-weight: 600;"
         )
         self._name.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
@@ -134,11 +142,7 @@ class InstanceRowWidget(QWidget):
 
         status_row = QHBoxLayout()
         status_row.setContentsMargins(0, 0, 0, 0)
-        status_row.setSpacing(5)
-        self._status_icon = QLabel()
-        self._status_icon.setFixedSize(16, 16)
-        self._status_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        status_row.addWidget(self._status_icon)
+        status_row.setSpacing(0)
 
         self._status_label = QLabel()
         self._status_label.setObjectName("ServerRailStatus")
@@ -176,24 +180,13 @@ class InstanceRowWidget(QWidget):
 
     def set_status(self, status: str) -> None:
         self._status = status
-        color = InstanceItem.DOT_COLORS.get(status, theme.SURFACE2)
+        color = InstanceItem.STATUS_COLORS.get(status, theme.SURFACE2)
         label = self.STATUS_LABELS.get(status, status.replace("_", " ").title())
         self._status_label.setText(label)
         self._status_label.setStyleSheet(
-            f"color: {color}; font-size: 11px; font-weight: 700;"
+            f"background: transparent; border: none; "
+            f"color: {color}; font-size: 11px; font-weight: 500;"
         )
-        icon_name = status if status in self.STATUS_LABELS else "unknown"
-        icon_path = (
-            Path(__file__).resolve().parent
-            / "assets" / "status-icons" / f"{icon_name}.svg"
-        )
-        if not icon_path.is_file():
-            icon_path = (
-                Path(__file__).resolve().parent
-                / "assets" / "status-icons" / "unknown.svg"
-            )
-        self._status_icon.setPixmap(QIcon(str(icon_path)).pixmap(16, 16))
-        self._status_icon.setAccessibleName(f"Status icon: {label}")
         self._status_label.setAccessibleName(f"Server status: {label}")
         self.setAccessibleName(f"{self._instance.name}, status {label}")
         self.setAccessibleDescription(

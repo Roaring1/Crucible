@@ -203,6 +203,7 @@ class ModpackDialog(QDialog):
         self._install_btn = QPushButton("Install server")
         self._install_btn.setAccessibleName("Install selected server modpack")
         self._install_btn.setObjectName("PrimaryButton")
+        self._install_btn.setMinimumWidth(self._install_btn.sizeHint().width() + 2)
         self._install_btn.setEnabled(False)
         self._install_btn.clicked.connect(self._install)
         ctl.addWidget(self._install_btn)

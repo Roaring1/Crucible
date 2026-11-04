@@ -191,6 +191,9 @@ class BackupTab(QWidget):
         heading.addStretch()
         self._open_btn = QPushButton("Open backup folder")
         self._open_btn.setAccessibleName("Open Crucible fleet backup folder")
+        # Preserve the last glyph: the styled content area was one pixel
+        # narrower than the rendered text at the normal workspace width.
+        self._open_btn.setMinimumWidth(self._open_btn.sizeHint().width() + 2)
         self._open_btn.clicked.connect(self._open_folder)
         heading.addWidget(self._open_btn)
         layout.addLayout(heading)

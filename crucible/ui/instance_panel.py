@@ -195,13 +195,6 @@ class InstancePanel(QWidget):
         h_layout.setContentsMargins(16, 8, 16, 8)
         h_layout.setSpacing(12)
 
-        # Status dot
-        self._dot = QLabel("●")
-        self._dot.setFixedWidth(22)
-        self._dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._dot.setStyleSheet(f"color: {theme.SURFACE2}; font-size: 18px;")
-        h_layout.addWidget(self._dot)
-
         # Name + version
         name_col = QVBoxLayout()
         name_col.setSpacing(2)
@@ -480,8 +473,6 @@ class InstancePanel(QWidget):
                 "Use + Add server on the left to create a server, install a modpack, or import existing files."
             )
         self._status_label.setText("")
-        self._dot.setStyleSheet(f"color: {theme.SURFACE2}; font-size: 18px;")
-        self._dot.hide()
         self._set_buttons_enabled(False)
 
     # Public API
@@ -515,7 +506,6 @@ class InstancePanel(QWidget):
         self._tabs.setCurrentWidget(self._console)
         self._tabs.blockSignals(False)
         self._header.show()
-        self._dot.show()
         self._empty_state.hide()
         self._tabs.show()
         self._name_label.setText(instance.name)
@@ -903,19 +893,19 @@ class InstancePanel(QWidget):
             self._starting_since = None
         self._current_status = status
         color = theme.STATUS_COLORS.get(status, theme.SURFACE2)
-        self._dot.setStyleSheet(f"color: {color}; font-size: 18px;")
-        # Keep the console state label in sync with the panel -- single source of truth
+        # Keep the console state label in sync with the panel -- single source of truth.
+        # Text communicates lifecycle state; color is only a secondary cue.
         self._console.notify_status(status)
 
         label_text = {
-            "running":      "● SERVER ONLINE",
-            "stopped":      "○ SERVER OFFLINE",
-            "starting":     "⚡ STARTING…",
-            "stopping":     "◌ STOPPING…",
-            "tmux_missing": "⚠ CONSOLE SERVICE UNAVAILABLE",
-            "missing":      "⚠ SERVER FILES MISSING",
-            "unmanaged":    "⚠ RUNNING OUTSIDE MANAGED TMUX",
-            "unknown":      "? STATUS TEMPORARILY UNAVAILABLE",
+            "running":      "SERVER ONLINE",
+            "stopped":      "SERVER OFFLINE",
+            "starting":     "STARTING…",
+            "stopping":     "STOPPING…",
+            "tmux_missing": "CONSOLE SERVICE UNAVAILABLE",
+            "missing":      "SERVER FILES MISSING",
+            "unmanaged":    "RUNNING OUTSIDE MANAGED TMUX",
+            "unknown":      "STATUS TEMPORARILY UNAVAILABLE",
         }.get(status, status.upper())
 
         self._status_label.setText(label_text)

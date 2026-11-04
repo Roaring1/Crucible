@@ -358,8 +358,10 @@ class ConsoleTab(QWidget):
         or_layout.addWidget(terminal_btn)
 
         copy_btn = QPushButton("Copy log")
+        copy_btn.setObjectName("ConsoleCopyLogButton")
         copy_btn.setAccessibleName("Copy visible console output")
-        copy_btn.setFixedWidth(72)
+        # Let Qt's styled size hint provide the full label plus padding. A
+        # fixed 72px width was 8px narrower than the actual 80px requirement.
         copy_btn.clicked.connect(self._copy_log)
         or_layout.addWidget(copy_btn)
 

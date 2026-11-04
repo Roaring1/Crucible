@@ -341,6 +341,9 @@ class WorldTab(QWidget):
         self._world_label.setStyleSheet(f"color: {theme.TEXT}; font-size: 12px;")
         refresh_btn = QPushButton("Refresh")
         refresh_btn.setAccessibleName("Refresh selected server world inventory")
+        # Reserve two extra pixels beyond Qt's hint: the styled content
+        # rectangle is 46px while "Refresh" advances 47px in the app font.
+        refresh_btn.setMinimumWidth(refresh_btn.sizeHint().width() + 2)
         refresh_btn.clicked.connect(self._refresh)
         info_row.addWidget(self._world_label)
         info_row.addStretch()

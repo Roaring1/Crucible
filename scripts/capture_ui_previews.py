@@ -22,6 +22,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -35,7 +36,14 @@ def capture_previews(output: Path) -> list[Path]:
     from PyQt6.QtCore import QCoreApplication, QEvent, QPoint, Qt
     from PyQt6.QtGui import QImage
     from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QApplication, QMenu
+    from PyQt6.QtWidgets import (
+        QApplication,
+        QMenu,
+        QMessageBox,
+        QPushButton,
+        QStyle,
+        QStyleOptionButton,
+    )
 
     from crucible.data.fleet_backup import GenerationSummary
     from crucible.data.instance_manager import InstanceManager
@@ -56,6 +64,40 @@ def capture_previews(output: Path) -> list[Path]:
     manager = InstanceManager(root / "registry")
     manager.load()
 
+    def assert_visible_buttons_fit(widget, filename: str) -> None:
+        """Fail visual capture if a visible text button is forced below Qt's styled size hint."""
+        for button in widget.findChildren(QPushButton):
+            if not button.isVisible() or not button.text().strip():
+                continue
+            option = QStyleOptionButton()
+            option.initFrom(button)
+            option.text = button.text()
+            option.icon = button.icon()
+            option.iconSize = button.iconSize()
+            content = button.style().subElementRect(
+                QStyle.SubElement.SE_PushButtonContents, option, button
+            )
+            metrics = button.fontMetrics()
+            ink_bounds = metrics.tightBoundingRect(button.text())
+            # horizontalAdvance is Qt's layout width; tightBoundingRect can
+            # extend one pixel beyond it because of glyph side bearings.
+            required_width = metrics.horizontalAdvance(button.text())
+            required_height = ink_bounds.height()
+            if not button.icon().isNull():
+                required_width += button.iconSize().width() + 4
+                required_height = max(required_height, button.iconSize().height())
+            if (
+                content.width() < required_width
+                or content.height() < required_height
+            ):
+                raise RuntimeError(
+                    f"Button text may clip in {filename}: {button.text()!r} "
+                    f"(widget {button.width()}x{button.height()}, "
+                    f"available text area {content.width()}x{content.height()}, "
+                    f"required {required_width}x{required_height}, "
+                    f"objectName={button.objectName()!r})"
+                )
+
     def save(widget, filename: str, width: int | None = None, height: int | None = None) -> None:
         if width is None or height is None:
             # Preserve Qt's real initial size for dialogs without an explicit
@@ -66,6 +108,7 @@ def capture_previews(output: Path) -> list[Path]:
         widget.show()
         QTest.qWait(40)
         app.processEvents()
+        assert_visible_buttons_fit(widget, filename)
         pixmap = widget.grab()
         if pixmap.isNull():
             raise RuntimeError(f"Qt returned an empty image for {filename}")
@@ -97,6 +140,32 @@ def capture_previews(output: Path) -> list[Path]:
 
             with patch.object(QMenu, "exec", capture_add_menu):
                 main._on_add_requested()
+
+            # Capture the exact Server Appearance QMessageBox. The preview
+            # only opens the choices: it never invokes the custom file picker
+            # or changes a server image.
+            def capture_appearance_box(box) -> None:
+                box.adjustSize()
+                box.show()
+                QTest.qWait(30)
+                app.processEvents()
+                for button in box.buttons():
+                    metrics = button.fontMetrics()
+                    if button.width() < metrics.horizontalAdvance(button.text()) + 32:
+                        raise RuntimeError(
+                            f"Server Appearance button would clip: {button.text()!r}"
+                        )
+                    if button.height() < metrics.height() + 12:
+                        raise RuntimeError(
+                            f"Server Appearance button height would clip: {button.text()!r}"
+                        )
+                save(box, "server-appearance-dialog.png")
+                box.close()
+
+            with patch.object(QMessageBox, "exec", capture_appearance_box):
+                main._on_appearance_requested(
+                    SimpleNamespace(name="Midtech", id="preview-server")
+                )
 
             main.close()
             QTest.qWait(80)

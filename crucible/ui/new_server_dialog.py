@@ -229,7 +229,9 @@ class NewServerDialog(QDialog):
         dst_row.addWidget(self._path_edit, stretch=1)
         browse = QPushButton("Browse…")
         browse.setAccessibleName("Choose server destination folder")
-        browse.setFixedWidth(80)
+        # Keep the ellipsis inside the styled text area; 80px was one pixel
+        # narrower than the rendered label plus the active button padding.
+        browse.setMinimumWidth(browse.sizeHint().width() + 2)
         browse.clicked.connect(self._browse)
         dst_row.addWidget(browse)
         self._path_hint = QLabel("Auto-named from the display name — edit if you want a different folder.")
@@ -281,6 +283,9 @@ class NewServerDialog(QDialog):
         self._create_btn.setAccessibleName("Create server with selected software and folder")
         self._create_btn.setObjectName("PrimaryButton")
         self._create_btn.setFixedHeight(34)
+        # The filled primary style has a slightly wider text inset; avoid
+        # clipping the final glyph at the dialog's normal width.
+        self._create_btn.setMinimumWidth(self._create_btn.sizeHint().width() + 2)
         self._create_btn.clicked.connect(self._on_create)
         row.addWidget(self._create_btn)
         layout.addLayout(row)
