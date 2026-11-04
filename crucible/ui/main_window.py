@@ -300,6 +300,7 @@ class MainWindow(QMainWindow):
 
         box = QMessageBox(self)
         box.setWindowTitle("Server appearance")
+        box.setAccessibleName("Change selected server appearance")
         box.setText(f"Choose the image shown beside {instance.name}.")
         box.setInformativeText(
             "This is stored in Crucible's private application data. It does not "
@@ -308,10 +309,15 @@ class MainWindow(QMainWindow):
         choose = box.addButton(
             "Choose custom image…", QMessageBox.ButtonRole.AcceptRole
         )
+        choose.setAccessibleName("Choose a custom image for the selected server")
         reset = box.addButton(
             "Use pack image / built-in icon", QMessageBox.ButtonRole.ActionRole
         )
+        reset.setAccessibleName(
+            "Use the detected server pack image or a built-in icon"
+        )
         cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        cancel.setAccessibleName("Cancel server appearance change")
         box.setDefaultButton(choose)
         box.exec()
         picked = box.clickedButton()

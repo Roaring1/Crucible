@@ -27,6 +27,7 @@ from crucible.data.fleet_backup import GenerationSummary
 from crucible.data.instance_manager import InstanceManager
 from crucible.data.instance_model import ServerInstance
 from crucible.mods.mod_manager import ModEntry
+from crucible.sharing.history import ShareHistoryStore
 from crucible.ui import theme
 from crucible.ui.add_dialog import AddInstanceDialog
 from crucible.ui.add_mod_dialog import AddModDialog, _SearchWorker
@@ -38,6 +39,7 @@ from crucible.ui.modpack_dialog import ModpackDialog, _PackInstallWorker
 from crucible.ui.new_server_dialog import NewServerDialog
 from crucible.ui.pack_update_dialog import PackUpdateDialog, RollbackDialog
 from crucible.ui.properties_dialog import PropertiesFixDialog
+from crucible.ui.share_history_dialog import ShareHistoryDialog
 from crucible.ui.share_players_dialog import SharePlayersDialog
 from crucible.ui.sidebar import Sidebar
 from crucible.ui.tabs.backup_tab import BackupTab
@@ -531,6 +533,33 @@ for name in (
  assert name in share_buttons, f'Share Client Pack control missing accessible name: {name}'
 share_ui.deleteLater();QTest.qWait(10)
 
+history_store=ShareHistoryStore(root/'share-history'/'history.json')
+history_ui=ShareHistoryDialog(history_store)
+assert history_ui.accessibleName()=='Local player-pack share history'
+assert any(
+ label.accessibleName()=='Local sharing history privacy and cleanup explanation'
+ for label in history_ui.findChildren(QLabel)
+)
+assert history_ui._table.accessibleName()==(
+ 'Previous player-pack shares and upload history'
+)
+assert history_ui._table.accessibleDescription()
+assert history_ui._status.accessibleName()=='Local player-pack share history status'
+history_buttons={
+ child.accessibleName():child
+ for child in history_ui.findChildren(QPushButton)
+ if child.accessibleName()
+}
+for name in (
+ 'Copy the last Gofile link recorded for the selected share',
+ "Open the selected local client-pack ZIP from Crucible's player-packs folder",
+ 'Verify and permanently delete the selected local client-pack ZIP',
+ 'Forget local share history records only; keep ZIP files and remote links',
+ 'Close local player-pack share history',
+):
+ assert name in history_buttons, f'Share History action missing accessible name: {name}'
+history_ui.reject();history_ui.deleteLater();QTest.qWait(10)
+
 export_ui=ClientExportDialog(inst,manager=m)
 assert export_ui.accessibleName()=='Advanced client pack export'
 assert export_ui._fmt.accessibleName()=='Client pack archive format'
@@ -700,6 +729,25 @@ properties_ui.reject();properties_ui.deleteLater();QTest.qWait(10)
 
 with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  window=MainWindow(m);window.resize(900,600);window.show();QTest.qWait(80)
+ # Inspect the Server appearance choice dialog without entering a file picker
+ # or selecting either mutation action.
+ appearance_capture={}
+ def capture_appearance_box(box):
+  appearance_capture['window']=box.accessibleName()
+  appearance_capture['buttons']={
+   button.text():button.accessibleName() for button in box.buttons()
+  }
+  return 0
+ with patch.object(QMessageBox,'exec',capture_appearance_box):
+  window._on_appearance_requested(inst)
+ assert appearance_capture['window']=='Change selected server appearance'
+ assert appearance_capture['buttons']['Choose custom image…']==(
+  'Choose a custom image for the selected server'
+ )
+ assert appearance_capture['buttons']['Use pack image / built-in icon']==(
+  'Use the detected server pack image or a built-in icon'
+ )
+ assert appearance_capture['buttons']['Cancel']=='Cancel server appearance change'
  # The six destinations used during ordinary server operation remain visible.
  # Console is the default landing page; only configuration/reference pages use More.
  panel=window._panel;tabs=panel._tabs;bar=tabs.tabBar()
