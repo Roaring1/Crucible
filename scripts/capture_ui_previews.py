@@ -331,8 +331,51 @@ def capture_previews(output: Path) -> list[Path]:
 
             panel._tabs.setCurrentWidget(panel._mods)
             QTest.qWait(350)  # deterministic local JAR inspection
+            # Use the inventory filter as the normal keyboard-focus baseline;
+            # Qt otherwise initially focuses the first per-mod state button.
+            selected.resize(1440, 900)
+            selected.activateWindow()
+            selected.raise_()
+            app.setActiveWindow(selected)
+            panel._mods._filter.setFocus(Qt.FocusReason.OtherFocusReason)
+            app.processEvents()
+            if app.focusWidget() is not panel._mods._filter:
+                raise RuntimeError("Could not focus the Mods inventory filter baseline")
             save(selected, "workspace-mods.png", 1440, 900)
             save(selected, "workspace-mods-compact.png", 900, 600)
+
+            # The per-row Enabled/Disabled control has a local stylesheet;
+            # verify its own keyboard focus boundary is visibly rendered.
+            mod_state_button = panel._mods._table.cellWidget(
+                0, panel._mods._COL_ENABLED
+            )
+            if mod_state_button is None:
+                raise RuntimeError(
+                    "The synthetic Mods inventory did not create a state control"
+                )
+            selected.resize(1440, 900)
+            selected.activateWindow()
+            selected.raise_()
+            app.setActiveWindow(selected)
+            QTest.qWait(30)
+            mod_state_button.setFocus(Qt.FocusReason.OtherFocusReason)
+            app.processEvents()
+            if app.focusWidget() is not mod_state_button:
+                raise RuntimeError(
+                    "Could not focus the first synthetic mod state control"
+                )
+            save(selected, "workspace-mod-keyboard-focus.png", 1440, 900)
+            normal_mods = QImage(str(output / "workspace-mods.png"))
+            focused_mods = QImage(
+                str(output / "workspace-mod-keyboard-focus.png")
+            )
+            if normal_mods.isNull() or focused_mods.isNull():
+                raise RuntimeError("Could not reload the Mods focus review images")
+            if normal_mods == focused_mods:
+                raise RuntimeError(
+                    "Mods keyboard-focus preview is pixel-identical to the normal "
+                    "inventory; the state-control focus boundary was not captured"
+                )
 
             panel._tabs.setCurrentWidget(panel._world)
             save(selected, "workspace-world.png", 1440, 900)

@@ -504,6 +504,20 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  assert mods._detail_summary.accessibleName()=='Selected mod file details'
  assert mods._change_selected_btn.accessibleName()=='Change the selected mod version'
  assert mods._remove_selected_btn.accessibleName()=='Remove only the selected mod'
+ mods._instance=inst
+ mods._populate_table([
+  ModEntry(
+   filename='Example-Mod.jar',
+   path=Path('/tmp/Example-Mod.jar'),
+   enabled=True,
+   size_bytes=128,
+   name='Example Mod',
+   version='1.0',
+  )
+ ])
+ enabled_state=mods._table.cellWidget(0,mods._COL_ENABLED)
+ assert enabled_state.accessibleName()=='Disable Example Mod'
+ assert 'QPushButton#ModEnabledButton:focus' in enabled_state.styleSheet()
  mods_actions={
   child.accessibleName():child
   for child in mods.findChildren(QPushButton)

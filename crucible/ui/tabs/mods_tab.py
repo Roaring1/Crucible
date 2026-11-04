@@ -436,6 +436,7 @@ class ModsTab(QWidget):
                     f"{theme.GREEN if mod.enabled else theme.SURFACE1}; "
                     "border-radius: 4px; padding: 2px 5px; font-size: 10px; font-weight: 600; }"
                     f"QPushButton:checked {{ color: {theme.GREEN}; }}"
+                    f"QPushButton#ModEnabledButton:focus {{ border: 2px solid {theme.ACCENT}; }}"
                 )
                 state_btn.setAccessibleName(
                     f"{'Disable' if mod.enabled else 'Enable'} {mod.display_name}"
