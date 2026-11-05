@@ -467,5 +467,24 @@ class ClientExportReviewTests(unittest.TestCase):
         self.assertFalse(client_export._is_text_config_entry("Pack/.minecraft/config/example.png"))
         self.assertFalse(client_export._is_text_config_entry("Pack/.minecraft/config/stack-cache.emic"))
 
+    def test_privacy_scan_ignores_comments_and_standard_private_network_blocks(self):
+        raw = (
+            b"# password=example-secret-value-that-is-not-active\\n"
+            b"deny ip 10.0.0.0/8\\n"
+            b"deny ip 172.16.0.0/12\\n"
+            b"deny ip 192.168.0.0/16\\n"
+        )
+        self.assertEqual([], client_export._privacy_findings("config/OpenComputers.cfg", raw))
+
+    def test_privacy_scan_still_flags_active_private_hosts_and_credentials(self):
+        raw = (
+            b"bindAddress=192.168.1.42\\n"
+            b"password=actual-secret-value-12345\\n"
+        )
+        findings = client_export._privacy_findings("config/Opis.cfg", raw)
+        self.assertTrue(any("private IPv4 address" in item for item in findings), findings)
+        self.assertTrue(any("credential assignment" in item for item in findings), findings)
+
+
 if __name__ == "__main__":
     unittest.main()
