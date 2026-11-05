@@ -28,14 +28,12 @@ language before anything touches disk:
 
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
-from PyQt6.QtWidgets (
+from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QFrame,
