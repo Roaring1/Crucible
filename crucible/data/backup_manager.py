@@ -296,91 +296,77 @@ class BackupManager:
         entry: BackupEntry,
         progress_cb: Callable[[int], None] | None = None,
     ) -> SwapResult:
-        """
-        Atomically replace the CURRENT world with the world stored in `entry`.
+        """Switch to a saved world, even when it has a different level-name.
 
-        IMPORTANT: this method has no access to tmux/live process state. The
-        caller (the World tab) MUST already have confirmed the server is
-        fully stopped and there are no unsaved server.properties edits
-        before calling this -- swapping a world folder out from under a live
-        JVM will corrupt it. This is the highest-risk operation in Crucible,
-        so it is written defensively at every step:
-
-          1. Validate the backup's world-folder name matches this server's
-             CURRENT level-name. If they don't match, refuse outright --
-             extracting a differently-named world would silently create a
-             second, disconnected folder instead of replacing the active one.
-          2. Take an automatic, unprompted, unskippable safety backup of the
-             CURRENT world (if one exists). This is the single most important
-             safety net here and is never optional.
-          3. Rename the current world root sideways to
-             "<level-name>.pre-swap-<timestamp>" -- a fast, same-filesystem,
-             metadata-only rename, never a copy, and never a delete.
-          4. Extract the chosen backup into a fresh world root.
-          5. Verify: level.dat exists and is non-empty, and every dimension
-             folder present in the backup is present in the result (a count/
-             membership check, not a full byte-for-byte diff).
-          6. On ANY failure in steps 4-5: delete the partially-written new
-             world root and rename the pre-swap folder back into place, so
-             the server is NEVER left half-swapped. The original exception
-             is re-raised after rolling back.
-
-        On success, the pre-swap folder from step 3 is deliberately left on
-        disk (not deleted) as an extra safety net -- see prune_pre_swap_dirs()
-        for cleaning those up later once you've confirmed the swap is good.
+        The archive's original level-name becomes the active server level-name.
+        The current world is safety-backed-up and renamed aside before the saved
+        world is extracted. Existing folders are never overwritten.
         """
         if not entry.path.exists():
             raise FileNotFoundError(f"Backup archive not found: {entry.path}")
 
-        world_root = self._instance.world_root_path()
-        self._verify_backup_matches_world_root(entry, world_root)
-        self._validate_backup_archive(entry, world_root)
+        current_world_root = self._instance.world_root_path()
+        backup_level_name = self._verify_backup_matches_world_root(entry, current_world_root)
+        server_root = self._instance.path_obj.resolve()
+        target_world_root = server_root / backup_level_name
+        if target_world_root.is_symlink():
+            raise OSError("The saved world's target folder cannot be a symbolic link.")
+        if (
+            target_world_root.exists()
+            and target_world_root.resolve() != current_world_root.resolve()
+        ):
+            raise ValueError(
+                f"The saved world folder '{backup_level_name}' already exists. "
+                "Crucible will not overwrite it; move or rename that folder first. "
+                "The current level-name has not been changed."
+            )
+        self._validate_backup_archive(entry, target_world_root)
 
-        # Step 2: mandatory safety backup of whatever world is about to be
-        # replaced. Skipped only if there is no existing world to back up
-        # (e.g. first-ever swap-in on a server that was never started).
         pre_swap_backup_path: Path | None = None
-        if world_root.is_dir():
+        if current_world_root.is_dir():
             pre_swap_backup_path = self.create_pre_swap_backup()
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        pre_swap_dir = world_root.with_name(f"{world_root.name}.pre-swap-{timestamp}")
+        pre_swap_dir = current_world_root.with_name(
+            f"{current_world_root.name}.pre-swap-{timestamp}"
+        )
         renamed = False
 
         try:
-            # Step 3: rename the live world sideways -- never delete it here.
-            if world_root.is_dir():
-                world_root.rename(pre_swap_dir)
+            if current_world_root.is_dir():
+                current_world_root.rename(pre_swap_dir)
                 renamed = True
 
-            # Step 4: extract into a fresh world root. Archive members are
-            # stored relative to the SERVER root (not the world root), e.g.
-            # "World/level.dat", "World/DIM1/region/..." -- see create_backup.
-            self._extract_validated_backup(entry, world_root, progress_cb)
+            self._extract_validated_backup(entry, target_world_root, progress_cb)
+            self._verify_swapped_world(target_world_root, entry)
 
-            # Step 5: verify.
-            self._verify_swapped_world(world_root, entry)
+            if backup_level_name != current_world_root.name:
+                self._write_level_name(backup_level_name)
 
         except Exception:
-            # Step 6: roll back -- never leave the server half-swapped.
-            if world_root.exists():
-                shutil.rmtree(world_root, ignore_errors=True)
+            if target_world_root.exists():
+                shutil.rmtree(target_world_root, ignore_errors=True)
             if renamed and pre_swap_dir.exists():
-                pre_swap_dir.rename(world_root)
+                pre_swap_dir.rename(current_world_root)
             raise
 
         if progress_cb:
             progress_cb(100)
         return SwapResult(
             ok=True,
-            message=f"Swapped to \u2018{entry.display_name}\u2019.",
+            message=f"Switched to '{entry.display_name}' ({backup_level_name}).",
             pre_swap_backup_path=pre_swap_backup_path,
             pre_swap_dir=pre_swap_dir if renamed else None,
         )
 
     def _validated_backup_members(self, entry: BackupEntry, world_root: Path) -> tuple[list[zipfile.ZipInfo], int]:
         server_root = self._instance.path_obj.resolve()
-        expected_top = world_root.name
+        expected_top = self._backup_level_name(entry)
+        allowed_top_levels = {
+            expected_top,
+            f"{expected_top}_nether",
+            f"{expected_top}_the_end",
+        }
         members: list[zipfile.ZipInfo] = []
         expanded = 0
         with zipfile.ZipFile(entry.path, "r") as zf:
@@ -394,8 +380,8 @@ class BackupManager:
                 mode = (info.external_attr >> 16) & 0xFFFF
                 if "\x00" in name or "\\" in name or path.is_absolute() or ".." in path.parts or not path.parts:
                     raise ValueError(f"Backup contains an unsafe path: {name!r}")
-                if path.parts[0] != expected_top:
-                    raise ValueError(f"Backup contains data outside the active world folder: {name!r}")
+                if path.parts[0] not in allowed_top_levels:
+                    raise ValueError(f"Backup contains data outside its world folders: {name!r}")
                 file_type = stat.S_IFMT(mode)
                 if stat.S_ISLNK(mode) or (file_type and not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))):
                     raise ValueError(f"Backup contains an unsupported link/device: {name!r}")
@@ -438,24 +424,47 @@ class BackupManager:
                         if src.read(1): raise OSError(f"Backup member exceeded its declared size: {info.filename!r}")
                 if progress_cb and total: progress_cb(int((i + 1) / total * 90))
 
-    def _verify_backup_matches_world_root(self, entry: BackupEntry, world_root: Path) -> None:
-        """Refuse to swap a backup whose stored world-folder name doesn't
-        match the server's CURRENTLY configured level-name."""
+    def _backup_level_name(self, entry: BackupEntry) -> str:
+        """Return the one safe world root name represented by a backup archive."""
         with zipfile.ZipFile(entry.path, "r") as zf:
             top_levels = {
-                Path(n).parts[0] for n in zf.namelist()
-                if n.strip("/") and Path(n).parts
+                PurePosixPath(name).parts[0]
+                for name in zf.namelist()
+                if name.strip("/") and PurePosixPath(name).parts
             }
         if not top_levels:
             raise ValueError(f"Backup archive is empty: {entry.path}")
-        if world_root.name not in top_levels:
+
+        roots = [
+            name for name in top_levels
+            if not name.endswith(("_nether", "_the_end"))
+        ]
+        if len(roots) != 1:
             raise ValueError(
-                f"This backup's world folder ({sorted(top_levels)}) doesn't match "
-                f"the server's current level-name ('{world_root.name}'). Swapping "
-                "would create a second, disconnected world folder instead of "
-                "replacing the active one. Change level-name back to match this "
-                "backup first, or choose a backup made with the current level-name."
+                f"Backup must contain exactly one world root; found {sorted(top_levels)}."
             )
+        level_name = self.validate_level_name(roots[0])
+        allowed = {level_name, f"{level_name}_nether", f"{level_name}_the_end"}
+        if not top_levels.issubset(allowed):
+            raise ValueError(
+                f"Backup contains unexpected top-level folders: {sorted(top_levels)}."
+            )
+        return level_name
+
+    def _verify_backup_matches_world_root(
+        self, entry: BackupEntry, world_root: Path
+    ) -> str:
+        """Validate the archive root and ensure switching won't overwrite a folder."""
+        backup_level_name = self._backup_level_name(entry)
+        target_root = self._instance.path_obj / backup_level_name
+        if target_root.is_symlink():
+            raise ValueError("The saved world target is a symbolic link; refusing to switch.")
+        if target_root.exists() and target_root.resolve() != world_root.resolve():
+            raise ValueError(
+                f"Saved world '{backup_level_name}' conflicts with an existing folder; "
+                "the current level-name cannot be changed until that folder is moved."
+            )
+        return backup_level_name
 
     def _verify_swapped_world(self, world_root: Path, entry: BackupEntry) -> None:
         """Post-extraction sanity check: level.dat present + non-empty, and
@@ -468,7 +477,7 @@ class BackupManager:
                 "extraction. The previous world has been restored."
             )
 
-        top = world_root.name
+        top = self._backup_level_name(entry)
         with zipfile.ZipFile(entry.path, "r") as zf:
             expected_dims = {
                 parts[1] for n in zf.namelist()
