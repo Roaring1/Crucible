@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import tempfile
 import unittest
@@ -428,6 +429,33 @@ class ClientExportReviewTests(unittest.TestCase):
                 review["warnings"],
             )
 
+    def test_nested_config_archive_is_scanned_for_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            config = server / "config"
+            config.mkdir(parents=True)
+            nested_bytes = io.BytesIO()
+            with zipfile.ZipFile(nested_bytes, "w") as nested:
+                nested.writestr(
+                    "guide/settings.json",
+                    '{"api_key":"nested-secret-value-that-must-not-leak"}',
+                )
+                nested.writestr("guide/icon.png", b"\x89PNG\r\n\x1a\n")
+            (config / "DefaultGuide.zip").write_bytes(nested_bytes.getvalue())
+            output = root / "nested-config.zip"
+            result = client_export.export(self._instance(server), output, fmt="prism")
+            self.assertTrue(result.ok, result.error)
+            self.assertTrue(
+                any("possible credential assignment" in warning and "DefaultGuide.zip!/" in warning
+                    for warning in result.warnings),
+                result.warnings,
+            )
+            self.assertFalse(
+                any("nested-secret-value" in warning for warning in result.warnings),
+                result.warnings,
+            )
+
     def test_manifest_warns_and_names_config_files_over_scan_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -435,7 +463,7 @@ class ClientExportReviewTests(unittest.TestCase):
             config = server / "config"
             config.mkdir(parents=True)
             oversized = config / "large.toml"
-            oversized.write_bytes(b"safe_key = true\n" + b"# padding\n" * 120000)
+            oversized.write_bytes(b"safe_key = true\n" + b"# padding\n" * 900000)
             output = root / "large-config.zip"
             result = client_export.export(self._instance(server), output, fmt="prism")
             self.assertTrue(result.ok, result.error)
