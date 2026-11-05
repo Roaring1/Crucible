@@ -155,7 +155,9 @@ class ReleaseScriptTests(unittest.TestCase):
     def test_wheel_declares_icon_and_distribution_catalog_package_data(self):
         text = (ROOT / "pyproject.toml").read_text()
         self.assertIn('[tool.setuptools.package-data]', text)
-        self.assertIn('crucible = ["assets/*.png", "data/*.json"]', text)
+        self.assertIn('"assets/*.png"', text)
+        self.assertIn('"data/*.json"', text)
+        self.assertIn('"ui/assets/server-icons/*.svg"', text)
         catalog = ROOT / "crucible" / "data" / "mod_distribution_catalog.json"
         self.assertTrue(catalog.is_file())
 
@@ -182,7 +184,7 @@ class ReleaseScriptTests(unittest.TestCase):
         ]
         text = "\n".join(path.read_text() for path in files)
         for name in (
-            "Reload server properties", "Refresh mod list", "Delete backup",
+            "Reload server properties", "Refresh mod list", "Verify retained generations",
             "Remove {name}", "Find previous match", "Close find bar",
             "Refresh Minecraft version list",
         ):

@@ -143,7 +143,7 @@ class ServerInstance:
     prism_source: str  = ""        # original Prism instance/archive path
     notes: str         = ""        # free-form markdown notes
     java_args: str     = "-Xms2G -Xmx4G"
-    color: str         = "#c8903a" # accent color for sidebar dot
+    color: str         = "#8298ab" # legacy accent metadata; rail status now uses theme tokens
     tmux_session: str  = ""        # e.g. "my-server" or "gtnh"
     auto_restart: bool = False     # watchdog: auto-restart on unexpected crash
     id: str            = field(default_factory=lambda: str(uuid.uuid4()))
@@ -213,7 +213,7 @@ class ServerInstance:
             prism_source = d.get("prism_source", ""),
             notes        = d.get("notes", ""),
             java_args    = d.get("java_args", "-Xms2G -Xmx4G"),
-            color        = d.get("color", "#c8903a"),
+            color        = d.get("color", "#8298ab"),
             tmux_session = d.get("tmux_session", ""),
             auto_restart = d.get("auto_restart", False),
             created_at   = d.get("created_at", datetime.now().isoformat()),

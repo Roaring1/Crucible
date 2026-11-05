@@ -19,7 +19,9 @@ zip nor the swap operation ever blocks the GUI (GTNH worlds can be 5-20 GB).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 import stat
 import zipfile
@@ -45,6 +47,9 @@ class BackupEntry:
     # None means this is a plain auto/unnamed backup -- exactly what every
     # v0.6.x backup looks like, so old backups keep working unmodified.
     slot_name: str | None = None
+    # Present for world archives stored inside immutable fleet generations.
+    sha256: str | None = None
+    fleet_generation_id: str | None = None
 
     @property
     def size_display(self) -> str:
@@ -70,13 +75,19 @@ class SwapResult:
     # replaced (None only if there was no existing world to back up, e.g.
     # first-ever swap-in on a server that was never started).
     pre_swap_backup_path: Path | None = None
-    # Path to the renamed-aside copy of the previous world root, if one was
-    # created. Kept on disk as an extra safety net; see prune_pre_swap_dirs().
+    # Path to a renamed-aside copy, only when a caller explicitly keeps one.
     pre_swap_dir: Path | None = None
+    # Complete fleet generation protecting the previous server state.
+    fleet_generation_id: str | None = None
 
 
 class BackupManager:
-    """Manages backups, named world slots, and world swaps for one ServerInstance."""
+    """Manages legacy world-only archives and safe world swaps for one server.
+
+    New automatic/manual backups use FleetBackupManager instead. This manager
+    remains for reading/importing pre-fleet archives and for validated world
+    swap extraction; it is not the retention authority.
+    """
 
     def __init__(self, instance: ServerInstance) -> None:
         self._instance   = instance
@@ -145,15 +156,14 @@ class BackupManager:
         progress_cb: Callable[[int], None] | None = None,
         slot_name: str | None = None,
     ) -> Path:
-        """
-        Zip the world folder(s) into a timestamped archive.
-        Runs synchronously — call from a QThread.
-        Raises FileNotFoundError / OSError on failure.
+        """Legacy compatibility API.
 
-        If slot_name is given, this backup becomes a named "world slot":
-        it's excluded from prune_old()'s automatic deletion and shows its
-        label instead of the raw filename in the UI.
+        Production Crucible workflows deliberately do not call this method:
+        all new captures must go through FleetBackupManager so the global
+        two-generation policy cannot be bypassed by a per-server ZIP.
         """
+        # The old ZIP writer is retained for compatibility with legacy
+        # migrations and direct API tests; the UI/CLI no longer exposes it.
         server_path = Path(self._instance.path)
 
         # Determine which world directories to back up
@@ -296,6 +306,10 @@ class BackupManager:
         self,
         entry: BackupEntry,
         progress_cb: Callable[[int], None] | None = None,
+        *,
+        safety_backup_verified: bool = False,
+        retain_pre_swap_dir: bool = True,
+        fleet_generation_id: str | None = None,
     ) -> SwapResult:
         """Switch to a saved world, even when it has a different level-name.
 
@@ -326,6 +340,11 @@ class BackupManager:
         pre_swap_backup_path: Path | None = None
         if current_world_root.is_dir():
             pre_swap_backup_path = self.create_pre_swap_backup()
+        if current_world_root.is_dir() and safety_backup_verified and not fleet_generation_id:
+            raise OSError(
+                "A verified fleet generation ID is required when the operation "
+                "delegates its safety backup to the fleet backup system."
+            )
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         pre_swap_dir = current_world_root.with_name(
@@ -351,13 +370,25 @@ class BackupManager:
                 pre_swap_dir.rename(current_world_root)
             raise
 
+        retained_dir = pre_swap_dir if renamed and retain_pre_swap_dir else None
+        if renamed and not retain_pre_swap_dir and pre_swap_dir.exists():
+            try:
+                shutil.rmtree(pre_swap_dir)
+            except OSError as exc:
+                raise OSError(
+                    "The new world was verified and the prior fleet generation "
+                    f"remains safe, but the temporary old-world folder could not "
+                    f"be removed: {pre_swap_dir}: {exc}"
+                ) from exc
+
         if progress_cb:
             progress_cb(100)
         return SwapResult(
             ok=True,
             message=f"Switched to '{entry.display_name}' ({backup_level_name}).",
             pre_swap_backup_path=pre_swap_backup_path,
-            pre_swap_dir=pre_swap_dir if renamed else None,
+            pre_swap_dir=retained_dir,
+            fleet_generation_id=fleet_generation_id,
         )
 
     def _validated_backup_members(self, entry: BackupEntry, world_root: Path) -> tuple[list[zipfile.ZipInfo], int]:
@@ -396,6 +427,29 @@ class BackupManager:
                 expanded += info.file_size
                 members.append(info)
         return members, expanded
+
+    def _verify_fleet_archive_hash(self, entry: BackupEntry) -> None:
+        expected_hash = getattr(entry, "sha256", None)
+        if not expected_hash:
+            return
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(entry.path, flags)
+            with os.fdopen(fd, "rb") as handle:
+                info = os.fstat(handle.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise OSError("archive is not a regular file")
+                digest = hashlib.sha256()
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(block)
+        except OSError as exc:
+            raise OSError(
+                f"Could not safely read saved-world archive {entry.filename}: {exc}"
+            ) from exc
+        if digest.hexdigest() != expected_hash:
+            raise OSError(
+                f"Saved-world archive {entry.filename} failed its fleet-generation SHA-256 check."
+            )
 
     def _validate_backup_archive(self, entry: BackupEntry, world_root: Path) -> None:
         _members, expanded = self._validated_backup_members(entry, world_root)
@@ -613,6 +667,9 @@ class BackupManager:
         self,
         progress_cb: Callable[[int], None] | None = None,
         new_level_name: str | None = None,
+        *,
+        safety_backup_verified: bool = False,
+        fleet_generation_id: str | None = None,
     ) -> SwapResult:
         """Start over with a brand new, optionally named world on next start.
 
@@ -650,11 +707,16 @@ class BackupManager:
 
         pre_swap_backup_path: Path | None = None
         pre_swap_dir: Path | None = None
+        cleanup_warning = ""
 
         if world_root.is_dir():
-            # Mandatory safety backup -- identical rationale to swap_world()
-            # step 2: never optional, always taken before anything is moved.
-            pre_swap_backup_path = self.create_pre_swap_backup(progress_cb=progress_cb)
+            if not safety_backup_verified:
+                pre_swap_backup_path = self.create_pre_swap_backup(progress_cb=progress_cb)
+            elif not fleet_generation_id:
+                raise OSError(
+                    "A verified fleet generation ID is required when the operation "
+                    "delegates its safety backup to the fleet backup system."
+                )
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             pre_swap_dir = world_root.with_name(f"{world_root.name}.pre-swap-{timestamp}")
@@ -689,24 +751,31 @@ class BackupManager:
             message=message,
             pre_swap_backup_path=pre_swap_backup_path,
             pre_swap_dir=pre_swap_dir,
+            fleet_generation_id=fleet_generation_id,
         )
 
-    def wipe_world(self) -> SwapResult:
-        """Permanently delete the current world folder. No safety backup is
-        kept -- this is for users who explicitly want to free disk space and
-        already have a backup they trust elsewhere. Callers MUST obtain a
-        strong, explicit (typed) confirmation before calling this; there is
-        no rollback once this returns.
-        """
+    def wipe_world(
+        self,
+        *,
+        safety_backup_verified: bool = False,
+        fleet_generation_id: str | None = None,
+    ) -> SwapResult:
+        """Permanently delete the selected live world only after fleet capture."""
         world_root = self._instance.world_root_path()
         if not world_root.is_dir():
             return SwapResult(ok=True, message="No world folder existed to wipe.")
+        if not safety_backup_verified or not fleet_generation_id:
+            raise OSError(
+                "Wiping a world requires a verified fleet-wide backup generation first."
+            )
         name = world_root.name
         shutil.rmtree(world_root)
         return SwapResult(
             ok=True,
             message=f"'{name}' was permanently deleted. A brand new world will "
-                     "generate the next time the server starts.",
+                     "generate the next time the server starts. The complete prior "
+                     f"server state is retained in fleet generation {fleet_generation_id}.",
+            fleet_generation_id=fleet_generation_id,
         )
 
 

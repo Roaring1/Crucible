@@ -110,10 +110,6 @@ if "PyQt6" not in sys.modules:
     sys.modules["PyQt6.QtGui"] = qtgui
     sys.modules["PyQt6.QtWidgets"] = qtwidgets
 
-from crucible.data import backup_manager as backup_mod
-from crucible.data.backup_manager import BackupManager
-from crucible.data.instance_model import ServerInstance
-
 # Import setup_tab directly without triggering crucible/ui/tabs/__init__.py,
 # which eagerly imports every other tab module (console_tab, world_tab,
 # etc.) and would require a much larger PyQt6 shim than this pure-logic test
@@ -121,7 +117,11 @@ from crucible.data.instance_model import ServerInstance
 # Python's import machinery resolves "crucible.ui.tabs.setup_tab" against
 # the real file on disk without ever executing the real package __init__.
 import importlib
+
 import crucible.ui as _crucible_ui
+from crucible.data import backup_manager as backup_mod
+from crucible.data.backup_manager import BackupManager
+from crucible.data.instance_model import ServerInstance
 
 _tabs_pkg_name = "crucible.ui.tabs"
 if _tabs_pkg_name not in sys.modules:
@@ -205,16 +205,31 @@ class WipeWorldTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
         self.tmp_root = Path(self._tmp)
 
-    def test_wipe_world_permanently_deletes_with_no_backup(self):
+    def test_wipe_world_requires_a_verified_fleet_generation(self):
         server_dir = _make_server(self.tmp_root)
         mgr = _manager(self.tmp_root, server_dir, "wipe-test", "backups")
         world_root = mgr._instance.world_root_path()
         self.assertTrue(world_root.is_dir())
 
-        result = mgr.wipe_world()
+        with self.assertRaisesRegex(OSError, "fleet-wide backup generation"):
+            mgr.wipe_world()
+
+        self.assertTrue(world_root.is_dir())
+        self.assertEqual(len(mgr.list_backups()), 0)
+
+    def test_wipe_world_deletes_only_after_verified_fleet_checkpoint(self):
+        server_dir = _make_server(self.tmp_root)
+        mgr = _manager(self.tmp_root, server_dir, "wipe-test", "backups")
+        world_root = mgr._instance.world_root_path()
+
+        result = mgr.wipe_world(
+            safety_backup_verified=True,
+            fleet_generation_id="test-generation-001",
+        )
 
         self.assertTrue(result.ok)
         self.assertFalse(world_root.exists())
+        self.assertEqual(result.fleet_generation_id, "test-generation-001")
         self.assertEqual(len(mgr.list_backups()), 0)
         self.assertEqual(mgr.list_pre_swap_dirs(), [])
 

@@ -17,9 +17,19 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-    QSpinBox, QVBoxLayout,
+    QCheckBox,
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
 )
 
 from . import pack_update_model as model
@@ -140,6 +150,7 @@ class PackUpdateDialog(_JobDialog):
         self._installed = False
 
         self.setWindowTitle("Update modpack")
+        self.setAccessibleName("Update the selected server modpack")
         self.setMinimumSize(780, 620)
         self.setStyleSheet(theme.STYLESHEET)
         self._build_ui()
@@ -184,9 +195,18 @@ class PackUpdateDialog(_JobDialog):
 
         opts = QHBoxLayout()
         self._prerelease = QCheckBox("Offer beta and release-candidate versions")
+        self._prerelease.setAccessibleName(
+            "Include beta and release-candidate modpack versions"
+        )
         self._keep_previous = QCheckBox("Keep the old install so I can roll back")
+        self._keep_previous.setAccessibleName(
+            "Keep the previous server install for rollback"
+        )
         self._keep_previous.setChecked(True)
         self._check_btn = QPushButton("Check for updates")
+        self._check_btn.setAccessibleName(
+            "Check the selected server modpack and build an update plan"
+        )
         self._check_btn.setDefault(True)
         self._check_btn.clicked.connect(self._start_check)
         opts.addWidget(self._prerelease)
@@ -204,6 +224,7 @@ class PackUpdateDialog(_JobDialog):
         root.addWidget(self._plan_view, 1)
 
         self._progress = QProgressBar()
+        self._progress.setAccessibleName("Server modpack update progress")
         self._progress.setRange(0, 0)
         self._progress.setTextVisible(False)
         self._progress.hide()
@@ -216,6 +237,9 @@ class PackUpdateDialog(_JobDialog):
         self._confirm.setAccessibleName("Type the new version to confirm")
         self._confirm.textChanged.connect(self._on_confirm_changed)
         self._apply_btn = QPushButton("Install update")
+        self._apply_btn.setAccessibleName(
+            "Install the reviewed update for the selected server modpack"
+        )
         self._apply_btn.setEnabled(False)
         self._apply_btn.clicked.connect(self._start_apply)
         confirm_row.addWidget(self._confirm_label)
@@ -225,12 +249,14 @@ class PackUpdateDialog(_JobDialog):
 
         bottom = QHBoxLayout()
         self._stop_btn = QPushButton("Stop")
+        self._stop_btn.setAccessibleName("Stop the current modpack update safely")
         self._stop_btn.setEnabled(False)
         self._stop_btn.setToolTip(
             "Stop after the current step. Nothing is swapped in until the new "
             "install has been verified.")
         self._stop_btn.clicked.connect(self._request_cancel)
         self._close_btn = QPushButton("Close")
+        self._close_btn.setAccessibleName("Close modpack update dialog")
         self._close_btn.clicked.connect(self.close)
         bottom.addWidget(self._stop_btn)
         bottom.addStretch()
@@ -346,11 +372,34 @@ class PackUpdateDialog(_JobDialog):
         self._append(f"Installing {preview.confirm_word}\u2026")
 
         def job(log):
+            from ..data.fleet_backup import (
+                FleetBackupManager,
+                fleet_operation_lock,
+            )
             from ..importers import pack_update as pu
-            backup_cb = model.backup_callback(instance, plan, log_cb=log)
-            outcome = pu.apply_update(
-                instance, plan, backup_cb=backup_cb, log_cb=log,
-                cancel=cancel, keep_previous=keep_previous)
+            from ..process.tmux_manager import TmuxManager
+
+            if self._manager is None or getattr(self._manager, "load_error", None):
+                raise RuntimeError(
+                    "The complete server registry is unavailable; a fleet-wide "
+                    "pre-update checkpoint cannot be created."
+                )
+
+            fleet = FleetBackupManager(self._manager.instances, TmuxManager())
+            with fleet_operation_lock(fleet.root):
+                def backup_cb() -> str:
+                    log("Creating a complete fleet checkpoint before the pack update...")
+                    generation = fleet.run_backup(operation_lock_held=True)
+                    log(
+                        f"Verified generation {generation.generation_id}: "
+                        f"{generation.server_count} servers, {generation.file_count:,} files."
+                    )
+                    return str(generation.path)
+
+                outcome = pu.apply_update(
+                    instance, plan, backup_cb=backup_cb, log_cb=log,
+                    cancel=cancel, keep_previous=keep_previous)
+
             if getattr(outcome, "ok", False):
                 # Stays on the worker: readiness touches the disk and can
                 # shell out to java.
@@ -398,7 +447,7 @@ class PackUpdateDialog(_JobDialog):
         if note:
             self._append(note)
         if result.backup_path:
-            self._append(f"World backup: {result.backup_path}")
+            self._append(f"Fleet backup generation: {result.backup_path}")
         if result.previous_dir:
             self._append(f"Old install kept at: {result.previous_dir}")
         self._append("")
@@ -440,6 +489,7 @@ class RollbackDialog(_JobDialog):
         self._entries: list = []
 
         self.setWindowTitle("Roll back a modpack update")
+        self.setAccessibleName("Restore or prune retained server modpack installs")
         self.setMinimumSize(720, 540)
         self.setStyleSheet(theme.STYLESHEET)
         self._build_ui()
@@ -473,6 +523,9 @@ class RollbackDialog(_JobDialog):
 
         self._keep_world = QCheckBox(
             "Carry the current world onto the restored pack")
+        self._keep_world.setAccessibleName(
+            "Carry the current live world into the restored older pack"
+        )
         self._keep_world.setToolTip(
             "Off by default: if the newer pack damaged the world, bringing it "
             "back carries the damage with it.")
@@ -485,6 +538,7 @@ class RollbackDialog(_JobDialog):
         root.addWidget(self._log)
 
         self._progress = QProgressBar()
+        self._progress.setAccessibleName("Server modpack rollback or pruning progress")
         self._progress.setRange(0, 0)
         self._progress.setTextVisible(False)
         self._progress.hide()
@@ -492,6 +546,9 @@ class RollbackDialog(_JobDialog):
 
         actions = QHBoxLayout()
         self._rollback_btn = QPushButton("Roll back to selected")
+        self._rollback_btn.setAccessibleName(
+            "Restore the selected retained server modpack install"
+        )
         self._rollback_btn.setEnabled(False)
         self._rollback_btn.clicked.connect(self._start_rollback)
         actions.addWidget(self._rollback_btn)
@@ -503,10 +560,13 @@ class RollbackDialog(_JobDialog):
         self._keep_spin.setAccessibleName("How many old installs to keep")
         actions.addWidget(self._keep_spin)
         self._prune_btn = QPushButton("Delete the rest\u2026")
-        self._prune_btn.setAccessibleName("Delete old installs")
+        self._prune_btn.setAccessibleName(
+            "Delete older retained server modpack installs and keep the selected count"
+        )
         self._prune_btn.clicked.connect(self._start_prune)
         actions.addWidget(self._prune_btn)
         self._close_btn = QPushButton("Close")
+        self._close_btn.setAccessibleName("Close rollback dialog")
         self._close_btn.clicked.connect(self.close)
         actions.addWidget(self._close_btn)
         root.addLayout(actions)

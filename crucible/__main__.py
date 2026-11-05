@@ -34,10 +34,20 @@ import sys
 from .data.instance_manager import InstanceManager, validate_session_name
 from .process.tmux_manager import TmuxManager
 from .utils import (
-    BOLD, DIM, GREEN, YELLOW, CYAN, RESET,
-    ok, warn, err, info, dim, banner, status_dot,
+    BOLD,
+    CYAN,
+    DIM,
+    GREEN,
+    RESET,
+    YELLOW,
+    banner,
+    dim,
+    err,
+    info,
+    ok,
+    status_dot,
+    warn,
 )
-
 
 # Shared helper
 
@@ -146,6 +156,7 @@ def _preflight_properties(inst) -> None:
     that makes Minecraft die with ``NumberFormatException`` before it boots.
     """
     from pathlib import Path
+
     from .data import properties as props
     path = Path(inst.path) / "server.properties"
     if not props.has_blocking_errors(path, minecraft_version=inst.effective_minecraft_version()):
@@ -164,6 +175,7 @@ def _preflight_properties(inst) -> None:
 def cmd_fix_properties(manager: InstanceManager, args) -> None:
     """Detect & fix invalid server.properties values (the 'did you mean' helper)."""
     from pathlib import Path
+
     from .data import properties as props
     inst = resolve_instance(manager, args.name)
     path = Path(inst.path) / "server.properties"
@@ -205,6 +217,7 @@ def cmd_fix_properties(manager: InstanceManager, args) -> None:
 def cmd_fix_loading(manager: InstanceManager, args) -> None:
     """Diagnose & fix server start/loading crashes (e.g. client-only mods)."""
     from pathlib import Path
+
     from .diagnostics import loadcheck as lc
     inst = resolve_instance(manager, args.name)
     root = Path(inst.path)
@@ -438,7 +451,7 @@ def cmd_scan(manager: InstanceManager, args) -> None:
 
 
 def cmd_scan_prism(_manager: InstanceManager, args) -> None:
-    from .importers.prism import scan_prism_instances, detect_prism_source
+    from .importers.prism import detect_prism_source, scan_prism_instances
     found = scan_prism_instances(args.path, max_depth=args.depth)
     if not found:
         dim(f"No Prism instances found under {args.path}")
@@ -456,6 +469,7 @@ def cmd_scan_prism(_manager: InstanceManager, args) -> None:
 
 def cmd_import_prism(manager: InstanceManager, args) -> None:
     from pathlib import Path
+
     from .importers.prism import import_prism_source
     try:
         info_obj = import_prism_source(
@@ -554,6 +568,7 @@ def cmd_list_mc_versions(manager: InstanceManager, args) -> None:
 def cmd_create_server(manager: InstanceManager, args) -> None:
     """Create a brand-new server from scratch (vanilla is the simplest)."""
     from pathlib import Path
+
     from .importers import serverloader as sl
 
     loader = sl.normalize_loader(args.loader or "vanilla")
@@ -608,6 +623,7 @@ def cmd_create_server(manager: InstanceManager, args) -> None:
 def cmd_install_modpack(manager: InstanceManager, args) -> None:
     """Install a Modrinth modpack (or local .mrpack) as a ready-to-run server."""
     from pathlib import Path
+
     from .importers import modpack_auto
 
     if args.dir:
@@ -756,6 +772,126 @@ def cmd_validate(manager: InstanceManager, args) -> None:
         sys.exit(1)
 
 
+def cmd_backup_fleet(manager: InstanceManager, tmux: TmuxManager, args) -> None:
+    """Create, list, or deeply verify two retained fleet-wide generations."""
+    from .data import backup_scheduler
+    from .data.fleet_backup import FleetBackupError, FleetBackupManager
+
+    if manager.load_error is not None:
+        err(
+            "The server registry could not be loaded safely; refusing a fleet backup: "
+            + manager.load_error
+        )
+        sys.exit(2)
+
+    backups = FleetBackupManager(manager.instances, tmux)
+
+    if args.install_timer:
+        if not manager.instances:
+            err("No registered Crucible servers are available; automatic fleet backups were not enabled.")
+            sys.exit(1)
+        blockers = backups.legacy_backup_blockers()
+        if blockers:
+            err(
+                f"Automatic backups were not enabled: {len(blockers)} legacy backup "
+                "source(s) are still outside the two retained fleet generations. "
+                "Migrate/review them first:"
+            )
+            for item in blockers[:12]:
+                dim(f"    {item['path']} ({_human_size(int(item['bytes']))})")
+                dim(f"      {item['reason']}")
+            sys.exit(1)
+        try:
+            state = backup_scheduler.install_timer()
+        except backup_scheduler.BackupSchedulerError as exc:
+            err(str(exc))
+            sys.exit(1)
+        ok("Automatic fleet backups are enabled.")
+        info("Schedule:     every 10 minutes")
+        info("Coverage:     all registered Crucible servers")
+        info("Retention:    exactly two complete fleet generations")
+        info(f"Next run:     {state.get('next') or 'pending systemd schedule'}")
+        return
+
+    if args.remove_timer:
+        try:
+            backup_scheduler.remove_timer()
+        except backup_scheduler.BackupSchedulerError as exc:
+            err(str(exc))
+            sys.exit(1)
+        ok("Automatic fleet backup timer disabled; retained backup generations were not removed.")
+        return
+
+    if args.list:
+        generations = backups.list_generations()
+        if not generations:
+            dim("No complete fleet backup generations exist yet.")
+            return
+        print("\n  COMPLETE FLEET BACKUP GENERATIONS")
+        print("  " + "─" * 86)
+        for entry in generations:
+            print(
+                f"  {entry.generation_id}  "
+                f"{entry.server_count} servers  {entry.file_count} files  "
+                f"{_human_size(entry.logical_bytes)}  {entry.created_at}"
+            )
+        issues = backups.generation_issues()
+        if issues:
+            warn(f"{len(issues)} invalid/incomplete generation folder(s) need attention.")
+        print()
+        return
+
+    if args.verify:
+        candidates = backups.generation_candidates()
+        if not candidates:
+            dim("No fleet backup generations exist to verify.")
+            return
+        failed = False
+        for path in candidates:
+            result = backups.verify_generation(path, deep=True)
+            if result["ok"]:
+                manifest = result["manifest"]
+                ok(
+                    f"{path.name}: {manifest['servers']} servers, "
+                    f"{result['file_count']} files, all SHA-256 checks passed"
+                )
+            else:
+                failed = True
+                err(f"{path.name}: " + "; ".join(result["errors"][:8]))
+        if failed:
+            sys.exit(1)
+        return
+
+    info(
+        f"Capturing {len(manager.instances)} registered server(s); "
+        "servers are never started by the backup job."
+    )
+    try:
+        result = backups.run_backup()
+    except FleetBackupError as exc:
+        err(str(exc))
+        sys.exit(1)
+
+    ok(f"Fleet generation {result.generation_id} is complete and verified.")
+    info(f"Servers:       {result.server_count}")
+    info(f"Files:         {result.file_count}")
+    info(f"Logical size:  {_human_size(result.logical_bytes)}")
+    info(f"Copied:        {_human_size(result.bytes_copied)}")
+    info(f"Reused:        {_human_size(result.bytes_reused)}")
+    info(f"Stored at:     {result.path}")
+    info("Retention:     newest two complete fleet generations")
+
+
+def _human_size(size: int) -> str:
+    if size >= 1_073_741_824:
+        return f"{size / 1_073_741_824:.1f} GB"
+    if size >= 1_048_576:
+        return f"{size / 1_048_576:.0f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.0f} KB"
+    return f"{size} B"
+
+
 def cmd_info(manager: InstanceManager, tmux: TmuxManager, args) -> None:
     inst   = resolve_instance(manager, args.name)
     status = tmux.get_status(inst)
@@ -855,9 +991,9 @@ def _enable_fatal_trace_dump() -> None:
     for this class of bug than a stripped native backtrace. This costs
     nothing at runtime and has no effect unless a fatal signal occurs.
     """
+    import datetime
     import faulthandler
     from pathlib import Path
-    import datetime
 
     log_dir = Path.home() / ".local" / "share" / "crucible"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -876,8 +1012,8 @@ def _enable_fatal_trace_dump() -> None:
 
 def cmd_gui(manager: InstanceManager) -> None:
     try:
-        from PyQt6.QtWidgets import QApplication
         from PyQt6.QtGui import QIcon
+        from PyQt6.QtWidgets import QApplication
     except ImportError:
         err("PyQt6 is not installed.")
         dim("Install with:  pip install PyQt6")
@@ -887,8 +1023,9 @@ def cmd_gui(manager: InstanceManager) -> None:
 
     import sys as _sys
     from pathlib import Path
-    from .ui.theme import STYLESHEET
+
     from .ui.main_window import MainWindow
+    from .ui.theme import STYLESHEET
 
     app = QApplication(_sys.argv)
     app.setApplicationName("Crucible")
@@ -1093,7 +1230,6 @@ def readiness_report_for(inst) -> list:
 
 
 def cmd_update_pack(manager: InstanceManager, tmux: TmuxManager, args) -> None:
-    from crucible.data.backup_manager import BackupManager
     from crucible.importers import pack_update
 
     inst = resolve_instance(manager, args.name)
@@ -1156,19 +1292,23 @@ def cmd_update_pack(manager: InstanceManager, tmux: TmuxManager, args) -> None:
             dim("  Aborted; nothing was changed.")
             return
 
-    bm = BackupManager(inst)
-    world = inst.world_root_path()
+    from .data.fleet_backup import FleetBackupManager, fleet_operation_lock
 
-    def _backup() -> str:
-        label = f"Before update {ident.version or 'unknown'} -> {target.version}"
-        return str(bm.create_backup(slot_name=label))
+    fleet = FleetBackupManager(manager.instances, tmux)
+    # Hold the shared lock across both the checkpoint and the complete pack
+    # replacement. A scheduled timer must not snapshot the staged/renamed
+    # server folder while apply_update is in progress.
+    with fleet_operation_lock(fleet.root):
+        def _backup() -> str:
+            generation = fleet.run_backup(operation_lock_held=True)
+            return str(generation.path)
 
-    res = pack_update.apply_update(
-        inst, plan,
-        backup_cb=_backup if world.is_dir() else None,
-        log_cb=lambda m: dim(f"      {m}"),
-        keep_previous=not args.no_keep_previous,
-    )
+        res = pack_update.apply_update(
+            inst, plan,
+            backup_cb=_backup,
+            log_cb=lambda m: dim(f"      {m}"),
+            keep_previous=not args.no_keep_previous,
+        )
 
     print()
     for line in res.messages:
@@ -1179,7 +1319,7 @@ def cmd_update_pack(manager: InstanceManager, tmux: TmuxManager, args) -> None:
 
     ok(f"  {res.summary()}")
     if res.backup_path:
-        dim(f"      world backup: {res.backup_path}")
+        dim(f"      fleet backup generation: {res.backup_path}")
     if res.previous_dir:
         dim(f"      previous install: {res.previous_dir}")
         dim(f"      undo with: crucible rollback {inst.name!r}")
@@ -1522,6 +1662,34 @@ def build_parser() -> argparse.ArgumentParser:
     p_val = sub.add_parser("validate", help="Validate instance paths and config")
     p_val.add_argument("name", nargs="?", help="Instance name or ID (omit for all)")
 
+    # backup-fleet
+    p_backup = sub.add_parser(
+        "backup-fleet",
+        help="Capture every registered server; retain exactly two complete fleet generations",
+        description=(
+            "Create one complete fleet backup generation. Stopped servers are copied directly; "
+            "running servers are flushed and temporarily placed in save-off mode. "
+            "Crucible never starts a server for backup."
+        ),
+    )
+    backup_modes = p_backup.add_mutually_exclusive_group()
+    backup_modes.add_argument(
+        "--list", action="store_true",
+        help="List complete, verified fleet generations without creating a new one",
+    )
+    backup_modes.add_argument(
+        "--verify", action="store_true",
+        help="Deep-verify every retained generation and all file SHA-256 checksums",
+    )
+    backup_modes.add_argument(
+        "--install-timer", action="store_true",
+        help="Install and enable the systemd user timer for ten-minute fleet backups",
+    )
+    backup_modes.add_argument(
+        "--remove-timer", action="store_true",
+        help="Disable the automatic timer without deleting any backup generations",
+    )
+
     # info
     p_info = sub.add_parser("info", help="Show full details for one instance")
     p_info.add_argument("name", help="Instance name or ID prefix")
@@ -1583,6 +1751,7 @@ def main() -> None:
         "doctor":   lambda: cmd_doctor(manager, tmux, args),
         "validate": lambda: cmd_validate(manager, args),
         "info":     lambda: cmd_info(manager, tmux, args),
+        "backup-fleet": lambda: cmd_backup_fleet(manager, tmux, args),
         "edit":     lambda: cmd_edit(manager, args),
         "check-updates": lambda: cmd_check_updates(manager, args),
         "update":   lambda: cmd_update_pack(manager, tmux, args),
