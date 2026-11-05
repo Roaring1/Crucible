@@ -1105,11 +1105,11 @@ def _is_text_config_entry(name: str) -> bool:
 
 
 def _privacy_findings(name: str, raw: bytes) -> list[str]:
-    if b"\\x00" in raw[:4096]:
+    if b"\x00" in raw[:4096]:
         return []
     text = raw.decode("utf-8", "ignore")
     findings = []
-    credential_text = "\\n".join(
+    credential_text = "\n".join(
         line for line in text.splitlines()
         if not line.lstrip().startswith(("#", "//", ";"))
     )
@@ -1123,13 +1123,13 @@ def _privacy_findings(name: str, raw: bytes) -> list[str]:
         scan_text = credential_text if category == "credential assignment" else text
         for match in pattern.finditer(scan_text):
             if category == "credential assignment":
-                value = match.group(1)[:128].strip().strip("\\"'").lower()
+                value = match.group(1)[:128].strip().strip(chr(34) + chr(39)).lower()
                 if value in {"", "false", "null", "none", "changeme", "password", "example"}:
                     continue
                 if value.startswith(_PLACEHOLDER_PREFIXES):
                     continue
             if category == "private IPv4 address":
-                prefix = re.match(r"/(8|12|16)\\b", scan_text[match.end():])
+                prefix = re.match(r"/(8|12|16)\b", scan_text[match.end():])
                 if prefix and (match.group(0), prefix.group(1)) in standard_private_networks:
                     continue
             found = True
