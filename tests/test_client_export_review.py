@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import tempfile
 import unittest
@@ -308,9 +309,15 @@ class ClientExportReviewTests(unittest.TestCase):
                 output = root / f"{fmt}.zip"
                 original_builder = getattr(client_export, builder_name)
 
-                def replace_jar_before_packaging(*args, **kwargs):
-                    jar.write_bytes(prohibited_bytes)
-                    return original_builder(*args, **kwargs)
+                def replace_jar_before_packaging(
+                    *args,
+                    _jar=jar,
+                    _prohibited_bytes=prohibited_bytes,
+                    _original_builder=original_builder,
+                    **kwargs,
+                ):
+                    _jar.write_bytes(_prohibited_bytes)
+                    return _original_builder(*args, **kwargs)
 
                 with self._with_catalog(catalog_path), patch.object(
                     client_export, builder_name, side_effect=replace_jar_before_packaging
@@ -428,6 +435,33 @@ class ClientExportReviewTests(unittest.TestCase):
                 review["warnings"],
             )
 
+    def test_nested_config_archive_is_scanned_for_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            config = server / "config"
+            config.mkdir(parents=True)
+            nested_bytes = io.BytesIO()
+            with zipfile.ZipFile(nested_bytes, "w") as nested:
+                nested.writestr(
+                    "guide/settings.json",
+                    '{"api_key":"nested-secret-value-that-must-not-leak"}',
+                )
+                nested.writestr("guide/icon.png", b"\x89PNG\r\n\x1a\n")
+            (config / "DefaultGuide.zip").write_bytes(nested_bytes.getvalue())
+            output = root / "nested-config.zip"
+            result = client_export.export(self._instance(server), output, fmt="prism")
+            self.assertTrue(result.ok, result.error)
+            self.assertTrue(
+                any("possible credential assignment" in warning and "DefaultGuide.zip!/" in warning
+                    for warning in result.warnings),
+                result.warnings,
+            )
+            self.assertFalse(
+                any("nested-secret-value" in warning for warning in result.warnings),
+                result.warnings,
+            )
+
     def test_manifest_warns_and_names_config_files_over_scan_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -435,7 +469,7 @@ class ClientExportReviewTests(unittest.TestCase):
             config = server / "config"
             config.mkdir(parents=True)
             oversized = config / "large.toml"
-            oversized.write_bytes(b"safe_key = true\n" + b"# padding\n" * 120000)
+            oversized.write_bytes(b"safe_key = true\n" + b"# padding\n" * 900000)
             output = root / "large-config.zip"
             result = client_export.export(self._instance(server), output, fmt="prism")
             self.assertTrue(result.ok, result.error)
@@ -466,6 +500,63 @@ class ClientExportReviewTests(unittest.TestCase):
                 self.assertTrue(client_export._is_text_config_entry(path))
         self.assertFalse(client_export._is_text_config_entry("Pack/.minecraft/config/example.png"))
         self.assertFalse(client_export._is_text_config_entry("Pack/.minecraft/config/stack-cache.emic"))
+
+    def test_privacy_scan_ignores_comments_and_standard_private_network_blocks(self):
+        raw = (
+            b"# password=example-secret-value-that-is-not-active\n"
+            b"# example bind address 192.168.1.42\n"
+            b"deny ip 10.0.0.0/8\n"
+            b"deny ip 172.16.0.0/12\n"
+            b"deny ip 192.168.0.0/16\n"
+        )
+        self.assertEqual([], client_export._privacy_findings("config/OpenComputers.cfg", raw))
+
+    def test_gtnh_quest_and_localization_text_files_are_privacy_scanned(self):
+        for name in (
+            "config/betterquesting/DefaultQuests/Quests/Quest.json",
+            "config/NEI/local.lang",
+            "config/guide/README.md",
+            "config/opencomputers/gtnh.recipes",
+            "config/mod/settings.config",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(client_export._is_text_config_entry(name))
+
+    def test_gtnh_tsv_and_hidden_config_text_files_are_scanned(self):
+        for name in (
+            "config/guidenh/abs_recipe_tables.tsv",
+            "config/TooMuchLoot/loot/generated/.firstrun.hidden",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(client_export._is_text_config_entry(name))
+
+    def test_known_binary_config_assets_are_excluded_by_type(self):
+        for name in (
+            "config/guide/icon.png",
+            "config/guide/background.jpg",
+            "config/sounds/cue.ogg",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(client_export._is_known_binary_config_entry(name))
+                self.assertFalse(client_export._is_text_config_entry(name))
+
+    def test_privacy_scan_does_not_borrow_next_line_for_empty_password(self):
+        raw = (
+            b"S:opisrcon.password=\n"
+            b"B:opisrcon.enabled=THIS_IS_A_LONG_VALUE_BUT_NOT_A_PASSWORD\n"
+        )
+        findings = client_export._privacy_findings("config/Opis.cfg", raw)
+        self.assertFalse(any("credential assignment" in item for item in findings), findings)
+
+    def test_privacy_scan_still_flags_active_private_hosts_and_credentials(self):
+        raw = (
+            b"bindAddress=192.168.1.42\n"
+            b"password=actual-secret-value-12345\n"
+        )
+        findings = client_export._privacy_findings("config/Opis.cfg", raw)
+        self.assertTrue(any("private IPv4 address" in item for item in findings), findings)
+        self.assertTrue(any("credential assignment" in item for item in findings), findings)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,13 +10,15 @@ jars are bundled, so nothing needs re-downloading):
   * prism      - MultiMC/Prism instance .zip; "Add Instance -> Import from zip"
   * curseforge - CurseForge-style manifest zip with overrides
 
-Explicit loader environment metadata excludes server-only jars. Unknown sides
-are preserved and reported, not inferred from filenames.
+Explicit loader environment metadata and a small set of known legacy server-only
+hints exclude server-only jars. An exact match in the selected installed client
+profile confirms a shared unknown-side JAR; unmatched unknown sides are reported.
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -40,7 +42,7 @@ _MRPACK_DEP = {
     "fabric": "fabric-loader",
     "quilt": "quilt-loader",
 }
-_SERVER_ONLY_HINTS = ("spark", "server-only", "serverutilities", "ledger")
+_SERVER_ONLY_HINTS = ("spark", "server-only", "ledger", "journeymapserver")
 # Only these KubeJS subfolders are appropriate to share with a client. In
 # particular, server_scripts/ and generated data/export dumps are never shipped.
 _KUBEJS_CLIENT_DIRS = frozenset({"client_scripts", "startup_scripts", "assets", "config"})
@@ -154,7 +156,7 @@ def compute_input_fingerprint(
     included. Excluded resource packs are represented only by their presence,
     because that affects the review warning but not the archive payload.
     """
-    server = Path(getattr(instance, "path")).expanduser()
+    server = Path(instance.path).expanduser()
     if not server.is_dir() or server.is_symlink():
         raise OSError("The server folder is unavailable for fingerprinting.")
     server = server.resolve(strict=True)
@@ -297,6 +299,14 @@ def _is_server_only(name: str) -> bool:
     return any(h in low for h in _SERVER_ONLY_HINTS)
 
 
+_BACKUP_CONFIG_SUFFIXES = {".bak", ".old", ".orig", ".backup", ".tmp", ".swp"}
+
+
+def _is_backup_config_artifact(path: Path) -> bool:
+    """Return whether a config file is a stale editor/backup artifact, not a runtime input."""
+    return path.name.lower().endswith("~") or path.suffix.lower() in _BACKUP_CONFIG_SUFFIXES
+
+
 def _merge_config_dirs(
     server_path: Path,
     client_minecraft_root: Path | None,
@@ -308,6 +318,7 @@ def _merge_config_dirs(
     """Stage client-shareable config/KubeJS and optional resource packs safely."""
     merged_roots: list[Path] = []
     warnings: list[str] = []
+    excluded_config_backups: list[str] = []
 
     for dirname in (("config", "kubejs") if include_config else ()):
         sources = [(server_path / dirname, "server")]
@@ -355,6 +366,9 @@ def _merge_config_dirs(
                     raise OSError(
                         f"Special files are not exported from {source_kind} {dirname}/: {relative.as_posix()}"
                     )
+                if _is_backup_config_artifact(relative):
+                    excluded_config_backups.append(f"{dirname}/{relative.as_posix()}")
+                    continue
                 resolved = entry.resolve(strict=True)
                 try:
                     resolved.relative_to(root)
@@ -364,13 +378,16 @@ def _merge_config_dirs(
                     ) from exc
 
                 target = destination_root / relative
+                if (
+                    target.exists()
+                    and _sha256_file(target) != _sha256_file(resolved)
+                    and source_kind == "client"
+                ):
+                    warnings.append(
+                        f"Client profile configuration differs from the server copy; the server file was kept: "
+                        f"{dirname}/{relative.as_posix()}."
+                    )
                 if target.exists():
-                    if _sha256_file(target) != _sha256_file(resolved):
-                        if source_kind == "client":
-                            warnings.append(
-                                f"Client profile configuration differs from the server copy; the server file was kept: "
-                                f"{dirname}/{relative.as_posix()}."
-                            )
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(resolved, target)
@@ -415,6 +432,13 @@ def _merge_config_dirs(
                 warnings.append(
                     "Client resource packs from the selected Prism profile were included by explicit owner choice; review whether each pack is required and licensed for sharing."
                 )
+    if excluded_config_backups:
+        shown = ", ".join(excluded_config_backups[:8])
+        if len(excluded_config_backups) > 8:
+            shown += f", and {len(excluded_config_backups) - 8} more"
+        warnings.append(
+            f"Excluded {len(excluded_config_backups)} backup/temporary config artifact(s) from the player pack: {shown}."
+        )
     # The same excluded KubeJS root can exist in both server and client source;
     # report a warning once rather than making the review list noisy.
     return merged_roots, list(dict.fromkeys(warnings))
@@ -425,7 +449,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
            include_resourcepacks: bool = False,
            expected_input_fingerprint: str = "") -> ExportResult:
     """Build a client instance file from a server instance."""
-    server = Path(getattr(instance, "path"))
+    server = Path(instance.path)
     name = getattr(instance, "name", "Server")
     mc = (getattr(instance, "minecraft_version", "") or "").strip()
     loader = (getattr(instance, "loader", "") or "vanilla").strip().lower()
@@ -468,9 +492,10 @@ def export(instance, out_path, fmt: str = "mrpack", *,
     client_minecraft_root = None
     client_resourcepacks_present = False
     client_shaderpacks_present = False
-    from ..mods.mod_manager import ModManager, ModEntry
+    from ..mods.mod_manager import ModEntry, ModManager
     inspector = ModManager(instance)
     ship, skipped, unknown = [], [], []
+    unknown_by_hash = {}
     server_mod_ids = set()
     for j in _enabled_mods(server):
         if j.is_symlink():
@@ -479,11 +504,13 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         inspector.inspect_jar(entry)
         if entry.mod_id:
             server_mod_ids.add(entry.mod_id)
-        if entry.side == "server":
+        if entry.side == "server" or _is_server_only(j.name) or _is_server_only(entry.mod_id or ""):
             skipped.append(j)
         else:
             ship.append(j)
-            if entry.side == "unknown": unknown.append(j.name)
+            if entry.side == "unknown":
+                unknown.append(j.name)
+                unknown_by_hash[_sha256_file(j)] = j.name
     if client_source:
         source = Path(client_source).expanduser()
         if source.is_symlink():
@@ -616,15 +643,19 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         client_unknown_included = []
         client_server_only = []
         source_conflicts = []
+        client_confirmed_unknown = set()
         for j in sorted(client_mods.glob("*.jar")):
             if j.is_symlink():
                 return ExportResult(error=f"The client source contains a symbolic-link mod: {j.name}. No archive was written.")
             digest = _sha256_file(j)
             if digest in hashes:
+                # Exact bytes in the selected client profile confirm client use.
+                if digest in unknown_by_hash:
+                    client_confirmed_unknown.add(unknown_by_hash[digest])
                 continue
             entry = ModEntry(j.name, j, True, j.stat().st_size)
             inspector.inspect_jar(entry)
-            if entry.side == "server":
+            if entry.side == "server" or _is_server_only(j.name) or _is_server_only(entry.mod_id or ""):
                 client_server_only.append(j.name)
                 continue
             # Shared server JARs are authoritative. Never introduce a second
@@ -651,6 +682,8 @@ def export(instance, out_path, fmt: str = "mrpack", *,
                 hashes.add(digest)
                 if entry.side == "unknown":
                     client_unknown_included.append(j.name)
+        if client_confirmed_unknown:
+            unknown = [name for name in unknown if name not in client_confirmed_unknown]
     else:
         client_unknown_included = []
         client_server_only = []
@@ -851,6 +884,11 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         return ExportResult(error=f"Could not write {fmt} file: {e}")
 
     warnings = ([f"{len(unknown)} mod(s) have unknown client compatibility; test this pack in Prism before sharing."] if unknown else [])
+    if skipped:
+        shown = ", ".join(j.name for j in skipped[:8])
+        if len(skipped) > 8:
+            shown += f", and {len(skipped) - 8} more"
+        warnings.append("Known server-only JAR(s) were excluded from the client pack: " + shown)
     if excluded_defaultconfigs:
         warnings.append("defaultconfigs/ was excluded from the client pack; review whether any required player config belongs in config/ or kubejs/.")
     if client_resourcepacks_present and not include_resourcepacks:
@@ -951,6 +989,24 @@ def _build_mrpack(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
     return warnings
 
 
+def _default_prism_options(mc: str) -> str | None:
+    """Return a small, privacy-safe recipient defaults file for GTNH 1.7.10.
+
+    The template is generated rather than copied from the owner's Prism profile.
+    Minecraft 1.7.10 has no auto-jump option; omitted options retain game defaults.
+    mouseSensitivity is displayed on a 0-200% scale, so 0.35 is approximately 70%.
+    """
+    if mc != "1.7.10":
+        return None
+    return (
+        "mouseSensitivity:0.35\n"
+        "renderDistance:8\n"
+        "key_key.inventory:18\n"
+        "key_key.sneak:42\n"
+        "key_key.sprint:29\n"
+    )
+
+
 def _build_prism(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
     components = [{"uid": "net.minecraft", "version": mc}]
     uid = _PRISM_UID.get(loader)
@@ -971,6 +1027,9 @@ def _build_prism(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
         zf.writestr(f"{folder}/mmc-pack.json", json.dumps(mmc_pack, indent=2))
         for j in jars:
             zf.write(j, f"{folder}/.minecraft/mods/{j.name}", compress_type=zipfile.ZIP_STORED)
+        default_options = _default_prism_options(mc)
+        if default_options is not None:
+            zf.writestr(f"{folder}/.minecraft/options.txt", default_options)
         for d in cfg_dirs:
             warnings.extend(_add_dir(zf, d, f"{folder}/.minecraft"))
     return warnings
@@ -1002,17 +1061,21 @@ def _safe_name(name: str) -> str:
 # Keep the per-file scan bounded. Mod JARs are binary and are not scanned for
 # text secrets here; only included config/KubeJS entries are inspected. The
 # manifest hashes every archive member, regardless of whether it is scannable.
-_MAX_PRIVACY_FILE_BYTES = 1024 * 1024
-_MAX_PRIVACY_TOTAL_BYTES = 16 * 1024 * 1024
+_MAX_PRIVACY_FILE_BYTES = 8 * 1024 * 1024
+_MAX_PRIVACY_TOTAL_BYTES = 256 * 1024 * 1024
 _MAX_PRIVACY_FINDINGS = 50
+_MAX_NESTED_CONFIG_ARCHIVE_BYTES = 64 * 1024 * 1024
 _TEXT_CONFIG_SUFFIXES = {
     "", ".cfg", ".conf", ".env", ".ini", ".json", ".json5", ".js", ".mjs",
     ".properties", ".ps1", ".sh", ".toml", ".txt", ".xml", ".yaml", ".yml",
-    ".lua", ".jsonc", ".snbt", ".bak", ".css", ".local",
+    ".lua", ".jsonc", ".snbt", ".bak", ".css", ".local", ".md", ".lang",
+    ".recipe", ".recipes", ".cache", ".config", ".csv", ".tsv", ".mcmeta",
+    ".obj", ".patch", ".hidden",
 }
+_BINARY_CONFIG_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".ogg", ".wav", ".mp3"}
 _SECRET_PATTERNS = [
     ("credential assignment", re.compile(
-        r'''(?im)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|passwd|webhook|authorization|auth[_-]?token)\b\s*[:=]\s*["']?([^\s"'#,;]{16,})'''
+        r'''(?im)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|passwd|webhook|authorization|auth[_-]?token)\b["']?[ \t]*[:=][ \t]*["']?([^\s"'#,;]{16,})'''
     )),
     ("GitHub token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
     ("Discord webhook", re.compile(r"https?://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9._-]{20,}", re.IGNORECASE)),
@@ -1049,19 +1112,37 @@ def _is_text_config_entry(name: str) -> bool:
     return _is_config_entry(name) and Path(name).suffix.lower() in _TEXT_CONFIG_SUFFIXES
 
 
+def _is_known_binary_config_entry(name: str) -> bool:
+    return _is_config_entry(name) and Path(name).suffix.lower() in _BINARY_CONFIG_SUFFIXES
+
+
 def _privacy_findings(name: str, raw: bytes) -> list[str]:
     if b"\x00" in raw[:4096]:
         return []
     text = raw.decode("utf-8", "ignore")
     findings = []
+    credential_text = "\n".join(
+        line for line in text.splitlines()
+        if not line.lstrip().startswith(("#", "//", ";"))
+    )
+    standard_private_networks = {
+        ("10.0.0.0", "8"),
+        ("172.16.0.0", "12"),
+        ("192.168.0.0", "16"),
+    }
     for category, pattern in _SECRET_PATTERNS:
         found = False
-        for match in pattern.finditer(text):
+        scan_text = credential_text if category in {"credential assignment", "private IPv4 address"} else text
+        for match in pattern.finditer(scan_text):
             if category == "credential assignment":
-                value = match.group(1)[:128].strip().strip("\"'").lower()
+                value = match.group(1)[:128].strip().strip(chr(34) + chr(39)).lower()
                 if value in {"", "false", "null", "none", "changeme", "password", "example"}:
                     continue
                 if value.startswith(_PLACEHOLDER_PREFIXES):
+                    continue
+            if category == "private IPv4 address":
+                prefix = re.match(r"/(8|12|16)\b", scan_text[match.end():])
+                if prefix and (match.group(0), prefix.group(1)) in standard_private_networks:
                     continue
             found = True
             break
@@ -1072,6 +1153,66 @@ def _privacy_findings(name: str, raw: bytes) -> list[str]:
         if len(findings) >= _MAX_PRIVACY_FINDINGS:
             break
     return findings
+
+def _scan_nested_config_archive(
+    name: str,
+    raw: bytes,
+    *,
+    scan_bytes: int,
+) -> tuple[list[str], int, list[str], int, list[str], int]:
+    """Scan text files inside an included config archive without extracting it."""
+    findings = []
+    incomplete_count = 0
+    incomplete_examples = []
+    unsupported_count = 0
+    unsupported_examples = []
+    binary_skipped = 0
+    try:
+        nested = zipfile.ZipFile(io.BytesIO(raw), "r")
+    except (OSError, zipfile.BadZipFile):
+        return [], 0, [], 1, [name], 0
+
+    with nested:
+        for info in nested.infolist():
+            if info.is_dir():
+                continue
+            member_name = f"{name}!/{info.filename}"
+            suffix = Path(info.filename).suffix.lower()
+            if suffix in _BINARY_CONFIG_SUFFIXES:
+                continue
+            if suffix not in _TEXT_CONFIG_SUFFIXES:
+                unsupported_count += 1
+                if len(unsupported_examples) < 10:
+                    unsupported_examples.append(member_name)
+                continue
+            if info.file_size > _MAX_PRIVACY_FILE_BYTES or (
+                scan_bytes + info.file_size > _MAX_PRIVACY_TOTAL_BYTES
+            ):
+                incomplete_count += 1
+                if len(incomplete_examples) < 10:
+                    incomplete_examples.append(member_name)
+                continue
+            try:
+                content = nested.read(info)
+            except (OSError, RuntimeError, zipfile.BadZipFile):
+                incomplete_count += 1
+                if len(incomplete_examples) < 10:
+                    incomplete_examples.append(member_name)
+                continue
+            if b"\x00" in content[:4096]:
+                binary_skipped += 1
+                continue
+            findings.extend(_privacy_findings(member_name, content))
+            scan_bytes += info.file_size
+    return (
+        findings,
+        incomplete_count,
+        incomplete_examples,
+        unsupported_count,
+        unsupported_examples,
+        binary_skipped,
+        scan_bytes,
+    )
 
 
 def _seal_archive(
@@ -1116,18 +1257,31 @@ def _seal_archive(
                 raise OSError(f"Source files collide with generated manifest path: {manifest_name!r}")
 
             text_candidate = _is_text_config_entry(member_name)
+            nested_archive_candidate = (
+                _is_config_entry(member_name)
+                and Path(member_name).suffix.lower() == ".zip"
+            )
+            if nested_archive_candidate and info.file_size > _MAX_NESTED_CONFIG_ARCHIVE_BYTES:
+                scan_incomplete_count += 1
+                if len(scan_incomplete_examples) < 10:
+                    scan_incomplete_examples.append(member_name)
+                nested_archive_candidate = False
             should_scan = False
             sample = bytearray()
-            if _is_config_entry(member_name) and not text_candidate:
+            if (
+                _is_config_entry(member_name)
+                and not text_candidate
+                and not nested_archive_candidate
+                and not _is_known_binary_config_entry(member_name)
+            ):
                 unsupported_config_count += 1
                 if len(unsupported_config_examples) < 10:
                     unsupported_config_examples.append(member_name)
             if text_candidate:
-                if info.file_size > _MAX_PRIVACY_FILE_BYTES:
-                    scan_incomplete_count += 1
-                    if len(scan_incomplete_examples) < 10:
-                        scan_incomplete_examples.append(member_name)
-                elif scan_bytes + info.file_size > _MAX_PRIVACY_TOTAL_BYTES:
+                if (
+                    info.file_size > _MAX_PRIVACY_FILE_BYTES
+                    or scan_bytes + info.file_size > _MAX_PRIVACY_TOTAL_BYTES
+                ):
                     scan_incomplete_count += 1
                     if len(scan_incomplete_examples) < 10:
                         scan_incomplete_examples.append(member_name)
@@ -1141,8 +1295,34 @@ def _seal_archive(
                     if not chunk:
                         break
                     digest.update(chunk)
-                    if should_scan:
+                    if should_scan or nested_archive_candidate:
                         sample.extend(chunk)
+
+            if nested_archive_candidate:
+                (
+                    nested_findings,
+                    nested_incomplete,
+                    nested_incomplete_examples,
+                    nested_unsupported,
+                    nested_unsupported_examples,
+                    nested_binary_skipped,
+                    scan_bytes,
+                ) = _scan_nested_config_archive(
+                    member_name, bytes(sample), scan_bytes=scan_bytes
+                )
+                scan_incomplete_count += nested_incomplete
+                scan_incomplete_examples.extend(
+                    nested_incomplete_examples[:max(0, 10 - len(scan_incomplete_examples))]
+                )
+                unsupported_config_count += nested_unsupported
+                unsupported_config_examples.extend(
+                    nested_unsupported_examples[:max(0, 10 - len(unsupported_config_examples))]
+                )
+                binary_config_skipped += nested_binary_skipped
+                remaining_findings = max(0, _MAX_PRIVACY_FINDINGS - len(privacy_warnings))
+                privacy_warnings.extend(nested_findings[:remaining_findings])
+                if len(nested_findings) > remaining_findings:
+                    privacy_findings_truncated = True
 
             if should_scan:
                 scan_bytes += info.file_size
@@ -1207,8 +1387,8 @@ def _seal_archive(
         "privacyReview": {
             "scanner": "bounded heuristic pattern scan; this is not a guarantee that a pack contains no secrets",
             "scope": (
-                "Scans eligible text files under included config/ and KubeJS/ roots only. "
-                "Binary/unknown config files, oversized files, mod JARs, resource packs, and other payloads are not inspected for secrets."
+                "Scans supported text files under included config/ and KubeJS/ roots only. "
+                "Known image/audio assets are excluded by type; unknown/binary config files, oversized files, mod JARs, resource packs, and other payloads are not inspected for secrets."
             ),
             "coverageComplete": (
                 not scan_incomplete_count
