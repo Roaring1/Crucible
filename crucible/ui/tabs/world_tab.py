@@ -56,7 +56,6 @@ from PyQt6.QtWidgets import (
 from ...data.backup_manager import (
     BackupEntry,
     BackupManager,
-    ResetWorldWorker,
     SwapResult,
 )
 from ...data.fleet_backup import (
@@ -117,12 +116,14 @@ class _FleetWorldActionWorker(QObject):
         instance: ServerInstance,
         action: str,
         entry: BackupEntry | None = None,
+        new_level_name: str | None = None,
     ):
         super().__init__()
         self._instances = list(instances)
         self._instance = instance
         self._action = action
         self._entry = entry
+        self._new_level_name = new_level_name
 
     def run(self) -> None:
         try:
@@ -223,13 +224,9 @@ class _FleetWorldActionWorker(QObject):
 
             if self._action == "reset":
                 reset = manager.reset_world(
+                    new_level_name=self._new_level_name,
                     safety_backup_verified=True,
-                    retain_pre_swap_dir=False,
                     fleet_generation_id=before.generation_id,
-                )
-                reset.message += (
-                    f" The prior complete server state is in fleet generation "
-                    f"{before.generation_id}."
                 )
                 self.finished.emit({
                     "action": "reset", "result": reset, "before": before
@@ -782,7 +779,13 @@ class WorldTab(QWidget):
             return
         self._start_fleet_action("backup")
 
-    def _start_fleet_action(self, action: str, entry: BackupEntry | None = None) -> None:
+    def _start_fleet_action(
+        self,
+        action: str,
+        entry: BackupEntry | None = None,
+        *,
+        new_level_name: str | None = None,
+    ) -> None:
         if not self._instance_manager or not self._instance:
             QMessageBox.warning(
                 self, "Fleet backup",
@@ -801,6 +804,7 @@ class WorldTab(QWidget):
             self._instance,
             action,
             entry,
+            new_level_name,
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -1029,7 +1033,7 @@ class WorldTab(QWidget):
         if current_root.is_dir():
             recovery_details = (
                 "Before the next manual start, Crucible will:\n"
-                " - Create a mandatory verified backup of the current world\n"
+                " - Create a complete verified fleet checkpoint\n"
                 " - Keep the old world folder on disk as an extra recovery copy\n"
                 f" - Set this server's level-name to '{new_name}'"
             )
@@ -1050,27 +1054,7 @@ class WorldTab(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        self._begin_operation("reset")
-        self._active_manager = self._manager
-        self._thread = QThread()
-        self._worker = ResetWorldWorker(self._active_manager, new_level_name=new_name)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.progress.connect(self._progress.setValue)
-        self._worker.finished.connect(self._on_reset_done)
-        self._worker.failed.connect(self._on_reset_failed)
-        self._worker.finished.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._worker.finished.connect(self._worker.deleteLater)
-        self._worker.failed.connect(self._worker.deleteLater)
-        connect_thread_cleanup(self._thread, self._thread_finished)
-        self._thread.start()
-
-    def _on_reset_done(self, result: SwapResult) -> None:
-        self._op_result = ("done", result)
-
-    def _on_reset_failed(self, error: str) -> None:
-        self._op_result = ("failed", error)
+        self._start_fleet_action("reset", new_level_name=new_name)
 
     # Wipe World action
 
@@ -1199,16 +1183,24 @@ class WorldTab(QWidget):
                 )
         elif kind == "reset" and result:
             if result[0] == "done":
-                reset_result: SwapResult = result[1]
+                payload = result[1]
+                reset_result: SwapResult = payload["result"]
                 if self._config_reload is not None:
                     self._config_reload()
+                recovery_note = (
+                    f"The previous world folder remains at {reset_result.pre_swap_dir}."
+                    if reset_result.pre_swap_dir is not None
+                    else "There was no generated active world folder to move."
+                )
                 QMessageBox.information(
                     self, "New world ready",
                     f"{reset_result.message}\n\n"
-                    "Your previous world is saved in Saved Worlds and its original "
-                    "folder remains available under Old world copies. Start the server "
+                    f"{recovery_note} The complete prior server state is preserved in "
+                    f"fleet generation {payload['before'].generation_id}. Start the server "
                     "manually when you're ready; Crucible will not start it for you.",
                 )
+            elif result[0] == "failed":
+                QMessageBox.critical(self, "Create new world failed", result[1])
         elif kind == "wipe" and result:
             if result[0] == "done":
                 wipe_result: SwapResult = result[1]["result"]
