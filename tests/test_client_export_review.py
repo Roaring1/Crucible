@@ -477,6 +477,27 @@ class ClientExportReviewTests(unittest.TestCase):
         )
         self.assertEqual([], client_export._privacy_findings("config/OpenComputers.cfg", raw))
 
+    def test_gtnh_quest_and_localization_text_files_are_privacy_scanned(self):
+        for name in (
+            "config/betterquesting/DefaultQuests/Quests/Quest.json",
+            "config/NEI/local.lang",
+            "config/guide/README.md",
+            "config/opencomputers/gtnh.recipes",
+            "config/mod/settings.config",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(client_export._is_text_config_entry(name))
+
+    def test_known_binary_config_assets_are_excluded_by_type(self):
+        for name in (
+            "config/guide/icon.png",
+            "config/guide/background.jpg",
+            "config/sounds/cue.ogg",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(client_export._is_known_binary_config_entry(name))
+                self.assertFalse(client_export._is_text_config_entry(name))
+
     def test_privacy_scan_does_not_borrow_next_line_for_empty_password(self):
         raw = (
             b"S:opisrcon.password=\n"
