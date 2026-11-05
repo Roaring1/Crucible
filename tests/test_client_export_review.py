@@ -516,6 +516,14 @@ class ClientExportReviewTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue(client_export._is_text_config_entry(name))
 
+    def test_gtnh_tsv_and_hidden_config_text_files_are_scanned(self):
+        for name in (
+            "config/guidenh/abs_recipe_tables.tsv",
+            "config/TooMuchLoot/loot/generated/.firstrun.hidden",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(client_export._is_text_config_entry(name))
+
     def test_known_binary_config_assets_are_excluded_by_type(self):
         for name in (
             "config/guide/icon.png",
