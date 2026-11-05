@@ -40,7 +40,7 @@ _MRPACK_DEP = {
     "fabric": "fabric-loader",
     "quilt": "quilt-loader",
 }
-_SERVER_ONLY_HINTS = ("spark", "server-only", "serverutilities", "ledger")
+_SERVER_ONLY_HINTS = ("spark", "server-only", "serverutilities", "ledger", "journeymapserver")
 # Only these KubeJS subfolders are appropriate to share with a client. In
 # particular, server_scripts/ and generated data/export dumps are never shipped.
 _KUBEJS_CLIENT_DIRS = frozenset({"client_scripts", "startup_scripts", "assets", "config"})
@@ -951,6 +951,24 @@ def _build_mrpack(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
     return warnings
 
 
+def _default_prism_options(mc: str) -> str | None:
+    """Return a small, privacy-safe recipient defaults file for GTNH 1.7.10.
+
+    The template is generated rather than copied from the owner's Prism profile.
+    Minecraft 1.7.10 has no auto-jump option; omitted options retain game defaults.
+    mouseSensitivity is displayed on a 0-200% scale, so 0.35 is approximately 70%.
+    """
+    if mc != "1.7.10":
+        return None
+    return (
+        "mouseSensitivity:0.35\\n"
+        "renderDistance:8\\n"
+        "key_key.inventory:18\\n"
+        "key_key.sneak:42\\n"
+        "key_key.sprint:29\\n"
+    )
+
+
 def _build_prism(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
     components = [{"uid": "net.minecraft", "version": mc}]
     uid = _PRISM_UID.get(loader)
@@ -971,6 +989,9 @@ def _build_prism(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
         zf.writestr(f"{folder}/mmc-pack.json", json.dumps(mmc_pack, indent=2))
         for j in jars:
             zf.write(j, f"{folder}/.minecraft/mods/{j.name}", compress_type=zipfile.ZIP_STORED)
+        default_options = _default_prism_options(mc)
+        if default_options is not None:
+            zf.writestr(f"{folder}/.minecraft/options.txt", default_options)
         for d in cfg_dirs:
             warnings.extend(_add_dir(zf, d, f"{folder}/.minecraft"))
     return warnings
