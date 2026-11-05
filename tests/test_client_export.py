@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from crucible.exporters import client_export
+from crucible.ui.share_players_dialog import _validate_review_manifest
 
 
 class ClientExportTests(unittest.TestCase):
@@ -117,6 +119,7 @@ class ClientExportTests(unittest.TestCase):
             with zipfile.ZipFile(output) as archive:
                 exported = json.loads(archive.read("GTNH/mmc-pack.json"))
                 instance_cfg = archive.read("GTNH/instance.cfg").decode("utf-8")
+                manifest = json.loads(archive.read(result.manifest_path))
                 self.assertEqual(
                     archive.read("GTNH/patches/me.eigenraven.lwjgl3ify.forgepatches.json"),
                     (patches / "me.eigenraven.lwjgl3ify.forgepatches.json").read_bytes(),
@@ -131,6 +134,12 @@ class ClientExportTests(unittest.TestCase):
                 )
             self.assertIn("Java 17 or newer", instance_cfg)
             self.assertIn("required JVM flags automatically", instance_cfg)
+            runtime_path = "GTNH/libraries/lwjgl3ify-3.0.42-forgePatches.jar"
+            runtime_review = next(row for row in manifest["distributionReview"] if row["path"] == runtime_path)
+            self.assertEqual(runtime_review["decision"], "unverified")
+            self.assertTrue(runtime_review["bundled"])
+            self.assertEqual(runtime_review["sha256"], hashlib.sha256(local_library.read_bytes()).hexdigest())
+            _validate_review_manifest(manifest)
             self.assertEqual(exported["components"], launcher_components)
             exported_uids = {component["uid"] for component in exported["components"]}
             self.assertIn("org.lwjgl3", exported_uids)

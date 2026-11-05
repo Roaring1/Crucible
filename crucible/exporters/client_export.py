@@ -845,6 +845,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
             else:
                 build_warnings = _build_curseforge(partial, name, mc, loader, loader_version, ship, cfg)
             build_warnings = config_warnings + build_warnings
+            distribution_warnings.extend(_review_extra_archive_jars(partial, catalog, distribution_review))
             _write_download_requirements(partial, fmt, name, required_downloads)
             manifest = _seal_archive(
                 partial, fmt=fmt, name=name, minecraft_version=mc,
@@ -1017,6 +1018,42 @@ def _default_prism_options(mc: str) -> str | None:
         "key_key.sneak:42\n"
         "key_key.sprint:29\n"
     )
+
+
+def _review_extra_archive_jars(archive_path: Path, catalog, review: list[dict]) -> list[str]:
+    """Add exact-SHA review rows for launcher/runtime JARs outside mods/."""
+    known = {row.get("path") for row in review if isinstance(row, dict)}
+    warnings = []
+    with zipfile.ZipFile(archive_path, "r") as zf:
+        for info in zf.infolist():
+            path = info.filename
+            if info.is_dir() or not path.lower().endswith(".jar") or path in known:
+                continue
+            digest = hashlib.sha256()
+            with zf.open(info, "r") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            sha = digest.hexdigest()
+            filename = path.rsplit("/", 1)[-1]
+            record = catalog.lookup(sha)
+            if record is None:
+                row = {
+                    "path": path, "filename": filename, "sha256": sha,
+                    "modId": "", "modVersion": "", "decision": "unverified",
+                    "projectUrl": "", "evidenceUrl": "", "verifiedOn": "",
+                    "basis": "No curated record matches this exact JAR SHA-256.",
+                    "license": "", "licenseUrl": "", "conditions": [],
+                    "alternativeDownloadUrl": "", "notes": "", "bundled": True,
+                }
+                warnings.append(f"No curated distribution record matches the exact SHA-256 of bundled runtime JAR {filename}; redistribution remains unverified.")
+            else:
+                if record.decision == "prohibited":
+                    raise OSError(f"Cannot bundle Prism runtime JAR {filename}: its exact SHA-256 is marked prohibited in the distribution catalog.")
+                row = record.review_entry(archive_path=path, filename=filename, bundled=True)
+                warnings.append(f"Curated {record.decision} distribution record applies to bundled runtime JAR {filename}; review its conditions and evidence.")
+            review.append(row)
+            known.add(path)
+    return warnings
 
 
 def _add_prism_profile_support(
