@@ -312,6 +312,11 @@ class NamedWorldResetTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertIsNotNone(result.pre_swap_backup_path)
         self.assertTrue(result.pre_swap_backup_path.exists())
+        saved_entry = next(
+            entry for entry in mgr.list_backups()
+            if entry.path == result.pre_swap_backup_path
+        )
+        self.assertIn("OldWorld", saved_entry.slot_name or "")
         self.assertIsNotNone(result.pre_swap_dir)
         self.assertTrue((result.pre_swap_dir / "marker.txt").exists())
         self.assertEqual((result.pre_swap_dir / "marker.txt").read_text(), "original world")
