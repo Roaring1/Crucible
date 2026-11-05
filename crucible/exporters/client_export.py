@@ -471,6 +471,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
     from ..mods.mod_manager import ModManager, ModEntry
     inspector = ModManager(instance)
     ship, skipped, unknown = [], [], []
+    unknown_by_hash = {}
     server_mod_ids = set()
     for j in _enabled_mods(server):
         if j.is_symlink():
@@ -483,7 +484,9 @@ def export(instance, out_path, fmt: str = "mrpack", *,
             skipped.append(j)
         else:
             ship.append(j)
-            if entry.side == "unknown": unknown.append(j.name)
+            if entry.side == "unknown":
+                unknown.append(j.name)
+                unknown_by_hash[_sha256_file(j)] = j.name
     if client_source:
         source = Path(client_source).expanduser()
         if source.is_symlink():
@@ -616,11 +619,14 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         client_unknown_included = []
         client_server_only = []
         source_conflicts = []
+        client_confirmed_unknown = set()
         for j in sorted(client_mods.glob("*.jar")):
             if j.is_symlink():
                 return ExportResult(error=f"The client source contains a symbolic-link mod: {j.name}. No archive was written.")
             digest = _sha256_file(j)
             if digest in hashes:
+                if digest in unknown_by_hash:
+                    client_confirmed_unknown.add(unknown_by_hash[digest])
                 continue
             entry = ModEntry(j.name, j, True, j.stat().st_size)
             inspector.inspect_jar(entry)
@@ -651,6 +657,8 @@ def export(instance, out_path, fmt: str = "mrpack", *,
                 hashes.add(digest)
                 if entry.side == "unknown":
                     client_unknown_included.append(j.name)
+        if client_confirmed_unknown:
+            unknown = [name for name in unknown if name not in client_confirmed_unknown]
     else:
         client_unknown_included = []
         client_server_only = []
