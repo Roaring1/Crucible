@@ -23,10 +23,10 @@ import json
 import shutil
 import stat
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -491,7 +491,7 @@ class BackupManager:
     def validate_level_name(value: str) -> str:
         """Validate a portable, single-folder Minecraft level-name."""
         if not isinstance(value, str):
-            raise ValueError("World name must be text.")
+            raise TypeError("World name must be text.")
         name = value.strip()
         if (
             not name
@@ -653,7 +653,7 @@ class BackupManager:
         try:
             if new_level_name is not None:
                 self._write_level_name(new_level_name)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - worker boundary reports every operation failure to the GUI
             # A failed properties update must not strand the existing world
             # under a new name. The mandatory backup remains as an extra copy.
             if pre_swap_dir is not None and pre_swap_dir.exists() and not world_root.exists():
@@ -725,7 +725,7 @@ class BackupWorker(QObject):
                 slot_name=self._slot_name,
             )
             self.finished.emit(str(path))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - worker boundary reports every operation failure to the GUI
             self.failed.emit(str(exc))
 
 
@@ -752,7 +752,7 @@ class SwapWorker(QObject):
                 self._entry, progress_cb=lambda p: self.progress.emit(p)
             )
             self.finished.emit(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - worker boundary reports every operation failure to the GUI
             self.failed.emit(str(exc))
 
 
@@ -784,7 +784,7 @@ class ResetWorldWorker(QObject):
                 new_level_name=self._new_level_name,
             )
             self.finished.emit(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - worker boundary reports every operation failure to the GUI
             self.failed.emit(str(exc))
 
 
@@ -807,5 +807,5 @@ class WipeWorldWorker(QObject):
         try:
             result = self._manager.wipe_world()
             self.finished.emit(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - worker boundary reports every operation failure to the GUI
             self.failed.emit(str(exc))
