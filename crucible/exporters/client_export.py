@@ -1072,7 +1072,7 @@ _TEXT_CONFIG_SUFFIXES = {
 _BINARY_CONFIG_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".ogg", ".wav", ".mp3"}
 _SECRET_PATTERNS = [
     ("credential assignment", re.compile(
-        r'''(?im)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|passwd|webhook|authorization|auth[_-]?token)\b[ \t]*[:=][ \t]*["']?([^\s"'#,;]{16,})'''
+        r'''(?im)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|passwd|webhook|authorization|auth[_-]?token)\b["']?[ \t]*[:=][ \t]*["']?([^\s"'#,;]{16,})'''
     )),
     ("GitHub token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
     ("Discord webhook", re.compile(r"https?://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9._-]{20,}", re.IGNORECASE)),
