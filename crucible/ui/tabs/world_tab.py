@@ -383,6 +383,7 @@ class WorldTab(QWidget):
             QApplication.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
         )
         refresh_btn.setMinimumWidth(refresh_btn.sizeHint().width() + 3)
+        refresh_btn.setMinimumHeight(32)
         refresh_btn.clicked.connect(self._refresh)
         info_row.addWidget(self._world_label, stretch=1)
         info_row.addWidget(refresh_btn)
