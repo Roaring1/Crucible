@@ -156,7 +156,7 @@ def compute_input_fingerprint(
     included. Excluded resource packs are represented only by their presence,
     because that affects the review warning but not the archive payload.
     """
-    server = Path(getattr(instance, "path")).expanduser()
+    server = Path(instance.path).expanduser()
     if not server.is_dir() or server.is_symlink():
         raise OSError("The server folder is unavailable for fingerprinting.")
     server = server.resolve(strict=True)
@@ -378,13 +378,16 @@ def _merge_config_dirs(
                     ) from exc
 
                 target = destination_root / relative
+                if (
+                    target.exists()
+                    and _sha256_file(target) != _sha256_file(resolved)
+                    and source_kind == "client"
+                ):
+                    warnings.append(
+                        f"Client profile configuration differs from the server copy; the server file was kept: "
+                        f"{dirname}/{relative.as_posix()}."
+                    )
                 if target.exists():
-                    if _sha256_file(target) != _sha256_file(resolved):
-                        if source_kind == "client":
-                            warnings.append(
-                                f"Client profile configuration differs from the server copy; the server file was kept: "
-                                f"{dirname}/{relative.as_posix()}."
-                            )
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(resolved, target)
@@ -446,7 +449,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
            include_resourcepacks: bool = False,
            expected_input_fingerprint: str = "") -> ExportResult:
     """Build a client instance file from a server instance."""
-    server = Path(getattr(instance, "path"))
+    server = Path(instance.path)
     name = getattr(instance, "name", "Server")
     mc = (getattr(instance, "minecraft_version", "") or "").strip()
     loader = (getattr(instance, "loader", "") or "vanilla").strip().lower()
@@ -489,7 +492,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
     client_minecraft_root = None
     client_resourcepacks_present = False
     client_shaderpacks_present = False
-    from ..mods.mod_manager import ModManager, ModEntry
+    from ..mods.mod_manager import ModEntry, ModManager
     inspector = ModManager(instance)
     ship, skipped, unknown = [], [], []
     unknown_by_hash = {}
@@ -1275,11 +1278,10 @@ def _seal_archive(
                 if len(unsupported_config_examples) < 10:
                     unsupported_config_examples.append(member_name)
             if text_candidate:
-                if info.file_size > _MAX_PRIVACY_FILE_BYTES:
-                    scan_incomplete_count += 1
-                    if len(scan_incomplete_examples) < 10:
-                        scan_incomplete_examples.append(member_name)
-                elif scan_bytes + info.file_size > _MAX_PRIVACY_TOTAL_BYTES:
+                if (
+                    info.file_size > _MAX_PRIVACY_FILE_BYTES
+                    or scan_bytes + info.file_size > _MAX_PRIVACY_TOTAL_BYTES
+                ):
                     scan_incomplete_count += 1
                     if len(scan_incomplete_examples) < 10:
                         scan_incomplete_examples.append(member_name)
