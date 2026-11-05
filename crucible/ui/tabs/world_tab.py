@@ -28,8 +28,9 @@ language before anything touches disk:
 
 from __future__ import annotations
 
+import re
+import shutil
 from collections.abc import Callable
-from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
@@ -55,12 +56,16 @@ from PyQt6.QtWidgets import (
 from ...data.backup_manager import (
     BackupEntry,
     BackupManager,
-    BackupWorker,
     ResetWorldWorker,
     SwapResult,
-    SwapWorker,
-    WipeWorldWorker,
 )
+from ...data.fleet_backup import (
+    BackupAlreadyRunning,
+    FleetBackupError,
+    FleetBackupManager,
+    fleet_operation_lock,
+)
+from ...data.instance_manager import InstanceManager
 from ...data.instance_model import ServerInstance, dimension_label
 from ...process.tmux_manager import TmuxManager
 from .. import theme
@@ -241,6 +246,10 @@ class _FleetWorldActionWorker(QObject):
                 })
                 return
 
+            if self._action == "backup":
+                self.finished.emit({"action": "backup", "backup": before})
+                return
+
             if self._action == "cleanup":
                 server_root = Path(self._instance.path)
                 deleted = 0
@@ -265,7 +274,7 @@ class _FleetWorldActionWorker(QObject):
                 return
 
             raise ValueError(f"Unsupported fleet world action: {self._action}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - worker boundary must report every failure through its Qt signal.
             self.failed.emit(str(exc))
 
 
@@ -363,14 +372,17 @@ class WorldTab(QWidget):
         _, overview = add_card("ACTIVE WORLD")
         info_row = QHBoxLayout()
         self._world_label = QLabel("World: -")
+        self._world_label.setAccessibleName("Selected server active world")
         self._world_label.setStyleSheet(
             f"color: {theme.TEXT}; font-size: 15px; font-weight: 600; "
             "background: transparent;"
         )
         refresh_btn = QPushButton("Refresh")
+        refresh_btn.setAccessibleName("Refresh selected server world inventory")
         refresh_btn.setIcon(
             QApplication.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
         )
+        refresh_btn.setMinimumWidth(refresh_btn.sizeHint().width() + 3)
         refresh_btn.clicked.connect(self._refresh)
         info_row.addWidget(self._world_label, stretch=1)
         info_row.addWidget(refresh_btn)
@@ -402,6 +414,7 @@ class WorldTab(QWidget):
 
         self._reset_btn = QPushButton("Create new world")
         self._reset_btn.setObjectName("PrimaryButton")
+        self._reset_btn.setAccessibleName("Reset the active world after a verified fleet checkpoint")
         self._reset_btn.setIcon(
             QApplication.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder)
         )
@@ -416,9 +429,13 @@ class WorldTab(QWidget):
             QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
         )
         self._backup_btn.setMinimumHeight(40)
+        self._backup_btn.setToolTip(
+            "Create a verified fleet recovery point covering this world and every managed server."
+        )
         self._backup_btn.clicked.connect(self._start_named_backup)
 
         self._seed_btn = QPushButton("Set seed")
+        self._seed_btn.setAccessibleName("Change the active world seed for newly generated chunks")
         self._seed_btn.setIcon(
             QApplication.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
         )
@@ -458,12 +475,13 @@ class WorldTab(QWidget):
             QLabel("Irreversible: deletes the active world without making a backup.")
         )
         self._wipe_btn = QPushButton("Permanently wipe world…")
+        self._wipe_btn.setAccessibleName("Permanently wipe the active world after a verified fleet checkpoint")
         self._wipe_btn.setObjectName("DangerButton")
         self._wipe_btn.setIcon(
             QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DialogDiscardButton)
         )
         self._wipe_btn.setToolTip(
-            "Permanently delete the active world folder. No safety backup is kept."
+            "Crucible first creates and verifies a complete fleet checkpoint, then deletes the active world folder."
         )
         self._wipe_btn.clicked.connect(self._confirm_and_wipe)
         advanced_panel_layout.addWidget(self._wipe_btn)
@@ -489,6 +507,10 @@ class WorldTab(QWidget):
             "Your named world snapshots live here. Switching always protects the world you are leaving.",
         )
         self._table = QTableWidget(0, 4)
+        self._table.setAccessibleName("Saved world archives")
+        self._table.setAccessibleDescription(
+            "Legacy world archives available to restore or switch into the selected server."
+        )
         self._table.setHorizontalHeaderLabels(["World name", "Size", "Saved", ""])
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -510,6 +532,9 @@ class WorldTab(QWidget):
         )
         self._presafe_label.setWordWrap(True)
         self._cleanup_btn = QPushButton("Clean up old world copies")
+        self._cleanup_btn.setAccessibleName(
+            "Create and verify a fleet snapshot before cleaning old world copies"
+        )
         self._cleanup_btn.clicked.connect(self._cleanup_pre_swap_dirs)
         presafe_row.addWidget(self._presafe_label, stretch=1)
         presafe_row.addWidget(self._cleanup_btn)
@@ -736,6 +761,25 @@ class WorldTab(QWidget):
             )
 
     # Backup action
+
+    def _start_named_backup(self) -> None:
+        if not self._manager or not self._instance:
+            return
+        if self._thread and self._thread.isRunning():
+            return
+        reply = QMessageBox.question(
+            self,
+            "Save a recovery point?",
+            "Crucible will create a verified fleet snapshot covering this world "
+            "and every registered managed server. Running servers are safely "
+            "flushed; unknown or unmanaged server states fail closed. Crucible "
+            "will not start or stop any server.\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._start_fleet_action("backup")
 
     def _start_fleet_action(self, action: str, entry: BackupEntry | None = None) -> None:
         if not self._instance_manager or not self._instance:
@@ -1124,8 +1168,18 @@ class WorldTab(QWidget):
         self._advanced_toggle.setEnabled(True)
         self._table.setEnabled(True)
 
-        if kind == "backup" and result and result[0] == "failed":
-            QMessageBox.critical(self, "Backup Failed", result[1])
+        if kind == "backup" and result:
+            if result[0] == "failed":
+                QMessageBox.critical(self, "Backup Failed", result[1])
+            elif result[0] == "done":
+                payload = result[1]
+                backup = payload["backup"]
+                QMessageBox.information(
+                    self,
+                    "Recovery point saved",
+                    f"Verified fleet generation {backup.generation_id} was created. "
+                    "It covers all registered managed servers and their discovered worlds.",
+                )
         elif kind == "swap" and result:
             if result[0] == "done":
                 swap_result: SwapResult = result[1]
@@ -1154,16 +1208,23 @@ class WorldTab(QWidget):
                     "folder remains available under Old world copies. Start the server "
                     "manually when you're ready; Crucible will not start it for you.",
                 )
-            elif action == "wipe":
-                wipe_result: SwapResult = payload["result"]
+        elif kind == "wipe" and result:
+            if result[0] == "done":
+                wipe_result: SwapResult = result[1]["result"]
                 QMessageBox.information(self, "World wiped", wipe_result.message)
-            elif action == "cleanup":
+            elif result[0] == "failed":
+                QMessageBox.critical(self, "World wipe failed", result[1])
+        elif kind == "cleanup" and result:
+            if result[0] == "done":
+                payload = result[1]
                 backup = payload["backup"]
                 QMessageBox.information(
                     self, "World cleanup complete",
                     f"Fleet generation {backup.generation_id} was verified before cleanup. "
                     f"Removed {payload['deleted']} redundant pre-swap world folder(s).",
                 )
+            elif result[0] == "failed":
+                QMessageBox.critical(self, "World cleanup failed", result[1])
         self._refresh()
 
     # Rename / delete / cleanup
