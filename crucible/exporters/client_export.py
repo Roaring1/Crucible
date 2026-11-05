@@ -1061,6 +1061,7 @@ def _safe_name(name: str) -> str:
 _MAX_PRIVACY_FILE_BYTES = 8 * 1024 * 1024
 _MAX_PRIVACY_TOTAL_BYTES = 256 * 1024 * 1024
 _MAX_PRIVACY_FINDINGS = 50
+_MAX_NESTED_CONFIG_ARCHIVE_BYTES = 64 * 1024 * 1024
 _TEXT_CONFIG_SUFFIXES = {
     "", ".cfg", ".conf", ".env", ".ini", ".json", ".json5", ".js", ".mjs",
     ".properties", ".ps1", ".sh", ".toml", ".txt", ".xml", ".yaml", ".yml",
@@ -1207,6 +1208,7 @@ def _scan_nested_config_archive(
         unsupported_count,
         unsupported_examples,
         binary_skipped,
+        scan_bytes,
     )
 
 
@@ -1256,6 +1258,11 @@ def _seal_archive(
                 _is_config_entry(member_name)
                 and Path(member_name).suffix.lower() == ".zip"
             )
+            if nested_archive_candidate and info.file_size > _MAX_NESTED_CONFIG_ARCHIVE_BYTES:
+                scan_incomplete_count += 1
+                if len(scan_incomplete_examples) < 10:
+                    scan_incomplete_examples.append(member_name)
+                nested_archive_candidate = False
             should_scan = False
             sample = bytearray()
             if (
@@ -1286,7 +1293,7 @@ def _seal_archive(
                     if not chunk:
                         break
                     digest.update(chunk)
-                    if should_scan:
+                    if should_scan or nested_archive_candidate:
                         sample.extend(chunk)
 
             if nested_archive_candidate:
@@ -1297,6 +1304,7 @@ def _seal_archive(
                     nested_unsupported,
                     nested_unsupported_examples,
                     nested_binary_skipped,
+                    scan_bytes,
                 ) = _scan_nested_config_archive(
                     member_name, bytes(sample), scan_bytes=scan_bytes
                 )
