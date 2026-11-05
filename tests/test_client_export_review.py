@@ -470,7 +470,7 @@ class ClientExportReviewTests(unittest.TestCase):
     def test_privacy_scan_ignores_comments_and_standard_private_network_blocks(self):
         raw = (
             b"# password=example-secret-value-that-is-not-active\n"
-            b"# example bind address 192.168.1.42\\n"
+            b"# example bind address 192.168.1.42\n"
             b"deny ip 10.0.0.0/8\n"
             b"deny ip 172.16.0.0/12\n"
             b"deny ip 192.168.0.0/16\n"
