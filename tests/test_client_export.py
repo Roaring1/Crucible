@@ -806,11 +806,11 @@ class ClientExportTests(unittest.TestCase):
             }), encoding="utf-8")
             # These deliberately personal values must never leak into a player share.
             (source / ".minecraft" / "options.txt").write_text(
-                "mouseSensitivity:0.8\\n"
-                "renderDistance:19\\n"
-                "key_key.inventory:15\\n"
-                "key_key.sneak:29\\n"
-                "key_key.sprint:42\\n",
+                "mouseSensitivity:0.8\n"
+                "renderDistance:19\n"
+                "key_key.inventory:15\n"
+                "key_key.sneak:29\n"
+                "key_key.sprint:42\n",
                 encoding="utf-8",
             )
             instance = SimpleNamespace(
@@ -824,11 +824,11 @@ class ClientExportTests(unittest.TestCase):
             self.assertTrue(result.ok, result.error)
             with zipfile.ZipFile(output) as archive:
                 options = archive.read("GTNH/.minecraft/options.txt").decode("utf-8")
-            self.assertIn("mouseSensitivity:0.35\\n", options)
-            self.assertIn("renderDistance:8\\n", options)
-            self.assertIn("key_key.inventory:18\\n", options)
-            self.assertIn("key_key.sneak:42\\n", options)
-            self.assertIn("key_key.sprint:29\\n", options)
+            self.assertIn("mouseSensitivity:0.35\n", options)
+            self.assertIn("renderDistance:8\n", options)
+            self.assertIn("key_key.inventory:18\n", options)
+            self.assertIn("key_key.sneak:42\n", options)
+            self.assertIn("key_key.sprint:29\n", options)
             self.assertNotIn("mouseSensitivity:0.8", options)
             self.assertNotIn("renderDistance:19", options)
             self.assertNotIn("key_key.inventory:15", options)
