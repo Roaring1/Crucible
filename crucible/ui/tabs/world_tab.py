@@ -517,7 +517,7 @@ class WorldTab(QWidget):
         pre_swap_dirs = self._manager.list_pre_swap_dirs()
         if pre_swap_dirs:
             self._presafe_label.setText(
-                f"{len(pre_swap_dirs)} leftover pre-swap folder(s) from previous swaps/resets "
+                f"{len(pre_swap_dirs)} old world folder copy/copies are kept for recovery "
                 f"({_human_size(presafe_total)}). These are an extra safety net kept alongside "
                 "your world folder -- once you've confirmed your current world is good, "
                 "you can delete them."
@@ -772,8 +772,8 @@ class WorldTab(QWidget):
         status = tmux.get_status(self._instance)
         if status != "stopped":
             QMessageBox.critical(
-                self, "Reset cancelled",
-                "The server must be fully stopped before resetting the world -- "
+                self, "Create new world cancelled",
+                "The server must be fully stopped before creating a new world -- "
                 "moving a world folder out from under a running server would "
                 f"corrupt it. Current status: {status}.\n\n"
                 "Stop the server from the header controls above, then try again.",
