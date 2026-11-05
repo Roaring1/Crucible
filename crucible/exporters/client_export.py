@@ -1120,7 +1120,7 @@ def _privacy_findings(name: str, raw: bytes) -> list[str]:
     }
     for category, pattern in _SECRET_PATTERNS:
         found = False
-        scan_text = credential_text if category == "credential assignment" else text
+        scan_text = credential_text if category in {"credential assignment", "private IPv4 address"} else text
         for match in pattern.finditer(scan_text):
             if category == "credential assignment":
                 value = match.group(1)[:128].strip().strip(chr(34) + chr(39)).lower()
