@@ -41,7 +41,7 @@ _MRPACK_DEP = {
     "fabric": "fabric-loader",
     "quilt": "quilt-loader",
 }
-_SERVER_ONLY_HINTS = ("spark", "server-only", "serverutilities", "ledger", "journeymapserver")
+_SERVER_ONLY_HINTS = ("spark", "server-only", "ledger", "journeymapserver")
 # Only these KubeJS subfolders are appropriate to share with a client. In
 # particular, server_scripts/ and generated data/export dumps are never shipped.
 _KUBEJS_CLIENT_DIRS = frozenset({"client_scripts", "startup_scripts", "assets", "config"})
