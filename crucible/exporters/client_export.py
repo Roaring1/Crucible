@@ -851,6 +851,11 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         return ExportResult(error=f"Could not write {fmt} file: {e}")
 
     warnings = ([f"{len(unknown)} mod(s) have unknown client compatibility; test this pack in Prism before sharing."] if unknown else [])
+    if skipped:
+        shown = ", ".join(j.name for j in skipped[:8])
+        if len(skipped) > 8:
+            shown += f", and {len(skipped) - 8} more"
+        warnings.append("Known server-only JAR(s) were excluded from the client pack: " + shown)
     if excluded_defaultconfigs:
         warnings.append("defaultconfigs/ was excluded from the client pack; review whether any required player config belongs in config/ or kubejs/.")
     if client_resourcepacks_present and not include_resourcepacks:
