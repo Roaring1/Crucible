@@ -11,7 +11,8 @@ jars are bundled, so nothing needs re-downloading):
   * curseforge - CurseForge-style manifest zip with overrides
 
 Explicit loader environment metadata and a small set of known legacy server-only
-hints exclude server-only jars. Other unknown sides are preserved and reported.
+hints exclude server-only jars. An exact match in the selected installed client
+profile confirms a shared unknown-side JAR; unmatched unknown sides are reported.
 """
 
 from __future__ import annotations
@@ -625,6 +626,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
                 return ExportResult(error=f"The client source contains a symbolic-link mod: {j.name}. No archive was written.")
             digest = _sha256_file(j)
             if digest in hashes:
+                # Exact bytes in the selected client profile confirm client use.
                 if digest in unknown_by_hash:
                     client_confirmed_unknown.add(unknown_by_hash[digest])
                 continue
