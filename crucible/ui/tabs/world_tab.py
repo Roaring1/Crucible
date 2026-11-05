@@ -374,8 +374,8 @@ class WorldTab(QWidget):
             actions_layout.setContentsMargins(2, 0, 2, 0)
             actions_layout.setSpacing(4)
 
-            swap_btn = QPushButton("Swap to this")
-            swap_btn.setAccessibleName(f"Swap to world backup {entry.display_name}")
+            swap_btn = QPushButton("Switch to this")
+            swap_btn.setAccessibleName(f"Switch to saved world {entry.display_name}")
             swap_btn.clicked.connect(lambda _checked=False, e=entry: self._confirm_and_swap(e))
 
             rename_btn = QPushButton("Rename")
@@ -709,7 +709,7 @@ class WorldTab(QWidget):
         QMessageBox.information(
             self, "Seed updated",
             "level-seed saved. Newly-generated chunks (including a world made "
-            "via \u201cReset World\u201d) will use this seed.",
+            "via \u201cCreate new world\u201d) will use this seed.",
         )
 
     @staticmethod
@@ -764,15 +764,48 @@ class WorldTab(QWidget):
         if self._config_guard is not None and not self._config_guard():
             return
 
+        current_name = self._instance.world_root_path().name
+        default_name = f"{current_name} - New"
+        suffix = 2
+        while (
+            (self._instance.path_obj / default_name).exists()
+            and default_name != current_name
+        ):
+            default_name = f"{current_name} - New {suffix}"
+            suffix += 1
+
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Name your new world",
+            "Choose a folder name for the new world. Your current world will be saved first:",
+            text=default_name,
+        )
+        if not ok:
+            return
+        try:
+            new_name = BackupManager.validate_level_name(new_name)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid world name", str(exc))
+            return
+
+        target_root = self._instance.path_obj / new_name
+        current_root = self._instance.world_root_path()
+        if target_root.exists() and target_root.resolve() != current_root.resolve():
+            QMessageBox.warning(
+                self,
+                "World name already exists",
+                f"A folder named '{new_name}' already exists. Switch to that world or choose another name.",
+            )
+            return
+
         reply = QMessageBox.warning(
-            self, "Reset world?",
-            "This will start a brand new world on the next server start.\n\n"
-            "Before this happens, Crucible will:\n"
-            " - Automatically back up the CURRENT world (always, cannot be skipped)\n"
-            " - Move the current world folder aside rather than deleting it "
-            "(recoverable later via Swap)\n\n"
-            "Tip: use \u201cSet Seed\u2026\u201d above first if you want the new world "
-            "generated from a specific seed.\n\nContinue?",
+            self, "Create a new world?",
+            f"Crucible will prepare a fresh world named '{new_name}'. It will not start the server.\n\n"
+            "Before the next manual start, Crucible will:\n"
+            " - Create a mandatory safety backup of the current world\n"
+            " - Keep the old world folder on disk as an extra recovery copy\n"
+            f" - Set this server's level-name to '{new_name}'\n\n"
+            "The new world is generated only when you press Start yourself. Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
@@ -782,7 +815,7 @@ class WorldTab(QWidget):
         self._begin_operation("reset")
         self._active_manager = self._manager
         self._thread = QThread()
-        self._worker = ResetWorldWorker(self._active_manager)
+        self._worker = ResetWorldWorker(self._active_manager, new_level_name=new_name)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._progress.setValue)
@@ -872,6 +905,7 @@ class WorldTab(QWidget):
         self._seed_btn.setEnabled(False)
         self._reset_btn.setEnabled(False)
         self._wipe_btn.setEnabled(False)
+        self._advanced_toggle.setEnabled(False)
         self._table.setEnabled(False)
         self._progress.setValue(0)
         labels = {
@@ -898,6 +932,7 @@ class WorldTab(QWidget):
         self._seed_btn.setEnabled(True)
         self._reset_btn.setEnabled(True)
         self._wipe_btn.setEnabled(True)
+        self._advanced_toggle.setEnabled(True)
         self._table.setEnabled(True)
 
         if kind == "backup" and result and result[0] == "failed":
@@ -921,13 +956,14 @@ class WorldTab(QWidget):
         elif kind == "reset" and result:
             if result[0] == "done":
                 reset_result: SwapResult = result[1]
+                if self._config_reload is not None:
+                    self._config_reload()
                 QMessageBox.information(
-                    self, "World reset",
+                    self, "New world ready",
                     f"{reset_result.message}\n\n"
-                    "A safety backup of the world you just replaced was saved "
-                    "automatically, and its previous folder was kept on disk as "
-                    "an extra precaution (see the cleanup option below to remove "
-                    "it later). Start the server to generate the new world.",
+                    "Your previous world is saved in Saved Worlds and its original "
+                    "folder remains available under Old world copies. Start the server "
+                    "manually when you're ready; Crucible will not start it for you.",
                 )
             elif result[0] == "failed":
                 QMessageBox.critical(self, "Reset Failed", result[1])
