@@ -628,6 +628,7 @@ class WorldTab(QWidget):
             "Before this happens, Crucible will:\n"
             " - Automatically back up the CURRENT world (always, cannot be skipped)\n"
             " - Move the current world folder aside rather than deleting it\n"
+            " - Set level-name to the saved world's original folder name\n"
             " - Extract the chosen backup and verify it before finishing\n"
             " - Automatically roll back if anything goes wrong\n\n"
             "Continue?",
@@ -957,6 +958,8 @@ class WorldTab(QWidget):
         elif kind == "swap" and result:
             if result[0] == "done":
                 swap_result: SwapResult = result[1]
+                if self._config_reload is not None:
+                    self._config_reload()
                 QMessageBox.information(
                     self, "Swap complete",
                     f"{swap_result.message}\n\n"
