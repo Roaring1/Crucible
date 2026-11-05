@@ -789,7 +789,8 @@ class WorldTab(QWidget):
         if self._config_guard is not None and not self._config_guard():
             return
 
-        current_name = self._instance.world_root_path().name
+        current_root = self._instance.world_root_path()
+        current_name = current_root.name
         default_name = f"{current_name} - New"
         suffix = 2
         while (
@@ -819,7 +820,6 @@ class WorldTab(QWidget):
             return
 
         target_root = self._instance.path_obj / new_name
-        current_root = self._instance.world_root_path()
         if target_root.exists() and target_root.resolve() != current_root.resolve():
             QMessageBox.warning(
                 self,
