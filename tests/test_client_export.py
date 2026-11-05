@@ -47,6 +47,7 @@ class ClientExportTests(unittest.TestCase):
                 self.assertFalse(any("/.minecraft/defaultconfigs/" in name for name in names))
                 self.assertFalse(any("/.minecraft/world/" in name for name in names))
                 self.assertFalse(any("screenshots/" in name for name in names))
+                self.assertNotIn("CreatePlus/.minecraft/options.txt", names)
                 components = json.loads(archive.read("CreatePlus/mmc-pack.json"))["components"]
                 self.assertIn({"uid": "net.neoforged", "version": "21.1.1"}, components)
 
@@ -786,6 +787,83 @@ class ClientExportTests(unittest.TestCase):
             self.assertIn("selected Prism profile uses NeoForge 21.1.265", result.error)
             self.assertIn("no archive was written", result.error)
             self.assertFalse(output.exists())
+
+
+    def test_gtnh_1_7_10_prism_zip_generates_recipient_defaults_not_owner_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source = root / "working-prism"
+            mods = source / ".minecraft" / "mods"
+            mods.mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.7.10"},
+                    {"uid": "net.minecraftforge", "version": "10.13.4.1614"},
+                ],
+            }), encoding="utf-8")
+            # These deliberately personal values must never leak into a player share.
+            (source / ".minecraft" / "options.txt").write_text(
+                "mouseSensitivity:0.8\\n"
+                "renderDistance:19\\n"
+                "key_key.inventory:15\\n"
+                "key_key.sneak:29\\n"
+                "key_key.sprint:42\\n",
+                encoding="utf-8",
+            )
+            instance = SimpleNamespace(
+                path=str(server), name="GTNH", minecraft_version="1.7.10",
+                loader="forge", loader_version="10.13.4.1614",
+            )
+            output = root / "gtnh-client.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", client_source=str(source), include_config=False
+            )
+            self.assertTrue(result.ok, result.error)
+            with zipfile.ZipFile(output) as archive:
+                options = archive.read("GTNH/.minecraft/options.txt").decode("utf-8")
+            self.assertIn("mouseSensitivity:0.35\\n", options)
+            self.assertIn("renderDistance:8\\n", options)
+            self.assertIn("key_key.inventory:18\\n", options)
+            self.assertIn("key_key.sneak:42\\n", options)
+            self.assertIn("key_key.sprint:29\\n", options)
+            self.assertNotIn("mouseSensitivity:0.8", options)
+            self.assertNotIn("renderDistance:19", options)
+            self.assertNotIn("key_key.inventory:15", options)
+            self.assertNotIn("autoJump", options)
+
+    def test_gtnh_journeymap_server_companion_is_excluded_from_client_pack(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            mods = server / "mods"
+            mods.mkdir(parents=True)
+            filename = "JourneyMapServer1.0.5_MC1.7.10.jar"
+            with zipfile.ZipFile(mods / filename, "w") as jar:
+                jar.writestr("mcmod.info", json.dumps([{
+                    "modid": "JourneyMapServer",
+                    "name": "JourneyMapServer",
+                    "description": "Server-Side control for JourneyMap Features",
+                    "version": "",
+                    "mcversion": "1.7.10",
+                }]))
+            instance = SimpleNamespace(
+                path=str(server), name="GTNH", minecraft_version="1.7.10",
+                loader="forge", loader_version="10.13.4.1614",
+            )
+            output = root / "gtnh-client.zip"
+            result = client_export.export(instance, output, fmt="prism", include_config=False)
+            self.assertTrue(result.ok, result.error)
+            self.assertEqual(result.mod_count, 0)
+            with zipfile.ZipFile(output) as archive:
+                self.assertNotIn(f"GTNH/.minecraft/mods/{filename}", archive.namelist())
+            self.assertTrue(
+                any("Explicit server-only JAR(s)" in warning and filename in warning
+                    for warning in result.warnings),
+                result.warnings,
+            )
 
 
 if __name__ == "__main__":
