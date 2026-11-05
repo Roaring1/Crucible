@@ -860,7 +860,7 @@ class ClientExportTests(unittest.TestCase):
             with zipfile.ZipFile(output) as archive:
                 self.assertNotIn(f"GTNH/.minecraft/mods/{filename}", archive.namelist())
             self.assertTrue(
-                any("Explicit server-only JAR(s)" in warning and filename in warning
+                any("Known server-only JAR(s)" in warning and filename in warning
                     for warning in result.warnings),
                 result.warnings,
             )
