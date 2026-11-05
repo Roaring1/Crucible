@@ -906,5 +906,43 @@ class ClientExportTests(unittest.TestCase):
             )
 
 
+    def test_backup_config_artifacts_are_excluded_from_player_pack(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server.mkdir()
+            source = root / "working-prism"
+            config = source / ".minecraft" / "config"
+            (source / ".minecraft" / "mods").mkdir(parents=True)
+            config.mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.7.10"},
+                    {"uid": "net.minecraftforge", "version": "10.13.4.1614"},
+                ],
+            }), encoding="utf-8")
+            (config / "safe-client.cfg").write_text("enabled=true\\n", encoding="utf-8")
+            (config / "OpenComputers.cfg.bak").write_text("# stale backup\\n", encoding="utf-8")
+            output = root / "gtnh-client.zip"
+            result = client_export.export(
+                SimpleNamespace(
+                    path=str(server), name="GTNH", minecraft_version="1.7.10",
+                    loader="forge", loader_version="10.13.4.1614",
+                ),
+                output, fmt="prism", client_source=str(source), include_config=True,
+            )
+            self.assertTrue(result.ok, result.error)
+            with zipfile.ZipFile(output) as archive:
+                names = set(archive.namelist())
+            self.assertIn("GTNH/.minecraft/config/safe-client.cfg", names)
+            self.assertNotIn("GTNH/.minecraft/config/OpenComputers.cfg.bak", names)
+            self.assertTrue(
+                any("backup/temporary config artifact" in warning and "OpenComputers.cfg.bak" in warning
+                    for warning in result.warnings),
+                result.warnings,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
