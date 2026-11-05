@@ -26,7 +26,7 @@ if "PyQt6" not in sys.modules:
     sys.modules["PyQt6"] = pyqt
     sys.modules["PyQt6.QtCore"] = qtcore
 
-from crucible.data import backup_manager as backup_mod  # noqa: I001 - test installs Qt shims before importing the package
+from crucible.data import backup_manager as backup_mod
 from crucible.data.backup_manager import BackupManager, SwapResult
 from crucible.data.instance_model import (
     ServerInstance,
@@ -345,6 +345,31 @@ class NamedWorldResetTests(unittest.TestCase):
         props = (server_dir / "server.properties").read_text()
         self.assertIn("level-name=GTNH Fresh - November", props)
         self.assertIn("server-port=25565", props)
+
+    def test_named_reset_uses_verified_fleet_generation_without_legacy_zip(self):
+        tmp = Path(tempfile.mkdtemp())
+        server_dir = _make_server(tmp, level_name="OldWorld")
+        mgr = _manager(tmp, server_dir, "TestSrv", "named-reset-fleet")
+        old_root = mgr._instance.world_root_path()
+        (old_root / "marker.txt").write_text("original world")
+
+        result = mgr.reset_world(
+            new_level_name="Fleet Fresh",
+            safety_backup_verified=True,
+            fleet_generation_id="fleet-generation-001",
+        )
+
+        self.assertTrue(result.ok)
+        self.assertIsNone(result.pre_swap_backup_path)
+        self.assertEqual(result.fleet_generation_id, "fleet-generation-001")
+        self.assertIsNotNone(result.pre_swap_dir)
+        self.assertEqual(
+            (result.pre_swap_dir / "marker.txt").read_text(), "original world"
+        )
+        self.assertFalse(mgr._instance.world_root_path().exists())
+        self.assertEqual(mgr._instance.world_root_path().name, "Fleet Fresh")
+        self.assertEqual(mgr.list_backups(), [])
+        self.assertIn("level-name=Fleet Fresh", (server_dir / "server.properties").read_text())
 
     def test_saved_worlds_switch_back_and_forth_across_level_names(self):
         tmp = Path(tempfile.mkdtemp())
