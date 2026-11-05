@@ -552,8 +552,10 @@ class BackupManager:
             output.append(f"level-name={level_name}\n")
 
         tmp_path = props_path.with_name(props_path.name + ".crucible-tmp")
-        if tmp_path.is_symlink():
-            raise OSError("Refusing to write through a symbolic-link server.properties temporary file.")
+        if tmp_path.is_symlink() or tmp_path.exists():
+            raise OSError(
+                "Refusing to overwrite an existing server.properties temporary file."
+            )
         try:
             tmp_path.write_text("".join(output), encoding="utf-8")
             tmp_path.replace(props_path)
@@ -651,11 +653,18 @@ class BackupManager:
         try:
             if new_level_name is not None:
                 self._write_level_name(new_level_name)
-        except Exception:
+        except Exception as exc:
             # A failed properties update must not strand the existing world
             # under a new name. The mandatory backup remains as an extra copy.
             if pre_swap_dir is not None and pre_swap_dir.exists() and not world_root.exists():
-                pre_swap_dir.rename(world_root)
+                try:
+                    pre_swap_dir.rename(world_root)
+                except OSError as rollback_error:
+                    raise OSError(
+                        f"Could not update level-name ({exc}); the original world "
+                        f"remains preserved at {pre_swap_dir}, but automatic rollback "
+                        f"failed ({rollback_error}). Do not start the server until reviewed."
+                    ) from rollback_error
             raise
 
         if progress_cb:
