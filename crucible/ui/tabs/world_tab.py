@@ -34,8 +34,8 @@ from typing import Callable
 
 from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QProgressBar, QFrame,
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QProgressBar, QFrame, QToolButton, QStyle,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QMessageBox, QInputDialog,
 )
@@ -143,27 +143,57 @@ class WorldTab(QWidget):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
 
-        head = QLabel("World: current world")
-        head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
-        layout.addWidget(head)
+        def add_card(title: str, subtitle: str = ""):
+            card = QFrame()
+            card.setObjectName("WorldCard")
+            card.setStyleSheet(
+                f"QFrame#WorldCard {{ background-color: {theme.MANTLE}; "
+                f"border: 1px solid {theme.SURFACE1}; border-radius: 8px; }}"
+            )
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(14, 12, 14, 12)
+            card_layout.setSpacing(8)
+            title_label = QLabel(title)
+            title_label.setStyleSheet(
+                f"color: {theme.TEXT}; font-size: 14px; font-weight: 700; "
+                "background: transparent; border: none;"
+            )
+            card_layout.addWidget(title_label)
+            if subtitle:
+                subtitle_label = QLabel(subtitle)
+                subtitle_label.setWordWrap(True)
+                subtitle_label.setStyleSheet(
+                    f"color: {theme.SUBTEXT}; font-size: 11px; "
+                    "background: transparent; border: none;"
+                )
+                card_layout.addWidget(subtitle_label)
+            layout.addWidget(card)
+            return card, card_layout
 
+        # Active world overview: name, size, and dimensions stay together.
+        _, overview = add_card("ACTIVE WORLD")
         info_row = QHBoxLayout()
         self._world_label = QLabel("World: -")
-        # Was theme.SUBTEXT (low-contrast grey) -- promoted to TEXT since this
-        # is primary information users specifically said was hard to read.
-        self._world_label.setStyleSheet(f"color: {theme.TEXT}; font-size: 12px;")
+        self._world_label.setStyleSheet(
+            f"color: {theme.TEXT}; font-size: 15px; font-weight: 600; "
+            "background: transparent;"
+        )
         refresh_btn = QPushButton("Refresh")
+        refresh_btn.setIcon(
+            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+        )
         refresh_btn.clicked.connect(self._refresh)
-        info_row.addWidget(self._world_label)
-        info_row.addStretch()
+        info_row.addWidget(self._world_label, stretch=1)
         info_row.addWidget(refresh_btn)
-        layout.addLayout(info_row)
+        overview.addLayout(info_row)
 
         dims_row = QHBoxLayout()
         self._dims_label = QLabel("")
-        self._dims_label.setStyleSheet(f"color: {theme.TEXT}; font-size: 12px;")
+        self._dims_label.setStyleSheet(
+            f"color: {theme.TEXT}; font-size: 12px; background: transparent;"
+        )
         self._dims_label.setWordWrap(True)
         dims_row.addWidget(self._dims_label, stretch=1)
         self._dims_toggle_btn = QPushButton("Show all")
@@ -171,115 +201,136 @@ class WorldTab(QWidget):
         self._dims_toggle_btn.clicked.connect(self._toggle_dims_expanded)
         self._dims_toggle_btn.hide()
         dims_row.addWidget(self._dims_toggle_btn, alignment=Qt.AlignmentFlag.AlignTop)
-        layout.addLayout(dims_row)
+        overview.addLayout(dims_row)
 
-        layout.addWidget(_hline())
-
-        # ---- Quick world actions: Set Seed / Reset / Wipe ---------------
-        actions_head = QLabel("World actions")
-        actions_head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
-        layout.addWidget(actions_head)
-
-        actions_info = QLabel(
-            "Set the seed used for newly-generated terrain, start over with a "
-            "brand new world (safety-backed-up first), or permanently delete "
-            "the world to free disk space."
+        # One obvious, safe path to a fresh named world. Dangerous deletion is
+        # deliberately tucked into Advanced instead of competing for attention.
+        _, actions = add_card(
+            "CREATE OR SWITCH WORLDS",
+            "Create a named fresh world, save the current one, or switch to a saved world below.",
         )
-        actions_info.setWordWrap(True)
-        actions_info.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
-        layout.addWidget(actions_info)
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
 
-        actions_row = QHBoxLayout()
-        actions_row.setSpacing(8)
-        self._seed_btn = QPushButton("\U0001F331  Set Seed\u2026")
-        self._seed_btn.setToolTip("Change level-seed in server.properties (affects newly-generated chunks only)")
-        self._seed_btn.clicked.connect(self._set_seed)
-        self._reset_btn = QPushButton("\u267B  Reset World (start fresh)\u2026")
-        self._reset_btn.setToolTip("Safety-backup the current world, then start a brand new one on next start")
+        self._reset_btn = QPushButton("Create new world")
+        self._reset_btn.setObjectName("PrimaryButton")
+        self._reset_btn.setIcon(
+            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder)
+        )
+        self._reset_btn.setMinimumHeight(40)
+        self._reset_btn.setToolTip(
+            "Choose a name; Crucible backs up the current world before preparing the new one."
+        )
         self._reset_btn.clicked.connect(self._confirm_and_reset)
-        self._wipe_btn = QPushButton("\U0001F5D1  Wipe World\u2026")
-        self._wipe_btn.setObjectName("DangerButton")
-        self._wipe_btn.setToolTip("Permanently delete the world folder -- no backup is kept")
-        self._wipe_btn.clicked.connect(self._confirm_and_wipe)
-        actions_row.addWidget(self._seed_btn)
-        actions_row.addWidget(self._reset_btn)
-        actions_row.addWidget(self._wipe_btn)
-        actions_row.addStretch()
-        layout.addLayout(actions_row)
 
-        layout.addWidget(_hline())
-
-        backup_head = QLabel("Save the current world as a new slot")
-        backup_head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
-        layout.addWidget(backup_head)
-
-        backup_info = QLabel(
-            "Creates a full backup of the current world, including every "
-            "dimension folder inside it, and gives it a name so you can find "
-            "and swap back to it later."
+        self._backup_btn = QPushButton("Save current world")
+        self._backup_btn.setIcon(
+            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
         )
-        backup_info.setWordWrap(True)
-        backup_info.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
-        layout.addWidget(backup_info)
-
-        backup_row = QHBoxLayout()
-        self._backup_btn = QPushButton("Backup this world...")
-        self._backup_btn.setObjectName("PrimaryButton")
+        self._backup_btn.setMinimumHeight(40)
         self._backup_btn.clicked.connect(self._start_named_backup)
-        backup_row.addWidget(self._backup_btn)
-        backup_row.addStretch()
-        layout.addLayout(backup_row)
+
+        self._seed_btn = QPushButton("Set seed")
+        self._seed_btn.setIcon(
+            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+        )
+        self._seed_btn.setMinimumHeight(40)
+        self._seed_btn.setToolTip(
+            "Set the seed used by a newly generated world; existing chunks are unchanged."
+        )
+        self._seed_btn.clicked.connect(self._set_seed)
+
+        action_row.addWidget(self._reset_btn, stretch=2)
+        action_row.addWidget(self._backup_btn, stretch=2)
+        action_row.addWidget(self._seed_btn, stretch=1)
+        actions.addLayout(action_row)
+
+        advanced_row = QHBoxLayout()
+        self._advanced_toggle = QToolButton()
+        self._advanced_toggle.setText("Advanced world actions")
+        self._advanced_toggle.setCheckable(True)
+        self._advanced_toggle.setChecked(False)
+        self._advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self._advanced_toggle.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self._advanced_toggle.toggled.connect(self._toggle_advanced_actions)
+        advanced_row.addWidget(self._advanced_toggle)
+        advanced_row.addStretch()
+        actions.addLayout(advanced_row)
+
+        self._advanced_panel = QFrame()
+        self._advanced_panel.setStyleSheet(
+            f"QFrame {{ background-color: {theme.BASE}; border: 1px solid {theme.SURFACE1}; "
+            "border-radius: 6px; }}"
+        )
+        advanced_panel_layout = QHBoxLayout(self._advanced_panel)
+        advanced_panel_layout.setContentsMargins(10, 8, 10, 8)
+        advanced_panel_layout.addWidget(
+            QLabel("Irreversible: deletes the active world without making a backup.")
+        )
+        self._wipe_btn = QPushButton("Permanently wipe world…")
+        self._wipe_btn.setObjectName("DangerButton")
+        self._wipe_btn.setIcon(
+            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DialogDiscardButton)
+        )
+        self._wipe_btn.setToolTip(
+            "Permanently delete the active world folder. No safety backup is kept."
+        )
+        self._wipe_btn.clicked.connect(self._confirm_and_wipe)
+        advanced_panel_layout.addWidget(self._wipe_btn)
+        self._advanced_panel.hide()
+        actions.addWidget(self._advanced_panel)
 
         self._progress_lbl = QLabel("")
-        self._progress_lbl.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
+        self._progress_lbl.setStyleSheet(
+            f"color: {theme.ACCENT}; font-size: 12px; font-weight: 600; background: transparent;"
+        )
         self._progress = QProgressBar()
         self._progress.setRange(0, 100)
         self._progress.setTextVisible(True)
         self._progress_lbl.hide()
         self._progress.hide()
-        layout.addWidget(self._progress_lbl)
-        layout.addWidget(self._progress)
+        actions.addWidget(self._progress_lbl)
+        actions.addWidget(self._progress)
 
-        layout.addWidget(_hline())
-
-        slots_head = QLabel("Saved worlds (backups)")
-        slots_head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
-        layout.addWidget(slots_head)
-
-        slots_info = QLabel(
-            "Named backups are never deleted automatically. Unnamed backups "
-            "created elsewhere (e.g. the Backups tab) also show up here."
+        # Saved worlds are the switcher: every row has one direct, named action.
+        _, slots = add_card(
+            "SAVED WORLDS",
+            "Your named world snapshots live here. Switching always protects the world you are leaving.",
         )
-        slots_info.setWordWrap(True)
-        slots_info.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
-        layout.addWidget(slots_info)
-
         self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["Name", "Size", "Created", ""])
+        self._table.setHorizontalHeaderLabels(["World name", "Size", "Saved", ""])
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self._table.setColumnWidth(3, 230)
+        self._table.setColumnWidth(3, 190)
         self._table.verticalHeader().setVisible(False)
         self._table.setShowGrid(False)
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        layout.addWidget(self._table, stretch=1)
-
-        layout.addWidget(_hline())
+        slots.addWidget(self._table)
 
         presafe_row = QHBoxLayout()
         self._presafe_label = QLabel("")
-        self._presafe_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
+        self._presafe_label.setStyleSheet(
+            f"color: {theme.SUBTEXT}; font-size: 11px; background: transparent;"
+        )
         self._presafe_label.setWordWrap(True)
-        self._cleanup_btn = QPushButton("Clean up old pre-swap folders")
+        self._cleanup_btn = QPushButton("Clean up old world copies")
         self._cleanup_btn.clicked.connect(self._cleanup_pre_swap_dirs)
         presafe_row.addWidget(self._presafe_label, stretch=1)
         presafe_row.addWidget(self._cleanup_btn)
-        layout.addLayout(presafe_row)
+        slots.addLayout(presafe_row)
+
+    def _toggle_advanced_actions(self, expanded: bool) -> None:
+        self._advanced_panel.setVisible(expanded)
+        self._advanced_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
 
     # Refresh
 
