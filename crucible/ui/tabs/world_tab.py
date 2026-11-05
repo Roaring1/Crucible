@@ -30,16 +30,29 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
+from datetime import datetime
+from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QProgressBar, QFrame, QToolButton, QStyle,
-    QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractItemView, QMessageBox, QInputDialog,
+from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
+from PyQt6.QtWidgets (
+    QAbstractItemView,
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QStyle,
+    QTableWidget,
+    QTableWidgetItem,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
-
 from ...data.instance_model import ServerInstance, dimension_label
 from ...data.backup_manager import (
     BackupManager, BackupWorker, BackupEntry, SwapWorker, SwapResult,
@@ -75,7 +88,7 @@ class _WorldStatsWorker(QObject):
     def run(self) -> None:
         try:
             size = self._instance.world_size_bytes()
-        except Exception:
+        except Exception:  # noqa: BLE001 - keep a failed background size scan from crashing the GUI
             size = 0
         total = 0
         for d in self._pre_swap_dirs:
