@@ -51,6 +51,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
 from ...data.backup_manager import (
     BackupEntry,
     BackupManager,
