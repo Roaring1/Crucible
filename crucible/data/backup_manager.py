@@ -487,6 +487,80 @@ class BackupManager:
                 f"extraction: {sorted(missing)}. The previous world has been restored."
             )
 
+    @staticmethod
+    def validate_level_name(value: str) -> str:
+        """Validate a portable, single-folder Minecraft level-name."""
+        if not isinstance(value, str):
+            raise ValueError("World name must be text.")
+        name = value.strip()
+        if (
+            not name
+            or len(name) > 64
+            or name in {".", ".."}
+            or name.endswith((" ", "."))
+            or ".pre-swap-" in name.lower()
+            or any(ord(char) < 32 or ord(char) == 127 for char in name)
+            or any(char in name for char in '/\\:*?"<>|')
+        ):
+            raise ValueError(
+                "Choose a world name up to 64 characters without path separators, "
+                "reserved filename characters, or a trailing dot/space."
+            )
+        return name
+
+    @staticmethod
+    def _is_pre_swap_folder(candidate: Path) -> bool:
+        """Recognize timestamped pre-swap folders for any previous level-name."""
+        if candidate.is_symlink() or not candidate.is_dir():
+            return False
+        if ".pre-swap-" not in candidate.name:
+            return False
+        timestamp = candidate.name.rsplit(".pre-swap-", 1)[1]
+        return (
+            len(timestamp) == 22
+            and timestamp.count("_") == 2
+            and timestamp.replace("_", "").isdigit()
+        )
+
+    def _write_level_name(self, level_name: str) -> None:
+        """Atomically update level-name while preserving unrelated properties."""
+        server_root = self._instance.path_obj.resolve()
+        props_path = server_root / "server.properties"
+        if props_path.is_symlink() or (props_path.exists() and not props_path.is_file()):
+            raise OSError("server.properties must be a regular file, not a symbolic link.")
+        try:
+            lines = (
+                props_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+                if props_path.exists() else []
+            )
+        except OSError as exc:
+            raise OSError(f"Could not read server.properties: {exc}") from exc
+
+        output = []
+        found = False
+        for line in lines:
+            if line.strip().startswith("level-name="):
+                if not found:
+                    newline = "\r\n" if line.endswith("\r\n") else ("\n" if line.endswith("\n") else "")
+                    output.append(f"level-name={level_name}{newline}")
+                    found = True
+                continue
+            output.append(line)
+        if not found:
+            if output and not output[-1].endswith(("\n", "\r")):
+                output[-1] += "\n"
+            output.append(f"level-name={level_name}\n")
+
+        tmp_path = props_path.with_name(props_path.name + ".crucible-tmp")
+        if tmp_path.is_symlink():
+            raise OSError("Refusing to write through a symbolic-link server.properties temporary file.")
+        try:
+            tmp_path.write_text("".join(output), encoding="utf-8")
+            tmp_path.replace(props_path)
+        except OSError:
+            tmp_path.unlink(missing_ok=True)
+            raise
+
     def prune_pre_swap_dirs(self, keep_days: int = 7) -> int:
         """Delete leftover \"<level>.pre-swap-<timestamp>\" sibling directories
         created automatically by swap_world() that are older than keep_days.
@@ -496,15 +570,13 @@ class BackupManager:
         up. Never touches anything that doesn't match the pre-swap naming
         pattern for THIS instance's current level-name.
         """
-        world_root = self._instance.world_root_path()
-        parent = world_root.parent
+        parent = self._instance.path_obj
         if not parent.is_dir():
             return 0
-        prefix = f"{world_root.name}.pre-swap-"
         cutoff = datetime.now().timestamp() - keep_days * 86400
         deleted = 0
         for candidate in parent.iterdir():
-            if not (candidate.is_dir() and candidate.name.startswith(prefix)):
+            if not self._is_pre_swap_folder(candidate):
                 continue
             try:
                 if candidate.stat().st_mtime < cutoff:
@@ -516,19 +588,21 @@ class BackupManager:
 
     def list_pre_swap_dirs(self) -> list[Path]:
         """List leftover pre-swap sibling directories for this instance, newest first."""
-        world_root = self._instance.world_root_path()
-        parent = world_root.parent
+        parent = self._instance.path_obj
         if not parent.is_dir():
             return []
-        prefix = f"{world_root.name}.pre-swap-"
-        found = [c for c in parent.iterdir() if c.is_dir() and c.name.startswith(prefix)]
+        found = [c for c in parent.iterdir() if self._is_pre_swap_folder(c)]
         found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return found
 
     # World reset / wipe
 
-    def reset_world(self, progress_cb: Callable[[int], None] | None = None) -> SwapResult:
-        """Start over with a brand new world on the next server start.
+    def reset_world(
+        self,
+        progress_cb: Callable[[int], None] | None = None,
+        new_level_name: str | None = None,
+    ) -> SwapResult:
+        """Start over with a brand new, optionally named world on next start.
 
         Non-destructive by design -- reuses exactly the same rename-aside
         pattern as swap_world(): the current world is first safety-backed-up
@@ -544,6 +618,23 @@ class BackupManager:
         unsaved server.properties edits before calling this.
         """
         world_root = self._instance.world_root_path()
+        server_root = self._instance.path_obj.resolve()
+        if world_root.is_symlink() or (world_root.exists() and not world_root.is_dir()):
+            raise OSError("The current world path must be a real directory, not a symbolic link or file.")
+
+        if new_level_name is not None:
+            new_level_name = self.validate_level_name(new_level_name)
+            target_root = server_root / new_level_name
+            if target_root.is_symlink():
+                raise OSError("The new world folder cannot be a symbolic link.")
+            if target_root.exists() and target_root.resolve() != world_root.resolve():
+                raise FileExistsError(
+                    f"A folder named '{new_level_name}' already exists in this server. "
+                    "Switch to that saved world or choose a different name."
+                )
+            props_path = server_root / "server.properties"
+            if props_path.is_symlink() or (props_path.exists() and not props_path.is_file()):
+                raise OSError("server.properties must be a regular file, not a symbolic link.")
 
         pre_swap_backup_path: Path | None = None
         pre_swap_dir: Path | None = None
@@ -557,12 +648,27 @@ class BackupManager:
             pre_swap_dir = world_root.with_name(f"{world_root.name}.pre-swap-{timestamp}")
             world_root.rename(pre_swap_dir)
 
+        try:
+            if new_level_name is not None:
+                self._write_level_name(new_level_name)
+        except Exception:
+            # A failed properties update must not strand the existing world
+            # under a new name. The mandatory backup remains as an extra copy.
+            if pre_swap_dir is not None and pre_swap_dir.exists() and not world_root.exists():
+                pre_swap_dir.rename(world_root)
+            raise
+
         if progress_cb:
             progress_cb(100)
+        message = (
+            f"World '{new_level_name}' prepared — it will be generated the next time "
+            "the server starts."
+            if new_level_name is not None
+            else "World reset — a brand new world will generate the next time the server starts."
+        )
         return SwapResult(
             ok=True,
-            message="World reset \u2014 a brand new world will generate the next "
-                     "time the server starts.",
+            message=message,
             pre_swap_backup_path=pre_swap_backup_path,
             pre_swap_dir=pre_swap_dir,
         )
