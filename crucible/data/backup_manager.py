@@ -23,10 +23,10 @@ import json
 import shutil
 import stat
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -241,9 +241,10 @@ class BackupManager:
         """Mandatory, unprompted safety backup taken automatically before a
         world swap. Always named so it's exempt from prune_old()."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        world_name = self._instance.world_root_path().name
         return self.create_backup(
             progress_cb=progress_cb,
-            slot_name=f"Pre-swap safety backup — {timestamp}",
+            slot_name=f"Pre-swap safety backup — {world_name} — {timestamp}",
         )
 
     def delete_backup(self, entry: BackupEntry) -> None:
@@ -296,91 +297,77 @@ class BackupManager:
         entry: BackupEntry,
         progress_cb: Callable[[int], None] | None = None,
     ) -> SwapResult:
-        """
-        Atomically replace the CURRENT world with the world stored in `entry`.
+        """Switch to a saved world, even when it has a different level-name.
 
-        IMPORTANT: this method has no access to tmux/live process state. The
-        caller (the World tab) MUST already have confirmed the server is
-        fully stopped and there are no unsaved server.properties edits
-        before calling this -- swapping a world folder out from under a live
-        JVM will corrupt it. This is the highest-risk operation in Crucible,
-        so it is written defensively at every step:
-
-          1. Validate the backup's world-folder name matches this server's
-             CURRENT level-name. If they don't match, refuse outright --
-             extracting a differently-named world would silently create a
-             second, disconnected folder instead of replacing the active one.
-          2. Take an automatic, unprompted, unskippable safety backup of the
-             CURRENT world (if one exists). This is the single most important
-             safety net here and is never optional.
-          3. Rename the current world root sideways to
-             "<level-name>.pre-swap-<timestamp>" -- a fast, same-filesystem,
-             metadata-only rename, never a copy, and never a delete.
-          4. Extract the chosen backup into a fresh world root.
-          5. Verify: level.dat exists and is non-empty, and every dimension
-             folder present in the backup is present in the result (a count/
-             membership check, not a full byte-for-byte diff).
-          6. On ANY failure in steps 4-5: delete the partially-written new
-             world root and rename the pre-swap folder back into place, so
-             the server is NEVER left half-swapped. The original exception
-             is re-raised after rolling back.
-
-        On success, the pre-swap folder from step 3 is deliberately left on
-        disk (not deleted) as an extra safety net -- see prune_pre_swap_dirs()
-        for cleaning those up later once you've confirmed the swap is good.
+        The archive's original level-name becomes the active server level-name.
+        The current world is safety-backed-up and renamed aside before the saved
+        world is extracted. Existing folders are never overwritten.
         """
         if not entry.path.exists():
             raise FileNotFoundError(f"Backup archive not found: {entry.path}")
 
-        world_root = self._instance.world_root_path()
-        self._verify_backup_matches_world_root(entry, world_root)
-        self._validate_backup_archive(entry, world_root)
+        current_world_root = self._instance.world_root_path()
+        backup_level_name = self._verify_backup_matches_world_root(entry, current_world_root)
+        server_root = self._instance.path_obj.resolve()
+        target_world_root = server_root / backup_level_name
+        if target_world_root.is_symlink():
+            raise OSError("The saved world's target folder cannot be a symbolic link.")
+        if (
+            target_world_root.exists()
+            and target_world_root.resolve() != current_world_root.resolve()
+        ):
+            raise ValueError(
+                f"The saved world folder '{backup_level_name}' already exists. "
+                "Crucible will not overwrite it; move or rename that folder first. "
+                "The current level-name has not been changed."
+            )
+        self._validate_backup_archive(entry, target_world_root)
 
-        # Step 2: mandatory safety backup of whatever world is about to be
-        # replaced. Skipped only if there is no existing world to back up
-        # (e.g. first-ever swap-in on a server that was never started).
         pre_swap_backup_path: Path | None = None
-        if world_root.is_dir():
+        if current_world_root.is_dir():
             pre_swap_backup_path = self.create_pre_swap_backup()
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        pre_swap_dir = world_root.with_name(f"{world_root.name}.pre-swap-{timestamp}")
+        pre_swap_dir = current_world_root.with_name(
+            f"{current_world_root.name}.pre-swap-{timestamp}"
+        )
         renamed = False
 
         try:
-            # Step 3: rename the live world sideways -- never delete it here.
-            if world_root.is_dir():
-                world_root.rename(pre_swap_dir)
+            if current_world_root.is_dir():
+                current_world_root.rename(pre_swap_dir)
                 renamed = True
 
-            # Step 4: extract into a fresh world root. Archive members are
-            # stored relative to the SERVER root (not the world root), e.g.
-            # "World/level.dat", "World/DIM1/region/..." -- see create_backup.
-            self._extract_validated_backup(entry, world_root, progress_cb)
+            self._extract_validated_backup(entry, target_world_root, progress_cb)
+            self._verify_swapped_world(target_world_root, entry)
 
-            # Step 5: verify.
-            self._verify_swapped_world(world_root, entry)
+            if backup_level_name != current_world_root.name:
+                self._write_level_name(backup_level_name)
 
         except Exception:
-            # Step 6: roll back -- never leave the server half-swapped.
-            if world_root.exists():
-                shutil.rmtree(world_root, ignore_errors=True)
+            if target_world_root.exists():
+                shutil.rmtree(target_world_root, ignore_errors=True)
             if renamed and pre_swap_dir.exists():
-                pre_swap_dir.rename(world_root)
+                pre_swap_dir.rename(current_world_root)
             raise
 
         if progress_cb:
             progress_cb(100)
         return SwapResult(
             ok=True,
-            message=f"Swapped to \u2018{entry.display_name}\u2019.",
+            message=f"Switched to '{entry.display_name}' ({backup_level_name}).",
             pre_swap_backup_path=pre_swap_backup_path,
             pre_swap_dir=pre_swap_dir if renamed else None,
         )
 
     def _validated_backup_members(self, entry: BackupEntry, world_root: Path) -> tuple[list[zipfile.ZipInfo], int]:
         server_root = self._instance.path_obj.resolve()
-        expected_top = world_root.name
+        expected_top = self._backup_level_name(entry)
+        allowed_top_levels = {
+            expected_top,
+            f"{expected_top}_nether",
+            f"{expected_top}_the_end",
+        }
         members: list[zipfile.ZipInfo] = []
         expanded = 0
         with zipfile.ZipFile(entry.path, "r") as zf:
@@ -394,8 +381,8 @@ class BackupManager:
                 mode = (info.external_attr >> 16) & 0xFFFF
                 if "\x00" in name or "\\" in name or path.is_absolute() or ".." in path.parts or not path.parts:
                     raise ValueError(f"Backup contains an unsafe path: {name!r}")
-                if path.parts[0] != expected_top:
-                    raise ValueError(f"Backup contains data outside the active world folder: {name!r}")
+                if path.parts[0] not in allowed_top_levels:
+                    raise ValueError(f"Backup contains data outside its world folders: {name!r}")
                 file_type = stat.S_IFMT(mode)
                 if stat.S_ISLNK(mode) or (file_type and not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))):
                     raise ValueError(f"Backup contains an unsupported link/device: {name!r}")
@@ -438,24 +425,47 @@ class BackupManager:
                         if src.read(1): raise OSError(f"Backup member exceeded its declared size: {info.filename!r}")
                 if progress_cb and total: progress_cb(int((i + 1) / total * 90))
 
-    def _verify_backup_matches_world_root(self, entry: BackupEntry, world_root: Path) -> None:
-        """Refuse to swap a backup whose stored world-folder name doesn't
-        match the server's CURRENTLY configured level-name."""
+    def _backup_level_name(self, entry: BackupEntry) -> str:
+        """Return the one safe world root name represented by a backup archive."""
         with zipfile.ZipFile(entry.path, "r") as zf:
             top_levels = {
-                Path(n).parts[0] for n in zf.namelist()
-                if n.strip("/") and Path(n).parts
+                PurePosixPath(name).parts[0]
+                for name in zf.namelist()
+                if name.strip("/") and PurePosixPath(name).parts
             }
         if not top_levels:
             raise ValueError(f"Backup archive is empty: {entry.path}")
-        if world_root.name not in top_levels:
+
+        roots = [
+            name for name in top_levels
+            if not name.endswith(("_nether", "_the_end"))
+        ]
+        if len(roots) != 1:
             raise ValueError(
-                f"This backup's world folder ({sorted(top_levels)}) doesn't match "
-                f"the server's current level-name ('{world_root.name}'). Swapping "
-                "would create a second, disconnected world folder instead of "
-                "replacing the active one. Change level-name back to match this "
-                "backup first, or choose a backup made with the current level-name."
+                f"Backup must contain exactly one world root; found {sorted(top_levels)}."
             )
+        level_name = self.validate_level_name(roots[0])
+        allowed = {level_name, f"{level_name}_nether", f"{level_name}_the_end"}
+        if not top_levels.issubset(allowed):
+            raise ValueError(
+                f"Backup contains unexpected top-level folders: {sorted(top_levels)}."
+            )
+        return level_name
+
+    def _verify_backup_matches_world_root(
+        self, entry: BackupEntry, world_root: Path
+    ) -> str:
+        """Validate the archive root and ensure switching won't overwrite a folder."""
+        backup_level_name = self._backup_level_name(entry)
+        target_root = self._instance.path_obj / backup_level_name
+        if target_root.is_symlink():
+            raise ValueError("The saved world target is a symbolic link; refusing to switch.")
+        if target_root.exists() and target_root.resolve() != world_root.resolve():
+            raise ValueError(
+                f"Saved world '{backup_level_name}' conflicts with an existing folder; "
+                "the current level-name cannot be changed until that folder is moved."
+            )
+        return backup_level_name
 
     def _verify_swapped_world(self, world_root: Path, entry: BackupEntry) -> None:
         """Post-extraction sanity check: level.dat present + non-empty, and
@@ -468,7 +478,7 @@ class BackupManager:
                 "extraction. The previous world has been restored."
             )
 
-        top = world_root.name
+        top = self._backup_level_name(entry)
         with zipfile.ZipFile(entry.path, "r") as zf:
             expected_dims = {
                 parts[1] for n in zf.namelist()
@@ -487,6 +497,82 @@ class BackupManager:
                 f"extraction: {sorted(missing)}. The previous world has been restored."
             )
 
+    @staticmethod
+    def validate_level_name(value: str) -> str:
+        """Validate a portable, single-folder Minecraft level-name."""
+        if not isinstance(value, str):
+            raise TypeError("World name must be text.")
+        name = value.strip()
+        if (
+            not name
+            or len(name) > 64
+            or name in {".", ".."}
+            or name.endswith((" ", "."))
+            or ".pre-swap-" in name.lower()
+            or any(ord(char) < 32 or ord(char) == 127 for char in name)
+            or any(char in name for char in '/\\:*?"<>|')
+        ):
+            raise ValueError(
+                "Choose a world name up to 64 characters without path separators, "
+                "reserved filename characters, or a trailing dot/space."
+            )
+        return name
+
+    @staticmethod
+    def _is_pre_swap_folder(candidate: Path) -> bool:
+        """Recognize timestamped pre-swap folders for any previous level-name."""
+        if candidate.is_symlink() or not candidate.is_dir():
+            return False
+        if ".pre-swap-" not in candidate.name:
+            return False
+        timestamp = candidate.name.rsplit(".pre-swap-", 1)[1]
+        return (
+            len(timestamp) == 22
+            and timestamp.count("_") == 2
+            and timestamp.replace("_", "").isdigit()
+        )
+
+    def _write_level_name(self, level_name: str) -> None:
+        """Atomically update level-name while preserving unrelated properties."""
+        server_root = self._instance.path_obj.resolve()
+        props_path = server_root / "server.properties"
+        if props_path.is_symlink() or (props_path.exists() and not props_path.is_file()):
+            raise OSError("server.properties must be a regular file, not a symbolic link.")
+        try:
+            lines = (
+                props_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+                if props_path.exists() else []
+            )
+        except OSError as exc:
+            raise OSError(f"Could not read server.properties: {exc}") from exc
+
+        output = []
+        found = False
+        for line in lines:
+            if line.strip().startswith("level-name="):
+                if not found:
+                    newline = "\r\n" if line.endswith("\r\n") else ("\n" if line.endswith("\n") else "")
+                    output.append(f"level-name={level_name}{newline}")
+                    found = True
+                continue
+            output.append(line)
+        if not found:
+            if output and not output[-1].endswith(("\n", "\r")):
+                output[-1] += "\n"
+            output.append(f"level-name={level_name}\n")
+
+        tmp_path = props_path.with_name(props_path.name + ".crucible-tmp")
+        if tmp_path.is_symlink() or tmp_path.exists():
+            raise OSError(
+                "Refusing to overwrite an existing server.properties temporary file."
+            )
+        try:
+            tmp_path.write_text("".join(output), encoding="utf-8")
+            tmp_path.replace(props_path)
+        except OSError:
+            tmp_path.unlink(missing_ok=True)
+            raise
+
     def prune_pre_swap_dirs(self, keep_days: int = 7) -> int:
         """Delete leftover \"<level>.pre-swap-<timestamp>\" sibling directories
         created automatically by swap_world() that are older than keep_days.
@@ -496,15 +582,13 @@ class BackupManager:
         up. Never touches anything that doesn't match the pre-swap naming
         pattern for THIS instance's current level-name.
         """
-        world_root = self._instance.world_root_path()
-        parent = world_root.parent
+        parent = self._instance.path_obj
         if not parent.is_dir():
             return 0
-        prefix = f"{world_root.name}.pre-swap-"
         cutoff = datetime.now().timestamp() - keep_days * 86400
         deleted = 0
         for candidate in parent.iterdir():
-            if not (candidate.is_dir() and candidate.name.startswith(prefix)):
+            if not self._is_pre_swap_folder(candidate):
                 continue
             try:
                 if candidate.stat().st_mtime < cutoff:
@@ -516,19 +600,21 @@ class BackupManager:
 
     def list_pre_swap_dirs(self) -> list[Path]:
         """List leftover pre-swap sibling directories for this instance, newest first."""
-        world_root = self._instance.world_root_path()
-        parent = world_root.parent
+        parent = self._instance.path_obj
         if not parent.is_dir():
             return []
-        prefix = f"{world_root.name}.pre-swap-"
-        found = [c for c in parent.iterdir() if c.is_dir() and c.name.startswith(prefix)]
+        found = [c for c in parent.iterdir() if self._is_pre_swap_folder(c)]
         found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return found
 
     # World reset / wipe
 
-    def reset_world(self, progress_cb: Callable[[int], None] | None = None) -> SwapResult:
-        """Start over with a brand new world on the next server start.
+    def reset_world(
+        self,
+        progress_cb: Callable[[int], None] | None = None,
+        new_level_name: str | None = None,
+    ) -> SwapResult:
+        """Start over with a brand new, optionally named world on next start.
 
         Non-destructive by design -- reuses exactly the same rename-aside
         pattern as swap_world(): the current world is first safety-backed-up
@@ -544,6 +630,23 @@ class BackupManager:
         unsaved server.properties edits before calling this.
         """
         world_root = self._instance.world_root_path()
+        server_root = self._instance.path_obj.resolve()
+        if world_root.is_symlink() or (world_root.exists() and not world_root.is_dir()):
+            raise OSError("The current world path must be a real directory, not a symbolic link or file.")
+
+        if new_level_name is not None:
+            new_level_name = self.validate_level_name(new_level_name)
+            target_root = server_root / new_level_name
+            if target_root.is_symlink():
+                raise OSError("The new world folder cannot be a symbolic link.")
+            if target_root.exists() and target_root.resolve() != world_root.resolve():
+                raise FileExistsError(
+                    f"A folder named '{new_level_name}' already exists in this server. "
+                    "Switch to that saved world or choose a different name."
+                )
+            props_path = server_root / "server.properties"
+            if props_path.is_symlink() or (props_path.exists() and not props_path.is_file()):
+                raise OSError("server.properties must be a regular file, not a symbolic link.")
 
         pre_swap_backup_path: Path | None = None
         pre_swap_dir: Path | None = None
@@ -557,12 +660,33 @@ class BackupManager:
             pre_swap_dir = world_root.with_name(f"{world_root.name}.pre-swap-{timestamp}")
             world_root.rename(pre_swap_dir)
 
+        try:
+            if new_level_name is not None:
+                self._write_level_name(new_level_name)
+        except Exception as exc:  # A failed properties update must not strand the existing world
+            # under a new name. The mandatory backup remains as an extra copy.
+            if pre_swap_dir is not None and pre_swap_dir.exists() and not world_root.exists():
+                try:
+                    pre_swap_dir.rename(world_root)
+                except OSError as rollback_error:
+                    raise OSError(
+                        f"Could not update level-name ({exc}); the original world "
+                        f"remains preserved at {pre_swap_dir}, but automatic rollback "
+                        f"failed ({rollback_error}). Do not start the server until reviewed."
+                    ) from rollback_error
+            raise
+
         if progress_cb:
             progress_cb(100)
+        message = (
+            f"World '{new_level_name}' prepared — it will be generated the next time "
+            "the server starts."
+            if new_level_name is not None
+            else "World reset — a brand new world will generate the next time the server starts."
+        )
         return SwapResult(
             ok=True,
-            message="World reset \u2014 a brand new world will generate the next "
-                     "time the server starts.",
+            message=message,
             pre_swap_backup_path=pre_swap_backup_path,
             pre_swap_dir=pre_swap_dir,
         )
@@ -610,7 +734,7 @@ class BackupWorker(QObject):
                 slot_name=self._slot_name,
             )
             self.finished.emit(str(path))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - worker boundary reports every operation failure to the GUI
             self.failed.emit(str(exc))
 
 
@@ -637,7 +761,7 @@ class SwapWorker(QObject):
                 self._entry, progress_cb=lambda p: self.progress.emit(p)
             )
             self.finished.emit(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - worker boundary reports every operation failure to the GUI
             self.failed.emit(str(exc))
 
 
@@ -652,15 +776,24 @@ class ResetWorldWorker(QObject):
     finished = pyqtSignal(object)    # SwapResult
     failed   = pyqtSignal(str)       # error message
 
-    def __init__(self, manager: BackupManager, parent: QObject | None = None):
+    def __init__(
+        self,
+        manager: BackupManager,
+        new_level_name: str | None = None,
+        parent: QObject | None = None,
+    ):
         super().__init__(parent)
         self._manager = manager
+        self._new_level_name = new_level_name
 
     def run(self) -> None:
         try:
-            result = self._manager.reset_world(progress_cb=lambda p: self.progress.emit(p))
+            result = self._manager.reset_world(
+                progress_cb=lambda p: self.progress.emit(p),
+                new_level_name=self._new_level_name,
+            )
             self.finished.emit(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - worker boundary reports every operation failure to the GUI
             self.failed.emit(str(exc))
 
 
@@ -683,5 +816,5 @@ class WipeWorldWorker(QObject):
         try:
             result = self._manager.wipe_world()
             self.finished.emit(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - worker boundary reports every operation failure to the GUI
             self.failed.emit(str(exc))
