@@ -356,8 +356,15 @@ class WorldTab(QWidget):
             return
         inst = self._instance
         world_root = inst.world_root_path()
+        has_active_world = world_root.is_dir()
+        self._backup_btn.setEnabled(has_active_world)
+        self._backup_btn.setToolTip(
+            "Save a verified backup of the active world."
+            if has_active_world
+            else "There is no generated active world folder to save yet."
+        )
 
-        if world_root.is_dir():
+        if has_active_world:
             # Dimension listing is a cheap shallow directory scan (just the
             # DIM* folder names directly inside the world root) -- safe to
             # do synchronously. The expensive recursive byte-size walk is
@@ -792,10 +799,15 @@ class WorldTab(QWidget):
             default_name = f"{current_name} - New {suffix}"
             suffix += 1
 
+        prompt = (
+            "Choose a folder name. Crucible will save the active world first."
+            if current_root.is_dir()
+            else "Choose a folder name. No active world folder exists yet; existing world folders and saved backups will be left untouched."
+        )
         new_name, ok = QInputDialog.getText(
             self,
             "Name your new world",
-            "Choose a folder name for the new world. Your current world will be saved first:",
+            prompt,
             text=default_name,
         )
         if not ok:
@@ -816,13 +828,23 @@ class WorldTab(QWidget):
             )
             return
 
+        if current_root.is_dir():
+            recovery_details = (
+                "Before the next manual start, Crucible will:\n"
+                " - Create a mandatory verified backup of the current world\n"
+                " - Keep the old world folder on disk as an extra recovery copy\n"
+                f" - Set this server's level-name to '{new_name}'"
+            )
+        else:
+            recovery_details = (
+                "There is no generated active world folder to back up yet.\n"
+                "Existing world folders and saved backup archives will be left untouched.\n"
+                f"Crucible will set this server's level-name to '{new_name}'."
+            )
         reply = QMessageBox.warning(
             self, "Create a new world?",
             f"Crucible will prepare a fresh world named '{new_name}'. It will not start the server.\n\n"
-            "Before the next manual start, Crucible will:\n"
-            " - Create a mandatory safety backup of the current world\n"
-            " - Keep the old world folder on disk as an extra recovery copy\n"
-            f" - Set this server's level-name to '{new_name}'\n\n"
+            f"{recovery_details}\n\n"
             "The new world is generated only when you press Start yourself. Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
