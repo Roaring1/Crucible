@@ -322,6 +322,44 @@ class NamedWorldResetTests(unittest.TestCase):
         self.assertIn("level-name=GTNH Fresh - November", props)
         self.assertIn("server-port=25565", props)
 
+    def test_saved_worlds_switch_back_and_forth_across_level_names(self):
+        tmp = Path(tempfile.mkdtemp())
+        server_dir = _make_server(tmp, level_name="OldWorld")
+        mgr = _manager(tmp, server_dir, "TestSrv", "named-world-switch")
+        old_root = mgr._instance.world_root_path()
+        (old_root / "marker.txt").write_text("original world")
+
+        mgr.reset_world(new_level_name="FreshWorld")
+        fresh_root = mgr._instance.world_root_path()
+        fresh_root.mkdir()
+        (fresh_root / "level.dat").write_bytes(b"fresh-level")
+        (fresh_root / "marker.txt").write_text("fresh world")
+        fresh_backup_path = mgr.create_backup(slot_name="Fresh world")
+        old_backup = next(
+            entry for entry in mgr.list_backups()
+            if entry.slot_name and entry.slot_name.startswith("Pre-swap safety backup")
+        )
+        fresh_backup = next(entry for entry in mgr.list_backups() if entry.path == fresh_backup_path)
+
+        first_switch = mgr.swap_world(old_backup)
+        self.assertTrue(first_switch.ok)
+        self.assertEqual(mgr._instance.world_root_path().name, "OldWorld")
+        self.assertEqual(
+            (mgr._instance.world_root_path() / "marker.txt").read_text(),
+            "original world",
+        )
+
+        second_switch = mgr.swap_world(fresh_backup)
+        self.assertTrue(second_switch.ok)
+        self.assertEqual(mgr._instance.world_root_path().name, "FreshWorld")
+        self.assertEqual(
+            (mgr._instance.world_root_path() / "marker.txt").read_text(),
+            "fresh world",
+        )
+        props = (server_dir / "server.properties").read_text()
+        self.assertIn("level-name=FreshWorld", props)
+        self.assertTrue(mgr.list_pre_swap_dirs())
+
     def test_named_reset_refuses_existing_target_without_touching_current_world(self):
         tmp = Path(tempfile.mkdtemp())
         server_dir = _make_server(tmp, level_name="OldWorld")
