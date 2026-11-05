@@ -961,11 +961,11 @@ def _default_prism_options(mc: str) -> str | None:
     if mc != "1.7.10":
         return None
     return (
-        "mouseSensitivity:0.35\\n"
-        "renderDistance:8\\n"
-        "key_key.inventory:18\\n"
-        "key_key.sneak:42\\n"
-        "key_key.sprint:29\\n"
+        "mouseSensitivity:0.35\n"
+        "renderDistance:8\n"
+        "key_key.inventory:18\n"
+        "key_key.sneak:42\n"
+        "key_key.sprint:29\n"
     )
 
 
