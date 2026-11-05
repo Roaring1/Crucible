@@ -1066,8 +1066,8 @@ _TEXT_CONFIG_SUFFIXES = {
     "", ".cfg", ".conf", ".env", ".ini", ".json", ".json5", ".js", ".mjs",
     ".properties", ".ps1", ".sh", ".toml", ".txt", ".xml", ".yaml", ".yml",
     ".lua", ".jsonc", ".snbt", ".bak", ".css", ".local", ".md", ".lang",
-    ".recipe", ".recipes", ".cache", ".config", ".csv", ".mcmeta", ".obj",
-    ".patch",
+    ".recipe", ".recipes", ".cache", ".config", ".csv", ".tsv", ".mcmeta",
+    ".obj", ".patch", ".hidden",
 }
 _BINARY_CONFIG_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".ogg", ".wav", ".mp3"}
 _SECRET_PATTERNS = [
