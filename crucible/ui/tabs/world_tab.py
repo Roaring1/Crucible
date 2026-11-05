@@ -51,11 +51,16 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from ...data.instance_model import ServerInstance, dimension_label
 from ...data.backup_manager import (
-    BackupManager, BackupWorker, BackupEntry, SwapWorker, SwapResult,
-    ResetWorldWorker, WipeWorldWorker,
+    BackupEntry,
+    BackupManager,
+    BackupWorker,
+    ResetWorldWorker,
+    SwapResult,
+    SwapWorker,
+    WipeWorldWorker,
 )
+from ...data.instance_model import ServerInstance, dimension_label
 from ...process.tmux_manager import TmuxManager
 from .. import theme
 from ..thread_lifecycle import connect_thread_cleanup
