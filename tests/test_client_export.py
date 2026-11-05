@@ -874,6 +874,46 @@ class ClientExportTests(unittest.TestCase):
             self.assertNotIn("key_key.inventory:15", options)
             self.assertNotIn("autoJump", options)
 
+    def test_serverutilities_is_kept_when_selected_client_profile_contains_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server_mods = server / "mods"
+            server_mods.mkdir(parents=True)
+            source = root / "working-prism"
+            client_mods = source / ".minecraft" / "mods"
+            client_mods.mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.7.10"},
+                    {"uid": "net.minecraftforge", "version": "10.13.4.1614"},
+                ],
+            }), encoding="utf-8")
+            server_jar = server_mods / "ServerUtilities-2.4.22.jar"
+            with zipfile.ZipFile(server_jar, "w") as jar:
+                jar.writestr("mcmod.info", json.dumps([{
+                    "modid": "serverutilities",
+                    "name": "ServerUtilities",
+                    "version": "2.4.22",
+                    "mcversion": "1.7.10",
+                }]))
+            (client_mods / server_jar.name).write_bytes(server_jar.read_bytes())
+            output = root / "gtnh-client.zip"
+            result = client_export.export(
+                SimpleNamespace(
+                    path=str(server), name="GTNH", minecraft_version="1.7.10",
+                    loader="forge", loader_version="10.13.4.1614",
+                ),
+                output, fmt="prism", client_source=str(source), include_config=False,
+            )
+            self.assertTrue(result.ok, result.error)
+            self.assertEqual(result.mod_count, 1)
+            with zipfile.ZipFile(output) as archive:
+                self.assertIn(
+                    f"GTNH/.minecraft/mods/{server_jar.name}", archive.namelist()
+                )
+
     def test_gtnh_journeymap_server_companion_is_excluded_from_client_pack(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
