@@ -807,7 +807,7 @@ class ClientExportTests(unittest.TestCase):
             }), encoding="utf-8")
             server_jar = server_mods / "unknown-shared.jar"
             with zipfile.ZipFile(server_jar, "w") as jar:
-                jar.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\\n")
+                jar.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
             # Same bytes under a different client filename are sufficient evidence.
             (client_mods / "renamed-unknown-shared.jar").write_bytes(server_jar.read_bytes())
             instance = SimpleNamespace(
