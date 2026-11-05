@@ -5,6 +5,15 @@
 - Fix the Add Mod dialog startup race: deferred initial search is now owned by the dialog and cannot launch a background request after early close. The Qt smoke regression verifies that close-before-startup launches no worker.
 - Isolate Qt smoke tests from the developer's real CurseForge key and live CurseForge API so ordinary tests are deterministic and never consume personal credentials.
 
+## v0.8.1 — GTNH player sharing and world library
+
+- Add a visual World Library with named world creation, automatic verified safety snapshots, recoverable old-world folders, and direct switching between saved worlds. New worlds are generated only when the owner manually starts the server.
+- Keep dangerous permanent world deletion behind collapsed Advanced actions.
+- Label automatic pre-swap snapshots with the world name they preserve so they are identifiable in the saved-world list.
+- Harden Prism client-pack exports for GTNH 1.7.10: use neutral recipient settings (approximately 70% mouse sensitivity, 8-chunk render distance, vanilla inventory/sneak/sprint controls), never copy the owner's personal options, and exclude the server-only JourneyMap companion.
+- Expand bounded privacy scanning for GTNH configuration, quest/localization text, and nested guide archives; omit stale config backup files and improve credential detection.
+- Keep mod redistribution status explicit: unknown/unverified mod JARs are not represented as cleared for rehosting. Use the official GTNH download distribution when sharing the base pack.
+
 ## v0.8.0 — Server-manager refinement
 
 - Pack update/rollback safety: recheck that the server is stopped and its configured IPv4 port is free immediately before swapping directories. Reject unsafe `level-name` paths, symlinked world roots, and nested symlinks or special files in preserved trees rather than following external paths.
