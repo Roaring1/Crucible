@@ -54,6 +54,25 @@ class WorldStatsThreadGuardTests(unittest.TestCase):
             self.src,
         )
 
+    def test_missing_active_world_disables_the_save_current_world_action(self) -> None:
+        self.assertIn("has_active_world = world_root.is_dir()", self.src)
+        self.assertIn("self._backup_btn.setEnabled(has_active_world)", self.src)
+        self.assertIn(
+            "There is no generated active world folder to save yet.",
+            self.src,
+        )
+
+    def test_empty_world_slot_confirmation_does_not_claim_a_backup_was_taken(self) -> None:
+        self.assertIn("if current_root.is_dir():", self.src)
+        self.assertIn(
+            "There is no generated active world folder to back up yet.",
+            self.src,
+        )
+        self.assertIn(
+            "Existing world folders and saved backup archives will be left untouched.",
+            self.src,
+        )
+
     def test_guard_appears_before_any_new_thread_is_constructed(self) -> None:
         guard_index = self.src.index(
             "if self._stats_thread is not None and self._stats_thread.isRunning():"
