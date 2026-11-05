@@ -490,6 +490,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
                 return ExportResult(error=f"Refusing to export symbolic-link directory {dirname}/.")
 
     client_minecraft_root = None
+    client_mmc_pack: dict | None = None
     client_resourcepacks_present = False
     client_shaderpacks_present = False
     from ..mods.mod_manager import ModEntry, ModManager
@@ -536,6 +537,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         try:
             pack = json.loads(pack_file.read_text())
             components = {c["uid"]: c.get("version", "") for c in pack["components"]}
+            client_mmc_pack = pack
         except (OSError, ValueError, KeyError, TypeError):
             return ExportResult(error="Choose a fully installed Prism/MultiMC instance containing mmc-pack.json.")
         if components.get("net.minecraft") != mc:
@@ -829,7 +831,10 @@ def export(instance, out_path, fmt: str = "mrpack", *,
             if fmt == "mrpack":
                 build_warnings = _build_mrpack(partial, name, mc, loader, loader_version, ship, cfg)
             elif fmt == "prism":
-                build_warnings = _build_prism(partial, name, mc, loader, loader_version, ship, cfg)
+                build_warnings = _build_prism(
+                    partial, name, mc, loader, loader_version, ship, cfg,
+                    source_mmc_pack=client_mmc_pack,
+                )
             else:
                 build_warnings = _build_curseforge(partial, name, mc, loader, loader_version, ship, cfg)
             build_warnings = config_warnings + build_warnings
@@ -1007,18 +1012,36 @@ def _default_prism_options(mc: str) -> str | None:
     )
 
 
-def _build_prism(out_path, name, mc, loader, loader_version, jars, cfg_dirs):
-    components = [{"uid": "net.minecraft", "version": mc}]
-    uid = _PRISM_UID.get(loader)
-    if uid and loader != "vanilla":
-        comp = {"uid": uid}
-        if loader_version:
-            comp["version"] = loader_version
-        components.append(comp)
+def _build_prism(
+    out_path, name, mc, loader, loader_version, jars, cfg_dirs,
+    source_mmc_pack: dict | None = None,
+):
+    # Keep the selected, already-validated Prism profile's launcher components.
+    # GTNH 2.9+ uses LWJGL3ify component patches to supply LWJGL3, the
+    # RetroFuturaBootstrap launcher, and required JVM --add-opens flags. Rebuilding
+    # this list as only Minecraft + Forge silently removes those flags and can
+    # make LWJGL3ify fall back to its Java-8 relauncher popup on first launch.
+    if source_mmc_pack is not None:
+        source_components = source_mmc_pack.get("components")
+        if not isinstance(source_components, list) or not all(
+            isinstance(component, dict) and isinstance(component.get("uid"), str)
+            for component in source_components
+        ):
+            raise ValueError("Selected Prism mmc-pack.json has invalid launcher components.")
+        components = [dict(component) for component in source_components]
+    else:
+        components = [{"uid": "net.minecraft", "version": mc}]
+        uid = _PRISM_UID.get(loader)
+        if uid and loader != "vanilla":
+            comp = {"uid": uid}
+            if loader_version:
+                comp["version"] = loader_version
+            components.append(comp)
     mmc_pack = {"components": components, "formatVersion": 1}
     instance_cfg = (
         "[General]\nConfigVersion=1.2\n"
         f"name={name.replace(chr(10), ' ').replace(chr(13), ' ')}\nInstanceType=OneSix\niconKey=default\n"
+        "notes=GTNH modern-Java client: select Java 17 or newer in Prism Edit > Settings > Java (Java 25 is recommended for current GTNH). Java 8 triggers LWJGL3ify's first-launch relaunch dialog. The preserved Prism LWJGL3ify components supply the required JVM flags automatically; do not paste manual --add-opens flags. Start with about 8 GB memory and raise the maximum to 12 GB only when system RAM allows.\n"
     )
     folder = _safe_name(name)
     warnings = []

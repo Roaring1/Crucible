@@ -57,6 +57,53 @@ class ClientExportTests(unittest.TestCase):
             )
             self.assertEqual(result.mod_count, 0)
 
+    def test_prism_export_preserves_gtnh_lwjgl3ify_launcher_components(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            (server / "mods").mkdir(parents=True)
+            source = root / "working-prism"
+            (source / ".minecraft" / "mods").mkdir(parents=True)
+            launcher_components = [
+                {"uid": "org.lwjgl3", "version": "3.4.3", "dependencyOnly": True},
+                {
+                    "uid": "net.minecraft",
+                    "version": "1.7.10",
+                    "cachedName": "Minecraft with LWJGL3",
+                    "cachedRequires": [{"uid": "org.lwjgl3", "suggests": "3.4.3"}],
+                },
+                {"uid": "me.eigenraven.lwjgl3ify.forgepatches", "version": "3.0.42"},
+                {"uid": "net.minecraftforge", "version": "10.13.4.1614"},
+                {"uid": "me.eigenraven.lwjgl3ify.launchargs", "version": "3.0.42"},
+            ]
+            (source / "mmc-pack.json").write_text(
+                json.dumps({"formatVersion": 1, "components": launcher_components}),
+                encoding="utf-8",
+            )
+            instance = SimpleNamespace(
+                path=str(server),
+                name="GTNH",
+                minecraft_version="1.7.10",
+                loader="forge",
+                loader_version="10.13.4.1614",
+            )
+            output = root / "gtnh-client.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", client_source=str(source), include_config=False
+            )
+
+            self.assertTrue(result.ok, result.error)
+            with zipfile.ZipFile(output) as archive:
+                exported = json.loads(archive.read("GTNH/mmc-pack.json"))
+                instance_cfg = archive.read("GTNH/instance.cfg").decode("utf-8")
+            self.assertIn("Java 17 or newer", instance_cfg)
+            self.assertIn("required JVM flags automatically", instance_cfg)
+            self.assertEqual(exported["components"], launcher_components)
+            exported_uids = {component["uid"] for component in exported["components"]}
+            self.assertIn("org.lwjgl3", exported_uids)
+            self.assertIn("me.eigenraven.lwjgl3ify.forgepatches", exported_uids)
+            self.assertIn("me.eigenraven.lwjgl3ify.launchargs", exported_uids)
+
     def test_config_checkbox_off_exports_no_config_or_defaultconfigs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
