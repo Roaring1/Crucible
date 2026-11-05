@@ -18,6 +18,7 @@ profile confirms a shared unknown-side JAR; unmatched unknown sides are reported
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -1149,6 +1150,66 @@ def _privacy_findings(name: str, raw: bytes) -> list[str]:
             break
     return findings
 
+def _scan_nested_config_archive(
+    name: str,
+    raw: bytes,
+    *,
+    scan_bytes: int,
+) -> tuple[list[str], int, list[str], int, list[str], int]:
+    """Scan text files inside an included config archive without extracting it."""
+    findings = []
+    incomplete_count = 0
+    incomplete_examples = []
+    unsupported_count = 0
+    unsupported_examples = []
+    binary_skipped = 0
+    try:
+        nested = zipfile.ZipFile(io.BytesIO(raw), "r")
+    except (OSError, zipfile.BadZipFile):
+        return [], 0, [], 1, [name], 0
+
+    with nested:
+        for info in nested.infolist():
+            if info.is_dir():
+                continue
+            member_name = f"{name}!/{info.filename}"
+            suffix = Path(info.filename).suffix.lower()
+            if suffix in _BINARY_CONFIG_SUFFIXES:
+                continue
+            if suffix not in _TEXT_CONFIG_SUFFIXES:
+                unsupported_count += 1
+                if len(unsupported_examples) < 10:
+                    unsupported_examples.append(member_name)
+                continue
+            if info.file_size > _MAX_PRIVACY_FILE_BYTES or (
+                scan_bytes + info.file_size > _MAX_PRIVACY_TOTAL_BYTES
+            ):
+                incomplete_count += 1
+                if len(incomplete_examples) < 10:
+                    incomplete_examples.append(member_name)
+                continue
+            try:
+                content = nested.read(info)
+            except (OSError, RuntimeError, zipfile.BadZipFile):
+                incomplete_count += 1
+                if len(incomplete_examples) < 10:
+                    incomplete_examples.append(member_name)
+                continue
+            if b"\x00" in content[:4096]:
+                binary_skipped += 1
+                continue
+            findings.extend(_privacy_findings(member_name, content))
+            scan_bytes += info.file_size
+    return (
+        findings,
+        incomplete_count,
+        incomplete_examples,
+        unsupported_count,
+        unsupported_examples,
+        binary_skipped,
+    )
+
+
 def _seal_archive(
     archive_path: Path,
     *,
@@ -1191,11 +1252,16 @@ def _seal_archive(
                 raise OSError(f"Source files collide with generated manifest path: {manifest_name!r}")
 
             text_candidate = _is_text_config_entry(member_name)
+            nested_archive_candidate = (
+                _is_config_entry(member_name)
+                and Path(member_name).suffix.lower() == ".zip"
+            )
             should_scan = False
             sample = bytearray()
             if (
                 _is_config_entry(member_name)
                 and not text_candidate
+                and not nested_archive_candidate
                 and not _is_known_binary_config_entry(member_name)
             ):
                 unsupported_config_count += 1
@@ -1222,6 +1288,31 @@ def _seal_archive(
                     digest.update(chunk)
                     if should_scan:
                         sample.extend(chunk)
+
+            if nested_archive_candidate:
+                (
+                    nested_findings,
+                    nested_incomplete,
+                    nested_incomplete_examples,
+                    nested_unsupported,
+                    nested_unsupported_examples,
+                    nested_binary_skipped,
+                ) = _scan_nested_config_archive(
+                    member_name, bytes(sample), scan_bytes=scan_bytes
+                )
+                scan_incomplete_count += nested_incomplete
+                scan_incomplete_examples.extend(
+                    nested_incomplete_examples[:max(0, 10 - len(scan_incomplete_examples))]
+                )
+                unsupported_config_count += nested_unsupported
+                unsupported_config_examples.extend(
+                    nested_unsupported_examples[:max(0, 10 - len(unsupported_config_examples))]
+                )
+                binary_config_skipped += nested_binary_skipped
+                remaining_findings = max(0, _MAX_PRIVACY_FINDINGS - len(privacy_warnings))
+                privacy_warnings.extend(nested_findings[:remaining_findings])
+                if len(nested_findings) > remaining_findings:
+                    privacy_findings_truncated = True
 
             if should_scan:
                 scan_bytes += info.file_size
