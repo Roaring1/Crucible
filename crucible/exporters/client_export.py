@@ -213,6 +213,10 @@ def compute_input_fingerprint(
             "sha256": _sha256_file(mmc),
             "size": mmc.stat().st_size,
         })
+        # Prism launcher components may depend on per-component patch JSON and
+        # profile-local libraries. Fingerprint them as first-class launch inputs.
+        records.extend(_fingerprint_input_tree(source / "patches", label="client-prism-patches"))
+        records.extend(_fingerprint_input_tree(source / "libraries", label="client-prism-libraries"))
         records.extend(_fingerprint_input_tree(client_root / "mods", label="client-mods", top_level_jars=True))
         if include_config:
             records.extend(_fingerprint_input_tree(client_root / "config", label="client-config"))
@@ -490,6 +494,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
                 return ExportResult(error=f"Refusing to export symbolic-link directory {dirname}/.")
 
     client_minecraft_root = None
+    client_prism_root: Path | None = None
     client_mmc_pack: dict | None = None
     client_resourcepacks_present = False
     client_shaderpacks_present = False
@@ -531,6 +536,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         # Never overwrite the chosen Prism instance itself, even if the selected
         # destination is a file not otherwise included in the generated archive.
         source_root = source.resolve()
+        client_prism_root = source_root
         if (out_absolute == source_root or source_root in out_absolute.parents
                 or out_resolved == source_root or source_root in out_resolved.parents):
             return ExportResult(error="Save the client export outside the selected Prism source folder.")
@@ -834,6 +840,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
                 build_warnings = _build_prism(
                     partial, name, mc, loader, loader_version, ship, cfg,
                     source_mmc_pack=client_mmc_pack,
+                    source_prism_root=client_prism_root,
                 )
             else:
                 build_warnings = _build_curseforge(partial, name, mc, loader, loader_version, ship, cfg)
@@ -1012,9 +1019,80 @@ def _default_prism_options(mc: str) -> str | None:
     )
 
 
+def _add_prism_profile_support(
+    zf: zipfile.ZipFile,
+    source_root: Path | None,
+    folder: str,
+    components: list[dict],
+) -> list[str]:
+    """Copy installed Prism component patches and profile-local libraries."""
+    if source_root is None:
+        return []
+
+    uids = [
+        component["uid"]
+        for component in components
+        if isinstance(component, dict) and isinstance(component.get("uid"), str)
+    ]
+    patch_root = source_root / "patches"
+    library_root = source_root / "libraries"
+    if patch_root.is_symlink():
+        raise OSError("Refusing to package a symbolic-link Prism patches directory.")
+    for uid in uids:
+        patch = patch_root / f"{uid}.json"
+        if patch.is_symlink():
+            raise OSError(f"Refusing to package symbolic-link Prism component patch: {uid}.json")
+        if patch.exists():
+            if not patch.is_file():
+                raise OSError(f"Prism component patch is not a regular file: {uid}.json")
+            resolved_patch = patch.resolve(strict=True)
+            try:
+                resolved_patch.relative_to(patch_root.resolve(strict=True))
+            except ValueError as exc:
+                raise OSError(f"Prism component patch escapes its source directory: {uid}.json") from exc
+            zf.write(resolved_patch, f"{folder}/patches/{uid}.json")
+        elif uid.startswith("me.eigenraven.lwjgl3ify."):
+            raise OSError(f"The selected GTNH profile is missing patches/{uid}.json. Repair the Prism profile before exporting.")
+
+    if library_root.is_symlink():
+        raise OSError("Refusing to package a symbolic-link Prism libraries directory.")
+    if library_root.exists():
+        if not library_root.is_dir():
+            raise OSError("The Prism libraries path is not a directory.")
+        resolved_root = library_root.resolve(strict=True)
+        for path in sorted(library_root.rglob("*"), key=lambda item: (item.as_posix().casefold(), item.as_posix())):
+            relative = path.relative_to(library_root)
+            if path.is_symlink():
+                raise OSError(f"Refusing to package symbolic-link Prism library: {relative.as_posix()}")
+            if path.is_dir():
+                continue
+            if not path.is_file():
+                raise OSError(f"Refusing to package special Prism library file: {relative.as_posix()}")
+            resolved = path.resolve(strict=True)
+            try:
+                resolved.relative_to(resolved_root)
+            except ValueError as exc:
+                raise OSError(f"Prism library escapes its source directory: {relative.as_posix()}") from exc
+            compression = (
+                zipfile.ZIP_STORED
+                if path.suffix.lower() in _ALREADY_COMPRESSED_SUFFIXES
+                else zipfile.ZIP_DEFLATED
+            )
+            zf.write(resolved, f"{folder}/libraries/{relative.as_posix()}", compress_type=compression)
+
+    has_lwjgl3ify = any(uid.startswith("me.eigenraven.lwjgl3ify.") for uid in uids)
+    if has_lwjgl3ify and not library_root.is_dir():
+        raise OSError("The GTNH source profile is missing its libraries/ directory containing LWJGL3ify ForgePatches.")
+    if "me.eigenraven.lwjgl3ify.forgepatches" in uids:
+        if not any(library_root.glob("lwjgl3ify-*-forgePatches.jar")):
+            raise OSError("The GTNH source profile is missing its local lwjgl3ify forgePatches jar.")
+    return []
+
+
 def _build_prism(
     out_path, name, mc, loader, loader_version, jars, cfg_dirs,
     source_mmc_pack: dict | None = None,
+    source_prism_root: Path | None = None,
 ):
     # Keep the selected, already-validated Prism profile's launcher components.
     # GTNH 2.9+ uses LWJGL3ify component patches to supply LWJGL3, the
@@ -1048,6 +1126,7 @@ def _build_prism(
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(f"{folder}/instance.cfg", instance_cfg)
         zf.writestr(f"{folder}/mmc-pack.json", json.dumps(mmc_pack, indent=2))
+        warnings.extend(_add_prism_profile_support(zf, source_prism_root, folder, components))
         for j in jars:
             zf.write(j, f"{folder}/.minecraft/mods/{j.name}", compress_type=zipfile.ZIP_STORED)
         default_options = _default_prism_options(mc)

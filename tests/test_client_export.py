@@ -72,14 +72,35 @@ class ClientExportTests(unittest.TestCase):
                     "cachedName": "Minecraft with LWJGL3",
                     "cachedRequires": [{"uid": "org.lwjgl3", "suggests": "3.4.3"}],
                 },
-                {"uid": "me.eigenraven.lwjgl3ify.forgepatches", "version": "3.0.42"},
+                {"uid": "me.eigenraven.lwjgl3ify.forgepatches", "cachedName": "LWJGL3ify Early Classpath", "cachedVersion": "3.0.42"},
                 {"uid": "net.minecraftforge", "version": "10.13.4.1614"},
-                {"uid": "me.eigenraven.lwjgl3ify.launchargs", "version": "3.0.42"},
+                {"uid": "me.eigenraven.lwjgl3ify.launchargs", "cachedName": "LWJGL3ify launch args", "cachedVersion": "3.0.42"},
             ]
             (source / "mmc-pack.json").write_text(
                 json.dumps({"formatVersion": 1, "components": launcher_components}),
                 encoding="utf-8",
             )
+            patches = source / "patches"
+            patches.mkdir()
+            patch_payloads = {
+                "org.lwjgl3": {"uid": "org.lwjgl3", "version": "3.4.3"},
+                "net.minecraft": {"uid": "net.minecraft", "version": "1.7.10"},
+                "me.eigenraven.lwjgl3ify.forgepatches": {
+                    "uid": "me.eigenraven.lwjgl3ify.forgepatches", "version": "3.0.42",
+                    "+jvmArgs": ["-Djava.system.class.loader=com.gtnewhorizons.retrofuturabootstrap.RfbSystemClassLoader"],
+                },
+                "net.minecraftforge": {"uid": "net.minecraftforge", "version": "10.13.4.1614"},
+                "me.eigenraven.lwjgl3ify.launchargs": {
+                    "uid": "me.eigenraven.lwjgl3ify.launchargs", "version": "3.0.42",
+                    "mainClass": "com.gtnewhorizons.retrofuturabootstrap.MainStartOnFirstThread",
+                },
+            }
+            for uid, payload in patch_payloads.items():
+                (patches / f"{uid}.json").write_text(json.dumps(payload), encoding="utf-8")
+            libraries = source / "libraries"
+            libraries.mkdir()
+            local_library = libraries / "lwjgl3ify-3.0.42-forgePatches.jar"
+            local_library.write_bytes(b"test forgePatches jar bytes")
             instance = SimpleNamespace(
                 path=str(server),
                 name="GTNH",
@@ -96,6 +117,18 @@ class ClientExportTests(unittest.TestCase):
             with zipfile.ZipFile(output) as archive:
                 exported = json.loads(archive.read("GTNH/mmc-pack.json"))
                 instance_cfg = archive.read("GTNH/instance.cfg").decode("utf-8")
+                self.assertEqual(
+                    archive.read("GTNH/patches/me.eigenraven.lwjgl3ify.forgepatches.json"),
+                    (patches / "me.eigenraven.lwjgl3ify.forgepatches.json").read_bytes(),
+                )
+                self.assertEqual(
+                    archive.read("GTNH/patches/me.eigenraven.lwjgl3ify.launchargs.json"),
+                    (patches / "me.eigenraven.lwjgl3ify.launchargs.json").read_bytes(),
+                )
+                self.assertEqual(
+                    archive.read("GTNH/libraries/lwjgl3ify-3.0.42-forgePatches.jar"),
+                    local_library.read_bytes(),
+                )
             self.assertIn("Java 17 or newer", instance_cfg)
             self.assertIn("required JVM flags automatically", instance_cfg)
             self.assertEqual(exported["components"], launcher_components)
