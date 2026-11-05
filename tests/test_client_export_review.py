@@ -309,9 +309,15 @@ class ClientExportReviewTests(unittest.TestCase):
                 output = root / f"{fmt}.zip"
                 original_builder = getattr(client_export, builder_name)
 
-                def replace_jar_before_packaging(*args, **kwargs):
-                    jar.write_bytes(prohibited_bytes)
-                    return original_builder(*args, **kwargs)
+                def replace_jar_before_packaging(
+                    *args,
+                    _jar=jar,
+                    _prohibited_bytes=prohibited_bytes,
+                    _original_builder=original_builder,
+                    **kwargs,
+                ):
+                    _jar.write_bytes(_prohibited_bytes)
+                    return _original_builder(*args, **kwargs)
 
                 with self._with_catalog(catalog_path), patch.object(
                     client_export, builder_name, side_effect=replace_jar_before_packaging
