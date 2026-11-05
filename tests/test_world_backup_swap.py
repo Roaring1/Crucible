@@ -184,7 +184,7 @@ class WorldSwapTests(unittest.TestCase):
         mgr = _manager(tmp, server_dir, "TestSrv", "backups6")
         inst = mgr._instance
 
-        original_backup = mgr.create_backup(slot_name="Original")
+        mgr.create_backup(slot_name="Original")
 
         world_root = inst.world_root_path()
         (world_root / "level.dat").write_bytes(b"MUTATED" * 10)
@@ -214,7 +214,6 @@ class WorldSwapTests(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         server_dir = _make_server(tmp, level_name="World")
         mgr = _manager(tmp, server_dir, "TestSrv", "backups7")
-        inst = mgr._instance
 
         mgr.create_backup(slot_name="Original")
         entry = next(e for e in mgr.list_backups() if e.slot_name == "Original")
@@ -340,7 +339,7 @@ class NamedWorldResetTests(unittest.TestCase):
 
     def test_named_reset_rejects_unsafe_names(self):
         for name in ("", ".", "..", "../outside", "bad/name", "bad\\\\name", "trailing.", "x" * 65):
-            with self.subTest(name=name):
+            with self.subTest(name=name):  # noqa: SIM117 - keep nested context for readable failure context
                 with self.assertRaises(ValueError):
                     BackupManager.validate_level_name(name)
 
