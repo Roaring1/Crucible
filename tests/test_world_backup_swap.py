@@ -26,7 +26,7 @@ if "PyQt6" not in sys.modules:
     sys.modules["PyQt6"] = pyqt
     sys.modules["PyQt6.QtCore"] = qtcore
 
-from crucible.data import backup_manager as backup_mod
+from crucible.data import backup_manager as backup_mod  # noqa: I001 - test installs Qt shims before importing the package
 from crucible.data.backup_manager import BackupManager, SwapResult
 from crucible.data.instance_model import (
     ServerInstance, dimension_label, is_dimension_dir_name,
