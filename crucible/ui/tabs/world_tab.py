@@ -306,7 +306,7 @@ class WorldTab(QWidget):
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self._table.setColumnWidth(3, 190)
+        self._table.setColumnWidth(3, 250)
         self._table.verticalHeader().setVisible(False)
         self._table.setShowGrid(False)
         self._table.setAlternatingRowColors(True)
@@ -397,14 +397,14 @@ class WorldTab(QWidget):
         pre_swap_dirs = self._manager.list_pre_swap_dirs()
         if pre_swap_dirs:
             self._presafe_label.setText(
-                f"{len(pre_swap_dirs)} leftover pre-swap folder(s) from previous swaps/resets "
+                f"{len(pre_swap_dirs)} old world folder copy/copies are kept for recovery "
                 "(calculating size\u2026). These are an extra safety net kept alongside "
                 "your world folder -- once you've confirmed your current world is good, "
                 "you can delete them."
             )
             self._cleanup_btn.setEnabled(True)
         else:
-            self._presafe_label.setText("No leftover pre-swap folders.")
+            self._presafe_label.setText("No extra old world folders.")
             self._cleanup_btn.setEnabled(False)
 
         self._start_stats_worker(world_root, pre_swap_dirs)
@@ -688,7 +688,7 @@ class WorldTab(QWidget):
             "This only affects terrain that hasn't been generated yet -- it will "
             "NOT change chunks that already exist in the current world. To "
             "actually see a new world generated with this seed, use "
-            "\u201cReset World\u201d afterwards.\n\n"
+            "\u201cCreate new world\u201d afterwards.\n\n"
             + (f"Set level-seed to '{seed}'?" if seed else
                "Continue with a blank (random) seed?"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
@@ -742,7 +742,7 @@ class WorldTab(QWidget):
         tmp.write_text("".join(lines), encoding="utf-8")
         tmp.replace(props_path)
 
-    # Reset World action
+    # Create New World action
 
     def _confirm_and_reset(self) -> None:
         if not self._manager or not self._instance:
@@ -911,7 +911,7 @@ class WorldTab(QWidget):
         labels = {
             "backup": "Creating backup...",
             "swap": "Swapping worlds... do not close Crucible.",
-            "reset": "Resetting world... do not close Crucible.",
+            "reset": "Preparing new world... do not close Crucible.",
             "wipe": "Wiping world...",
         }
         self._progress_lbl.setText(labels.get(kind, "Working..."))
@@ -1007,15 +1007,15 @@ class WorldTab(QWidget):
         if not self._manager:
             return
         reply = QMessageBox.question(
-            self, "Clean up pre-swap folders",
-            "Delete leftover pre-swap folders older than 7 days? Folders newer "
+            self, "Clean up old world copies",
+            "Delete old world copies older than 7 days? Copies newer "
             "than that are kept a little longer in case you need to recover from "
             "them manually.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
         )
         if reply == QMessageBox.StandardButton.Yes:
             deleted = self._manager.prune_pre_swap_dirs(keep_days=7)
-            QMessageBox.information(self, "Cleanup complete", f"Deleted {deleted} old pre-swap folder(s).")
+            QMessageBox.information(self, "Cleanup complete", f"Deleted {deleted} old world folder copy/copies.")
             self._refresh()
 
 
