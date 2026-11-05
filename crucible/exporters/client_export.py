@@ -1057,14 +1057,17 @@ def _safe_name(name: str) -> str:
 # Keep the per-file scan bounded. Mod JARs are binary and are not scanned for
 # text secrets here; only included config/KubeJS entries are inspected. The
 # manifest hashes every archive member, regardless of whether it is scannable.
-_MAX_PRIVACY_FILE_BYTES = 1024 * 1024
-_MAX_PRIVACY_TOTAL_BYTES = 16 * 1024 * 1024
+_MAX_PRIVACY_FILE_BYTES = 8 * 1024 * 1024
+_MAX_PRIVACY_TOTAL_BYTES = 256 * 1024 * 1024
 _MAX_PRIVACY_FINDINGS = 50
 _TEXT_CONFIG_SUFFIXES = {
     "", ".cfg", ".conf", ".env", ".ini", ".json", ".json5", ".js", ".mjs",
     ".properties", ".ps1", ".sh", ".toml", ".txt", ".xml", ".yaml", ".yml",
-    ".lua", ".jsonc", ".snbt", ".bak", ".css", ".local",
+    ".lua", ".jsonc", ".snbt", ".bak", ".css", ".local", ".md", ".lang",
+    ".recipe", ".recipes", ".cache", ".config", ".csv", ".mcmeta", ".obj",
+    ".patch",
 }
+_BINARY_CONFIG_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".ogg", ".wav", ".mp3"}
 _SECRET_PATTERNS = [
     ("credential assignment", re.compile(
         r'''(?im)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|passwd|webhook|authorization|auth[_-]?token)\b[ \t]*[:=][ \t]*["']?([^\s"'#,;]{16,})'''
@@ -1102,6 +1105,10 @@ def _is_config_entry(name: str) -> bool:
 
 def _is_text_config_entry(name: str) -> bool:
     return _is_config_entry(name) and Path(name).suffix.lower() in _TEXT_CONFIG_SUFFIXES
+
+
+def _is_known_binary_config_entry(name: str) -> bool:
+    return _is_config_entry(name) and Path(name).suffix.lower() in _BINARY_CONFIG_SUFFIXES
 
 
 def _privacy_findings(name: str, raw: bytes) -> list[str]:
@@ -1186,7 +1193,11 @@ def _seal_archive(
             text_candidate = _is_text_config_entry(member_name)
             should_scan = False
             sample = bytearray()
-            if _is_config_entry(member_name) and not text_candidate:
+            if (
+                _is_config_entry(member_name)
+                and not text_candidate
+                and not _is_known_binary_config_entry(member_name)
+            ):
                 unsupported_config_count += 1
                 if len(unsupported_config_examples) < 10:
                     unsupported_config_examples.append(member_name)
@@ -1275,8 +1286,8 @@ def _seal_archive(
         "privacyReview": {
             "scanner": "bounded heuristic pattern scan; this is not a guarantee that a pack contains no secrets",
             "scope": (
-                "Scans eligible text files under included config/ and KubeJS/ roots only. "
-                "Binary/unknown config files, oversized files, mod JARs, resource packs, and other payloads are not inspected for secrets."
+                "Scans supported text files under included config/ and KubeJS/ roots only. "
+                "Known image/audio assets are excluded by type; unknown/binary config files, oversized files, mod JARs, resource packs, and other payloads are not inspected for secrets."
             ),
             "coverageComplete": (
                 not scan_incomplete_count
