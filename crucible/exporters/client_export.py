@@ -298,6 +298,14 @@ def _is_server_only(name: str) -> bool:
     return any(h in low for h in _SERVER_ONLY_HINTS)
 
 
+_BACKUP_CONFIG_SUFFIXES = {".bak", ".old", ".orig", ".backup", ".tmp", ".swp"}
+
+
+def _is_backup_config_artifact(path: Path) -> bool:
+    """Return whether a config file is a stale editor/backup artifact, not a runtime input."""
+    return path.name.lower().endswith("~") or path.suffix.lower() in _BACKUP_CONFIG_SUFFIXES
+
+
 def _merge_config_dirs(
     server_path: Path,
     client_minecraft_root: Path | None,
@@ -309,6 +317,7 @@ def _merge_config_dirs(
     """Stage client-shareable config/KubeJS and optional resource packs safely."""
     merged_roots: list[Path] = []
     warnings: list[str] = []
+    excluded_config_backups: list[str] = []
 
     for dirname in (("config", "kubejs") if include_config else ()):
         sources = [(server_path / dirname, "server")]
@@ -356,6 +365,9 @@ def _merge_config_dirs(
                     raise OSError(
                         f"Special files are not exported from {source_kind} {dirname}/: {relative.as_posix()}"
                     )
+                if _is_backup_config_artifact(relative):
+                    excluded_config_backups.append(f"{dirname}/{relative.as_posix()}")
+                    continue
                 resolved = entry.resolve(strict=True)
                 try:
                     resolved.relative_to(root)
@@ -416,6 +428,13 @@ def _merge_config_dirs(
                 warnings.append(
                     "Client resource packs from the selected Prism profile were included by explicit owner choice; review whether each pack is required and licensed for sharing."
                 )
+    if excluded_config_backups:
+        shown = ", ".join(excluded_config_backups[:8])
+        if len(excluded_config_backups) > 8:
+            shown += f", and {len(excluded_config_backups) - 8} more"
+        warnings.append(
+            f"Excluded {len(excluded_config_backups)} backup/temporary config artifact(s) from the player pack: {shown}."
+        )
     # The same excluded KubeJS root can exist in both server and client source;
     # report a warning once rather than making the review list noisy.
     return merged_roots, list(dict.fromkeys(warnings))
@@ -1086,18 +1105,32 @@ def _is_text_config_entry(name: str) -> bool:
 
 
 def _privacy_findings(name: str, raw: bytes) -> list[str]:
-    if b"\x00" in raw[:4096]:
+    if b"\\x00" in raw[:4096]:
         return []
     text = raw.decode("utf-8", "ignore")
     findings = []
+    credential_text = "\\n".join(
+        line for line in text.splitlines()
+        if not line.lstrip().startswith(("#", "//", ";"))
+    )
+    standard_private_networks = {
+        ("10.0.0.0", "8"),
+        ("172.16.0.0", "12"),
+        ("192.168.0.0", "16"),
+    }
     for category, pattern in _SECRET_PATTERNS:
         found = False
-        for match in pattern.finditer(text):
+        scan_text = credential_text if category == "credential assignment" else text
+        for match in pattern.finditer(scan_text):
             if category == "credential assignment":
-                value = match.group(1)[:128].strip().strip("\"'").lower()
+                value = match.group(1)[:128].strip().strip("\\"'").lower()
                 if value in {"", "false", "null", "none", "changeme", "password", "example"}:
                     continue
                 if value.startswith(_PLACEHOLDER_PREFIXES):
+                    continue
+            if category == "private IPv4 address":
+                prefix = re.match(r"/(8|12|16)\\b", scan_text[match.end():])
+                if prefix and (match.group(0), prefix.group(1)) in standard_private_networks:
                     continue
             found = True
             break
@@ -1108,7 +1141,6 @@ def _privacy_findings(name: str, raw: bytes) -> list[str]:
         if len(findings) >= _MAX_PRIVACY_FINDINGS:
             break
     return findings
-
 
 def _seal_archive(
     archive_path: Path,
