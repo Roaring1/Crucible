@@ -241,9 +241,10 @@ class BackupManager:
         """Mandatory, unprompted safety backup taken automatically before a
         world swap. Always named so it's exempt from prune_old()."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        world_name = self._instance.world_root_path().name
         return self.create_backup(
             progress_cb=progress_cb,
-            slot_name=f"Pre-swap safety backup — {timestamp}",
+            slot_name=f"Pre-swap safety backup — {world_name} — {timestamp}",
         )
 
     def delete_backup(self, entry: BackupEntry) -> None:
