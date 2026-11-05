@@ -477,6 +477,14 @@ class ClientExportReviewTests(unittest.TestCase):
         )
         self.assertEqual([], client_export._privacy_findings("config/OpenComputers.cfg", raw))
 
+    def test_privacy_scan_does_not_borrow_next_line_for_empty_password(self):
+        raw = (
+            b"S:opisrcon.password=\n"
+            b"B:opisrcon.enabled=THIS_IS_A_LONG_VALUE_BUT_NOT_A_PASSWORD\n"
+        )
+        findings = client_export._privacy_findings("config/Opis.cfg", raw)
+        self.assertFalse(any("credential assignment" in item for item in findings), findings)
+
     def test_privacy_scan_still_flags_active_private_hosts_and_credentials(self):
         raw = (
             b"bindAddress=192.168.1.42\n"
