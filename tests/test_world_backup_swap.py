@@ -301,5 +301,73 @@ class WorldSwapTests(unittest.TestCase):
         self.assertTrue((dest_inst.world_root_path() / "level.dat").exists())
 
 
+class NamedWorldResetTests(unittest.TestCase):
+    def test_reset_creates_named_world_and_keeps_old_world_recoverable(self):
+        tmp = Path(tempfile.mkdtemp())
+        server_dir = _make_server(tmp, level_name="OldWorld")
+        mgr = _manager(tmp, server_dir, "TestSrv", "named-reset-backups")
+        old_root = mgr._instance.world_root_path()
+        (old_root / "marker.txt").write_text("original world")
+
+        result = mgr.reset_world(new_level_name="GTNH Fresh - November")
+
+        self.assertTrue(result.ok)
+        self.assertIsNotNone(result.pre_swap_backup_path)
+        self.assertTrue(result.pre_swap_backup_path.exists())
+        self.assertIsNotNone(result.pre_swap_dir)
+        self.assertTrue((result.pre_swap_dir / "marker.txt").exists())
+        self.assertEqual((result.pre_swap_dir / "marker.txt").read_text(), "original world")
+        self.assertEqual(mgr._instance.world_root_path().name, "GTNH Fresh - November")
+        self.assertFalse(mgr._instance.world_root_path().exists())
+        self.assertIn(result.pre_swap_dir, mgr.list_pre_swap_dirs())
+        props = (server_dir / "server.properties").read_text()
+        self.assertIn("level-name=GTNH Fresh - November", props)
+        self.assertIn("server-port=25565", props)
+
+    def test_named_reset_refuses_existing_target_without_touching_current_world(self):
+        tmp = Path(tempfile.mkdtemp())
+        server_dir = _make_server(tmp, level_name="OldWorld")
+        mgr = _manager(tmp, server_dir, "TestSrv", "named-reset-existing")
+        old_root = mgr._instance.world_root_path()
+        (server_dir / "AlreadyThere").mkdir()
+
+        with self.assertRaisesRegex(FileExistsError, "already exists"):
+            mgr.reset_world(new_level_name="AlreadyThere")
+
+        self.assertTrue((old_root / "level.dat").exists())
+        self.assertEqual(mgr._instance.world_root_path().name, "OldWorld")
+        self.assertEqual(mgr.list_backups(), [])
+
+    def test_named_reset_rejects_unsafe_names(self):
+        for name in ("", ".", "..", "../outside", "bad/name", "bad\\\\name", "trailing.", "x" * 65):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    BackupManager.validate_level_name(name)
+
+    def test_named_reset_rolls_back_world_if_properties_write_fails(self):
+        tmp = Path(tempfile.mkdtemp())
+        server_dir = _make_server(tmp, level_name="OldWorld")
+        mgr = _manager(tmp, server_dir, "TestSrv", "named-reset-rollback")
+        old_root = mgr._instance.world_root_path()
+        original_write = mgr._write_level_name
+
+        def fail_write(_name):
+            raise OSError("simulated server.properties write failure")
+
+        mgr._write_level_name = fail_write
+        try:
+            with self.assertRaisesRegex(OSError, "simulated"):
+                mgr.reset_world(new_level_name="NewWorld")
+        finally:
+            mgr._write_level_name = original_write
+
+        self.assertTrue((old_root / "level.dat").exists())
+        self.assertEqual(mgr._instance.world_root_path().name, "OldWorld")
+        self.assertEqual(mgr.list_pre_swap_dirs(), [])
+        # The mandatory safety archive remains available even after rollback.
+        self.assertEqual(len(mgr.list_backups()), 1)
+
+
+
 if __name__ == "__main__":
     unittest.main()
