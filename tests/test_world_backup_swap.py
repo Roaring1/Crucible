@@ -182,8 +182,6 @@ class WorldSwapTests(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         server_dir = _make_server(tmp, level_name="World")
         mgr = _manager(tmp, server_dir, "TestSrv", "backups6")
-        inst = mgr._instance
-
         mgr.create_backup(slot_name="Original")
 
         world_root = inst.world_root_path()
