@@ -922,8 +922,8 @@ class ClientExportTests(unittest.TestCase):
                     {"uid": "net.minecraftforge", "version": "10.13.4.1614"},
                 ],
             }), encoding="utf-8")
-            (config / "safe-client.cfg").write_text("enabled=true\\n", encoding="utf-8")
-            (config / "OpenComputers.cfg.bak").write_text("# stale backup\\n", encoding="utf-8")
+            (config / "safe-client.cfg").write_text("enabled=true\n", encoding="utf-8")
+            (config / "OpenComputers.cfg.bak").write_text("# stale backup\n", encoding="utf-8")
             output = root / "gtnh-client.zip"
             result = client_export.export(
                 SimpleNamespace(
