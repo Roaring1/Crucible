@@ -262,7 +262,7 @@ class WorldTab(QWidget):
         self._advanced_panel = QFrame()
         self._advanced_panel.setStyleSheet(
             f"QFrame {{ background-color: {theme.BASE}; border: 1px solid {theme.SURFACE1}; "
-            "border-radius: 6px; }}"
+            "border-radius: 6px; }"
         )
         advanced_panel_layout = QHBoxLayout(self._advanced_panel)
         advanced_panel_layout.setContentsMargins(10, 8, 10, 8)
