@@ -10,8 +10,8 @@ jars are bundled, so nothing needs re-downloading):
   * prism      - MultiMC/Prism instance .zip; "Add Instance -> Import from zip"
   * curseforge - CurseForge-style manifest zip with overrides
 
-Explicit loader environment metadata excludes server-only jars. Unknown sides
-are preserved and reported, not inferred from filenames.
+Explicit loader environment metadata and a small set of known legacy server-only
+hints exclude server-only jars. Other unknown sides are preserved and reported.
 """
 
 from __future__ import annotations
@@ -479,7 +479,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
         inspector.inspect_jar(entry)
         if entry.mod_id:
             server_mod_ids.add(entry.mod_id)
-        if entry.side == "server":
+        if entry.side == "server" or _is_server_only(j.name) or _is_server_only(entry.mod_id or ""):
             skipped.append(j)
         else:
             ship.append(j)
@@ -624,7 +624,7 @@ def export(instance, out_path, fmt: str = "mrpack", *,
                 continue
             entry = ModEntry(j.name, j, True, j.stat().st_size)
             inspector.inspect_jar(entry)
-            if entry.side == "server":
+            if entry.side == "server" or _is_server_only(j.name) or _is_server_only(entry.mod_id or ""):
                 client_server_only.append(j.name)
                 continue
             # Shared server JARs are authoritative. Never introduce a second
