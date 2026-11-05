@@ -13,18 +13,31 @@ worker threads so the UI never freezes.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, Qt, QSize, QUrl, QTimer
-from PyQt6.QtGui import QPixmap, QIcon, QDesktopServices
+from PyQt6.QtCore import QObject, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QListWidget, QListWidgetItem, QMessageBox, QSplitter, QWidget,
-    QTextEdit, QFrame, QSizePolicy, QCheckBox, QComboBox, QInputDialog,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QSplitter,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..mods import modrinth
 from . import theme
 from .thread_lifecycle import connect_thread_cleanup
-
 
 # ----------------------------- workers ---------------------------------
 
@@ -190,17 +203,20 @@ class AddModDialog(QDialog):
         self._provider.currentTextChanged.connect(lambda *_: self._do_search())
         row.addWidget(self._provider)
         key_btn = QPushButton("API key…")
+        key_btn.setAccessibleName("Set CurseForge API key")
         self._key_btn = key_btn
         key_btn.hide()
         key_btn.setToolTip("CurseForge API key · kept in memory for this session only")
         key_btn.clicked.connect(self._set_curseforge_key)
         row.addWidget(key_btn)
         self._search = QLineEdit()
+        self._search.setAccessibleName("Search mods by name or project")
         self._search.setPlaceholderText(
             "Search mods by name — or just browse the popular ones below…")
         self._search.returnPressed.connect(lambda: self._do_search())
         row.addWidget(self._search, 1)
         self._search_btn = QPushButton("Search")
+        self._search_btn.setAccessibleName("Search selected mod provider")
         self._search_btn.clicked.connect(lambda: self._do_search())
         row.addWidget(self._search_btn)
         root.addLayout(row)
@@ -211,11 +227,13 @@ class AddModDialog(QDialog):
         filt_label.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:12px;")
         filt.addWidget(filt_label)
         self._cb_client = QCheckBox("Client")
+        self._cb_client.setAccessibleName("Show client-side mods")
         self._cb_client.setChecked(True)
         self._cb_client.setToolTip("Show mods that run on the client side.")
         self._cb_client.toggled.connect(self._on_filter_changed)
         filt.addWidget(self._cb_client)
         self._cb_server = QCheckBox("Server")
+        self._cb_server.setAccessibleName("Show server-side mods")
         self._cb_server.setChecked(True)
         self._cb_server.setToolTip("Show mods that run on the server side.")
         self._cb_server.toggled.connect(self._on_filter_changed)
@@ -224,6 +242,7 @@ class AddModDialog(QDialog):
         root.addLayout(filt)
 
         self._status = QLabel("Powered by Modrinth · no account needed")
+        self._status.setAccessibleName("Mod search status")
         self._status.setWordWrap(True)
         self._status.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:11px;")
         root.addWidget(self._status)
@@ -232,6 +251,10 @@ class AddModDialog(QDialog):
 
         # left: results list
         self._results = QListWidget()
+        self._results.setAccessibleName("Mod search results")
+        self._results.setAccessibleDescription(
+            "Select a compatible mod to inspect its details and install it."
+        )
         self._results.setIconSize(QSize(self._ICON_PX, self._ICON_PX))
         self._results.setUniformItemSizes(False)
         self._results.setStyleSheet(
@@ -251,11 +274,13 @@ class AddModDialog(QDialog):
         btns = QHBoxLayout()
         btns.addStretch()
         self._install_btn = QPushButton("Install")
+        self._install_btn.setAccessibleName("Install selected mod")
         self._install_btn.setObjectName("PrimaryButton")
         self._install_btn.setEnabled(False)
         self._install_btn.clicked.connect(self._do_install)
         btns.addWidget(self._install_btn)
         self._close_btn = QPushButton("Close")
+        self._close_btn.setAccessibleName("Close Add Mod dialog")
         self._close_btn.clicked.connect(self.reject)
         btns.addWidget(self._close_btn)
         root.addLayout(btns)
@@ -276,10 +301,12 @@ class AddModDialog(QDialog):
         title_col = QVBoxLayout()
         title_col.setSpacing(2)
         self._d_title = QLabel("Select a mod")
+        self._d_title.setAccessibleName("Selected mod title")
         self._d_title.setWordWrap(True)
         self._d_title.setStyleSheet(
             f"font-weight:700; font-size:16px; color:{theme.TEXT};")
         self._d_author = QLabel("")
+        self._d_author.setAccessibleName("Selected mod author")
         self._d_author.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:12px;")
         title_col.addWidget(self._d_title)
         title_col.addWidget(self._d_author)
@@ -287,10 +314,12 @@ class AddModDialog(QDialog):
         lay.addLayout(top)
 
         self._d_stats = QLabel("")
+        self._d_stats.setAccessibleName("Selected mod statistics")
         self._d_stats.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:12px;")
         lay.addWidget(self._d_stats)
 
         self._d_compat = QLabel("")
+        self._d_compat.setAccessibleName("Selected mod compatibility")
         self._d_compat.setWordWrap(True)
         self._d_compat.setStyleSheet("font-size:12px; font-weight:600;")
         lay.addWidget(self._d_compat)
@@ -301,6 +330,7 @@ class AddModDialog(QDialog):
         lay.addWidget(line)
 
         self._d_desc = QTextEdit()
+        self._d_desc.setAccessibleName("Selected mod description")
         self._d_desc.setReadOnly(True)
         self._d_desc.setStyleSheet(
             f"background:transparent; border:none; color:{theme.TEXT}; font-size:13px;")
@@ -309,12 +339,14 @@ class AddModDialog(QDialog):
         lay.addWidget(self._d_desc, 1)
 
         self._d_deps = QLabel("")
+        self._d_deps.setAccessibleName("Selected mod dependencies")
         self._d_deps.setWordWrap(True)
         self._d_deps.setStyleSheet(
             f"color:{theme.SUBTEXT}; font-size:12px; padding:4px 0;")
         lay.addWidget(self._d_deps)
 
         self._d_link = QPushButton("View on Modrinth")
+        self._d_link.setAccessibleName("View selected mod project page")
         self._d_link.setObjectName("RestartButton")
         self._d_link.setEnabled(False)
         self._d_link.clicked.connect(self._open_page)
@@ -517,7 +549,7 @@ class AddModDialog(QDialog):
                 "⚠ Client-only mod — this usually has no effect on a "
                 "dedicated server.")
             self._d_compat.setStyleSheet(
-                f"color:{theme.ORANGE}; font-size:12px; font-weight:600;")
+                f"color:{theme.YELLOW}; font-size:12px; font-weight:600;")
         elif hit.server_label():
             self._d_compat.setText("✓ " + hit.server_label())
             self._d_compat.setStyleSheet(

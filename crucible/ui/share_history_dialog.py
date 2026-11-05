@@ -24,7 +24,6 @@ from PyQt6.QtWidgets import (
 from ..sharing.history import ShareHistoryError, ShareHistoryStore
 from . import theme
 
-
 _EVENT_LABELS = {
     "pack-prepared": "ZIP prepared",
     "build-failed": "Build failed",
@@ -47,6 +46,7 @@ class ShareHistoryDialog(QDialog):
         # A hand-edited history file must not turn this button into an arbitrary-file opener.
         self._allowed_pack_dir = store.path.parent.parent / "player-packs"
         self.setWindowTitle("Player-pack share history")
+        self.setAccessibleName("Local player-pack share history")
         self.resize(1000, 480)
         self.setMinimumSize(760, 340)
         self.setStyleSheet(theme.STYLESHEET)
@@ -60,11 +60,18 @@ class ShareHistoryDialog(QDialog):
             "Gofile links shown here were returned previously; Crucible does not re-check their current validity. "
             "Clearing history does not delete ZIP files or revoke remote links."
         )
+        info.setAccessibleName("Local sharing history privacy and cleanup explanation")
         info.setWordWrap(True)
         info.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:11px;")
         root.addWidget(info)
 
         self._table = QTableWidget(0, 7)
+        self._table.setAccessibleName("Previous player-pack shares and upload history")
+        self._table.setAccessibleDescription(
+            "Local event history. Saved Gofile links are shown as last returned "
+            "and are not re-verified. Clearing this table's history does not "
+            "delete ZIP files or revoke remote links."
+        )
         self._table.setHorizontalHeaderLabels([
             "Time (UTC)", "Server", "Activity", "ZIP", "Size", "Upload status", "Last returned link"
         ])
@@ -84,25 +91,39 @@ class ShareHistoryDialog(QDialog):
         root.addWidget(self._table, 1)
 
         self._status = QLabel("")
+        self._status.setAccessibleName("Local player-pack share history status")
         self._status.setWordWrap(True)
         self._status.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:11px;")
         root.addWidget(self._status)
 
         actions = QHBoxLayout()
         self._copy_link = QPushButton("Copy selected link")
+        self._copy_link.setAccessibleName(
+            "Copy the last Gofile link recorded for the selected share"
+        )
         self._copy_link.clicked.connect(self._copy_selected_link)
         actions.addWidget(self._copy_link)
         self._open_zip = QPushButton("Open local ZIP")
+        self._open_zip.setAccessibleName(
+            "Open the selected local client-pack ZIP from Crucible's player-packs folder"
+        )
         self._open_zip.clicked.connect(self._open_selected_zip)
         actions.addWidget(self._open_zip)
         self._delete_zip = QPushButton("Delete local ZIP…")
+        self._delete_zip.setAccessibleName(
+            "Verify and permanently delete the selected local client-pack ZIP"
+        )
         self._delete_zip.clicked.connect(self._delete_selected_zip)
         actions.addWidget(self._delete_zip)
         actions.addStretch()
         self._clear = QPushButton("Clear history")
+        self._clear.setAccessibleName(
+            "Forget local share history records only; keep ZIP files and remote links"
+        )
         self._clear.clicked.connect(self._clear_history)
         actions.addWidget(self._clear)
         close = QPushButton("Close")
+        close.setAccessibleName("Close local player-pack share history")
         close.clicked.connect(self.reject)
         actions.addWidget(close)
         root.addLayout(actions)

@@ -1,36 +1,49 @@
 """
 crucible/ui/theme.py -- colors and Qt stylesheet.
 
-Accent is amber (#c8903a) -- fits the crucible/forge name, not a gradient.
-Surfaces from a warm near-black, not pure #000.
+A restrained graphite / steel palette: quiet neutral surfaces, one desaturated
+steel accent, and muted semantic colors. Status is always written as text;
+color reinforces it rather than carrying meaning by itself.
 """
 
 # raw colors
 
-BASE      = "#1c1c1e"
-MANTLE    = "#161618"
-CRUST     = "#111113"
-SURFACE0  = "#2c2c30"
-SURFACE1  = "#3c3c42"
-SURFACE2  = "#545460"
-TEXT      = "#dddad0"
-SUBTEXT   = "#96929e"
-ACCENT    = "#c8903a"
-ACCENT_HO = "#d9a048"
-GREEN     = "#a6e3a1"
-YELLOW    = "#f9e2af"
-RED       = "#f38ba8"
-ORANGE    = "#fab387"
+BASE      = "#22262b"
+MANTLE    = "#1b2025"
+CRUST     = "#161a1f"
+SURFACE0  = "#282e34"
+SURFACE1  = "#3d4650"
+SURFACE2  = "#58646f"
+TEXT      = "#e7ebef"
+SUBTEXT   = "#a7b0ba"
+ACCENT    = "#8298ab"
+ACCENT_HO = "#9aafc1"
+SELECTED  = "#303941"
+GREEN     = "#8fa79a"
+YELLOW    = "#aa9d82"
+RED       = "#bd858a"
+PROGRESS  = "#8a9dad"
+
+# Shared motion preference. MainWindow restores and updates this from QSettings.
+# Motion is only used to clarify navigation/identity changes, never as feedback
+# required to understand server state.
+MOTION_ENABLED = True
+
+
+def set_motion_enabled(enabled: bool) -> None:
+    global MOTION_ENABLED
+    MOTION_ENABLED = bool(enabled)
+
 
 STATUS_COLORS = {
     "running":      GREEN,
-    "stopped":      SURFACE2,
+    "stopped":      SUBTEXT,
     "tmux_missing": YELLOW,
     "missing":      RED,
     "unmanaged":    YELLOW,
     "unknown":      YELLOW,
-    "starting":     ORANGE,
-    "stopping":     YELLOW,
+    "starting":     PROGRESS,
+    "stopping":     PROGRESS,
 }
 
 LOG_COLORS = {
@@ -47,7 +60,6 @@ LOG_COLORS = {
 STYLESHEET = f"""
 
 QWidget {{
-    background-color: {BASE};
     color: {TEXT};
     font-family: "Inter", "Noto Sans", "Segoe UI", sans-serif;
     font-size: 13px;
@@ -55,8 +67,12 @@ QWidget {{
     outline: none;
 }}
 
-QMainWindow {{
+QMainWindow, QDialog, QMessageBox {{
     background-color: {BASE};
+}}
+
+QLabel {{
+    background: transparent;
 }}
 
 /* splitter */
@@ -100,8 +116,8 @@ QListWidget::item:hover {{
     background-color: {SURFACE0};
 }}
 QListWidget::item:selected {{
-    background-color: {SURFACE0};
-    border-left: 2px solid {ACCENT};
+    background-color: transparent;
+    border: 1px solid transparent;
     color: {TEXT};
 }}
 
@@ -110,8 +126,8 @@ QPushButton {{
     background-color: {SURFACE0};
     color: {TEXT};
     border: 1px solid {SURFACE1};
-    border-radius: 3px;
-    padding: 4px 12px;
+    border-radius: 5px;
+    padding: 5px 12px;
     font-size: 13px;
     font-weight: 500;
 }}
@@ -199,21 +215,44 @@ QPushButton#AttachButton:disabled {{
     border-color: {SURFACE1};
 }}
 
+/* application menu */
+QMenuBar {{
+    background-color: {MANTLE};
+    color: {SUBTEXT};
+    border-bottom: 1px solid {SURFACE1};
+    padding: 1px 6px;
+}}
+QMenuBar::item {{
+    background: transparent;
+    padding: 5px 10px;
+    border-radius: 4px;
+}}
+QMenuBar::item:selected {{
+    background-color: {SURFACE0};
+    color: {TEXT};
+}}
+
 /* tab bar */
 QTabWidget::pane {{
     background-color: {BASE};
     border: none;
-    border-top: 1px solid {SURFACE1};
 }}
 QTabBar {{
     background-color: {CRUST};
+    border-bottom: 1px solid {SURFACE1};
 }}
 QTabBar::tab {{
     background-color: {CRUST};
     color: {SUBTEXT};
-    padding: 7px 16px;
+    padding: 12px 20px;
+    min-height: 44px;
     border: none;
-    font-size: 13px;
+    font-size: 14px;
+    font-weight: 600;
+}}
+QTabBar::tab:focus {{
+    outline: 2px solid {ACCENT};
+    outline-offset: -3px;
 }}
 QTabBar::tab:selected {{
     background-color: {BASE};
@@ -242,8 +281,8 @@ QLineEdit {{
     background-color: {SURFACE0};
     color: {TEXT};
     border: 1px solid {SURFACE1};
-    border-radius: 3px;
-    padding: 5px 8px;
+    border-radius: 5px;
+    padding: 6px 9px;
     font-size: 13px;
     selection-background-color: {SURFACE1};
 }}
@@ -402,10 +441,10 @@ QLabel#SectionLabel {{
 
 /* sidebar add button — the primary action when setting up a server */
 QPushButton#SidebarAddButton {{
-    background-color: {ACCENT};
-    color: {CRUST};
-    border: none;
-    border-radius: 4px;
+    background-color: {SURFACE0};
+    color: {TEXT};
+    border: 1px solid {SURFACE1};
+    border-radius: 6px;
     margin: 4px 8px;
     padding: 8px;
     font-size: 12px;
@@ -413,17 +452,44 @@ QPushButton#SidebarAddButton {{
     text-align: center;
 }}
 QPushButton#SidebarAddButton:hover {{
-    background-color: {ACCENT_HO};
-    color: {CRUST};
+    background-color: {SURFACE1};
+    color: {TEXT};
+    border-color: {SURFACE2};
+}}
+
+/* context menus */
+QMenu {{
+    background-color: {MANTLE};
+    color: {TEXT};
+    border: 1px solid {SURFACE1};
+    border-radius: 6px;
+    padding: 4px;
+}}
+QMenu::item {{
+    padding: 8px 26px 8px 12px;
+    min-height: 20px;
+    border-radius: 4px;
+}}
+QMenu::item:selected {{
+    background-color: {SURFACE0};
+    color: {TEXT};
+}}
+QMenu::item:disabled {{
+    color: {SURFACE2};
+}}
+QMenu::separator {{
+    height: 1px;
+    background: {SURFACE1};
+    margin: 5px 8px;
+}}
+QMenu::section {{
+    color: {SUBTEXT};
+    font-size: 10px;
+    font-weight: 700;
+    padding: 8px 12px 3px;
 }}
 
 /* dialogs */
-QDialog {{
-    background-color: {BASE};
-}}
-QMessageBox {{
-    background-color: {BASE};
-}}
 QDialogButtonBox QPushButton {{
     min-width: 80px;
 }}
@@ -461,5 +527,32 @@ QProgressBar {{
 QProgressBar::chunk {{
     background-color: {ACCENT};
     border-radius: 2px;
+}}
+
+/* The global QWidget rule removes native outlines. Restore a visible,
+   high-contrast keyboard focus boundary for interactive controls. */
+QPushButton:focus, QToolButton:focus {{
+    border: 2px solid {ACCENT};
+}}
+QPushButton#PrimaryButton:focus,
+QPushButton#DangerButton:focus,
+QPushButton#SidebarAddButton:focus,
+QPushButton#RestartButton:focus,
+QPushButton#AttachButton:focus,
+QToolButton#MoreTabsButton:focus {{
+    border: 2px solid {ACCENT};
+}}
+QAbstractItemView:focus {{
+    border: 2px solid {ACCENT};
+}}
+QPlainTextEdit:focus, QTextEdit:focus {{
+    border: 2px solid {ACCENT};
+}}
+QCheckBox:focus {{
+    border: 1px solid {ACCENT};
+    border-radius: 3px;
+}}
+QComboBox:focus {{
+    border: 2px solid {ACCENT};
 }}
 """

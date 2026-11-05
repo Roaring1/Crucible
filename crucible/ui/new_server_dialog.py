@@ -15,11 +15,23 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit,
-    QPushButton, QComboBox, QCheckBox, QFileDialog, QMessageBox,
-    QProgressBar, QPlainTextEdit, QToolButton, QWidget,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..data.instance_manager import InstanceManager
@@ -140,6 +152,7 @@ class NewServerDialog(QDialog):
 
         # Loader type
         self._loader_combo = QComboBox()
+        self._loader_combo.setAccessibleName("Server software")
         for label, _ in _LOADERS:
             self._loader_combo.addItem(label)
         self._loader_combo.currentIndexChanged.connect(self._on_loader_changed)
@@ -148,8 +161,11 @@ class NewServerDialog(QDialog):
         # The common path only needs a Minecraft version. Less-used version
         # controls are grouped below rather than crowding the initial form.
         self._ver_combo = QComboBox()
+        self._ver_combo.setAccessibleName("Minecraft version")
         self._ver_combo.setEditable(True)
         self._ver_combo.setMinimumWidth(220)
+        if self._ver_combo.lineEdit() is not None:
+            self._ver_combo.lineEdit().setAccessibleName("Minecraft version")
         form.addRow("Minecraft version:", self._ver_combo)
 
         self._ver_status = QLabel("Loading versions…")
@@ -158,6 +174,7 @@ class NewServerDialog(QDialog):
 
         self._advanced_toggle = QToolButton()
         self._advanced_toggle.setText("More version options")
+        self._advanced_toggle.setAccessibleName("Show more server version options")
         self._advanced_toggle.setCheckable(True)
         self._advanced_toggle.setChecked(False)
         self._advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
@@ -176,12 +193,14 @@ class NewServerDialog(QDialog):
         advanced_form.setSpacing(8)
 
         self._lver_edit = QLineEdit()
+        self._lver_edit.setAccessibleName("Loader version")
         self._lver_edit.setPlaceholderText("Leave blank to use the latest version")
         self._lver_row_label = QLabel("Loader version (optional):")
         advanced_form.addRow(self._lver_row_label, self._lver_edit)
 
         version_tools = QHBoxLayout()
         self._snap_check = QCheckBox("Include snapshots")
+        self._snap_check.setAccessibleName("Include Minecraft snapshot versions")
         self._snap_check.stateChanged.connect(lambda *_: self._reload_versions())
         version_tools.addWidget(self._snap_check)
         self._refresh_btn = QPushButton("Refresh list")
@@ -195,6 +214,7 @@ class NewServerDialog(QDialog):
 
         # Display name first -- the folder is derived from it automatically.
         self._name_edit = QLineEdit()
+        self._name_edit.setAccessibleName("Server display name")
         self._name_edit.setPlaceholderText("My Server")
         self._name_edit.textChanged.connect(self._on_name_changed)
         form.addRow("Server name:", self._name_edit)
@@ -203,11 +223,15 @@ class NewServerDialog(QDialog):
         # until the user edits it themselves.
         dst_row = QHBoxLayout()
         self._path_edit = QLineEdit()
+        self._path_edit.setAccessibleName("Server destination folder")
         self._path_edit.setPlaceholderText(str(Path.home() / "CrucibleServers" / "my-server"))
         self._path_edit.textEdited.connect(self._on_path_edited)
         dst_row.addWidget(self._path_edit, stretch=1)
         browse = QPushButton("Browse…")
-        browse.setFixedWidth(80)
+        browse.setAccessibleName("Choose server destination folder")
+        # Keep the ellipsis inside the styled text area; 80px was one pixel
+        # narrower than the rendered label plus the active button padding.
+        browse.setMinimumWidth(browse.sizeHint().width() + 2)
         browse.clicked.connect(self._browse)
         dst_row.addWidget(browse)
         self._path_hint = QLabel("Auto-named from the display name — edit if you want a different folder.")
@@ -221,6 +245,7 @@ class NewServerDialog(QDialog):
         self._eula_check = QCheckBox(
             "I accept the Minecraft EULA — required before the server can start"
         )
+        self._eula_check.setAccessibleName("Accept the Minecraft EULA")
         self._eula_check.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
         layout.addWidget(self._eula_check)
         eula_hint = QLabel(
@@ -232,6 +257,7 @@ class NewServerDialog(QDialog):
 
         # Log (hidden until creation starts)
         self._log = QPlainTextEdit()
+        self._log.setAccessibleName("Server creation progress log")
         self._log.setReadOnly(True)
         self._log.setMinimumHeight(150)
         self._log.setStyleSheet(
@@ -250,11 +276,16 @@ class NewServerDialog(QDialog):
         row = QHBoxLayout()
         row.addStretch()
         self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setAccessibleName("Cancel server creation")
         self._cancel_btn.clicked.connect(self._on_cancel)
         row.addWidget(self._cancel_btn)
         self._create_btn = QPushButton("Create server")
+        self._create_btn.setAccessibleName("Create server with selected software and folder")
         self._create_btn.setObjectName("PrimaryButton")
         self._create_btn.setFixedHeight(34)
+        # The filled primary style has a slightly wider text inset; avoid
+        # clipping the final glyph at the dialog's normal width.
+        self._create_btn.setMinimumWidth(self._create_btn.sizeHint().width() + 2)
         self._create_btn.clicked.connect(self._on_create)
         row.addWidget(self._create_btn)
         layout.addLayout(row)
@@ -263,6 +294,11 @@ class NewServerDialog(QDialog):
 
     def _toggle_advanced_options(self, expanded: bool) -> None:
         self._advanced_body.setVisible(expanded)
+        self._advanced_toggle.setAccessibleName(
+            "Hide advanced version options"
+            if expanded
+            else "Show more server version options"
+        )
         self._advanced_toggle.setArrowType(
             Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
         )

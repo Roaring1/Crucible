@@ -1,0 +1,112 @@
+"""Status text remains understandable without color and meets WCAG AA contrast."""
+
+from crucible.ui import theme
+from crucible.ui.sidebar import InstanceRowWidget
+
+
+def _linear_channel(value: int) -> float:
+    channel = value / 255
+    return channel / 12.92 if channel <= 0.04045 else ((channel + 0.055) / 1.055) ** 2.4
+
+
+def _luminance(color: str) -> float:
+    red, green, blue = (
+        int(color[index : index + 2], 16) for index in (1, 3, 5)
+    )
+    return (
+        0.2126 * _linear_channel(red)
+        + 0.7152 * _linear_channel(green)
+        + 0.0722 * _linear_channel(blue)
+    )
+
+
+def _contrast_ratio(foreground: str, background: str) -> float:
+    lighter, darker = sorted(
+        (_luminance(foreground), _luminance(background)),
+        reverse=True,
+    )
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def test_every_server_status_has_readable_text_and_accessible_label():
+    expected = {
+        "running",
+        "stopped",
+        "starting",
+        "stopping",
+        "tmux_missing",
+        "missing",
+        "unmanaged",
+        "unknown",
+    }
+    assert set(InstanceRowWidget.STATUS_LABELS) == expected
+    assert expected <= set(theme.STATUS_COLORS)
+
+
+def test_theme_uses_a_non_orange_progress_accent():
+    assert not hasattr(theme, "ORANGE")
+    assert theme.PROGRESS not in {"#c8903a", "#d9a048", "#fab387"}
+    assert theme.STATUS_COLORS["starting"] == theme.PROGRESS
+    assert theme.STATUS_COLORS["stopping"] == theme.PROGRESS
+
+
+def test_server_status_text_meets_wcag_aa_contrast_on_app_surfaces():
+    # The sidebar and selected-server header render on MANTLE. BASE is also
+    # checked because it is used by other workspace surfaces/status contexts.
+    for status, foreground in theme.STATUS_COLORS.items():
+        for background in (theme.MANTLE, theme.BASE):
+            ratio = _contrast_ratio(foreground, background)
+            assert ratio >= 4.5, (
+                f"{status} status label has only {ratio:.2f}:1 contrast "
+                f"({foreground} on {background})"
+            )
+
+
+def test_selected_surface_and_primary_action_keep_readable_contrast():
+    assert _contrast_ratio(theme.TEXT, theme.SELECTED) >= 4.5
+    assert _contrast_ratio(theme.CRUST, theme.ACCENT) >= 4.5
+
+
+def test_global_styles_do_not_paint_opaque_child_widget_backgrounds():
+    stylesheet = theme.STYLESHEET
+    assert "QWidget {\n    background-color:" not in stylesheet
+    assert "QLabel {\n    background: transparent;" in stylesheet
+    assert "QMenu::item:selected" in stylesheet
+    assert "QMenuBar::item:selected" in stylesheet
+
+
+def test_keyboard_focus_indicators_cover_primary_interactive_widgets():
+    stylesheet = theme.STYLESHEET
+    required_selectors = (
+        "QPushButton:focus",
+        "QToolButton:focus",
+        "QPushButton#PrimaryButton:focus",
+        "QPushButton#DangerButton:focus",
+        "QPushButton#SidebarAddButton:focus",
+        "QToolButton#MoreTabsButton:focus",
+        "QAbstractItemView:focus",
+        "QPlainTextEdit:focus",
+        "QTextEdit:focus",
+        "QCheckBox:focus",
+        "QComboBox:focus",
+        "QTabBar::tab:focus",
+    )
+    for selector in required_selectors:
+        assert selector in stylesheet, (
+            f"{selector} must have an explicit visible keyboard focus style"
+        )
+
+    # ACCENT is the focus-boundary color. These surfaces cover the sidebar,
+    # workspace, tab strip and raised controls where these widgets are rendered.
+    for background in (
+        theme.CRUST,
+        theme.MANTLE,
+        theme.BASE,
+        theme.SURFACE0,
+        theme.SURFACE1,
+    ):
+        ratio = _contrast_ratio(theme.ACCENT, background)
+        assert ratio >= 3.0, (
+            f"Keyboard focus boundary has only {ratio:.2f}:1 contrast "
+            f"({theme.ACCENT} on {background})"
+        )

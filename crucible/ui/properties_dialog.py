@@ -19,12 +19,21 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
-    QComboBox, QFrame, QScrollArea, QWidget, QMessageBox,
+    QComboBox,
+    QDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
 )
 
-from . import theme
 from ..data import properties as P
+from . import theme
 
 
 class PropertiesFixDialog(QDialog):
@@ -37,6 +46,7 @@ class PropertiesFixDialog(QDialog):
         self._rows: list[tuple[P.PropIssue, QComboBox]] = []
         self.applied = False
         self.setWindowTitle("Check server settings")
+        self.setAccessibleName("Selected server properties repair")
         self.setMinimumWidth(560)
         self._build_ui()
 
@@ -62,6 +72,7 @@ class PropertiesFixDialog(QDialog):
             good.setWordWrap(True)
             outer.addWidget(good)
             btn = QPushButton("Close")
+            btn.setAccessibleName("Close server properties check")
             btn.clicked.connect(self.reject)
             outer.addWidget(btn, alignment=Qt.AlignmentFlag.AlignRight)
             return
@@ -79,11 +90,13 @@ class PropertiesFixDialog(QDialog):
                 "to clean them up."
             )
             warn.setStyleSheet(f"color: {theme.YELLOW}; font-size: 12px;")
+        warn.setAccessibleName("Server properties validation summary")
         warn.setWordWrap(True)
         outer.addWidget(warn)
 
         # Scrollable list of issues
         scroll = QScrollArea()
+        scroll.setAccessibleName("Server properties issues and replacement choices")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         container = QWidget()
@@ -129,9 +142,11 @@ class PropertiesFixDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         cancel = QPushButton("Cancel")
+        cancel.setAccessibleName("Cancel server properties repairs")
         cancel.clicked.connect(self.reject)
         btn_row.addWidget(cancel)
         apply_btn = QPushButton("Apply fixes")
+        apply_btn.setAccessibleName("Apply selected server.properties replacements")
         apply_btn.setObjectName("PrimaryButton")
         apply_btn.clicked.connect(self._apply)
         btn_row.addWidget(apply_btn)
@@ -139,6 +154,7 @@ class PropertiesFixDialog(QDialog):
 
     def _build_combo(self, issue: P.PropIssue) -> QComboBox:
         combo = QComboBox()
+        combo.setAccessibleName(f"Replacement choice for server property {issue.key}")
         combo.setMinimumWidth(170)
         # "Keep current" is always an option (do nothing for this issue).
         choices: list[tuple[str, object]] = []

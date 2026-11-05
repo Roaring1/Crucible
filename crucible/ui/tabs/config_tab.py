@@ -18,15 +18,22 @@ from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout,
-    QTableWidget, QTableWidgetItem, QHeaderView,
-    QLabel, QPushButton, QLineEdit, QComboBox,
-    QMessageBox, QAbstractItemView,
+    QAbstractItemView,
+    QComboBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ...data.instance_model import ServerInstance
 from .. import theme
-
 
 # Keys we want to sort first and highlight -- grouped for readability
 _IMPORTANT: dict[str, list[str]] = {
@@ -105,11 +112,13 @@ class ConfigTab(QWidget):
         toolbar = QHBoxLayout()
 
         self._filter_edit = QLineEdit()
+        self._filter_edit.setAccessibleName("Filter server properties by name or value")
         self._filter_edit.setPlaceholderText("Filter properties…")
         self._filter_edit.textChanged.connect(self._apply_filter)
         toolbar.addWidget(self._filter_edit, stretch=1)
 
         self._save_btn = QPushButton("Save Changes")
+        self._save_btn.setAccessibleName("Save selected server properties")
         self._save_btn.setObjectName("PrimaryButton")
         self._save_btn.clicked.connect(self._save)
         toolbar.addWidget(self._save_btn)
@@ -135,6 +144,11 @@ class ConfigTab(QWidget):
 
         # Table
         self._table = QTableWidget()
+        self._table.setAccessibleName("Selected server properties")
+        self._table.setAccessibleDescription(
+            "Property names and values. Only the Value column is editable. "
+            "Save Changes writes the edited properties to the selected server."
+        )
         self._table.setColumnCount(2)
         self._table.setHorizontalHeaderLabels(["Property", "Value"])
         hh = self._table.horizontalHeader()

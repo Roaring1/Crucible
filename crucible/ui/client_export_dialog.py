@@ -10,10 +10,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
-    QCheckBox, QFileDialog, QMessageBox, QApplication, QLineEdit,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
 )
 
 from ..exporters import client_export
@@ -58,6 +67,7 @@ class ClientExportDialog(QDialog):
         self._worker = None
         self._busy = False
         self.setWindowTitle("Create client instance")
+        self.setAccessibleName("Advanced client pack export")
         self.resize(620, 390)
         self._build_ui()
 
@@ -78,28 +88,35 @@ class ClientExportDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(QLabel("Format:"))
         self._fmt = QComboBox()
+        self._fmt.setAccessibleName("Client pack archive format")
         for label, _, _ in _FORMATS:
             self._fmt.addItem(label)
         row.addWidget(self._fmt, 1)
         lay.addLayout(row)
 
         self._cfg = QCheckBox("Include config/ and kubejs/ (recommended)")
+        self._cfg.setAccessibleName("Include server config and KubeJS files in client export")
         self._cfg.setChecked(True)
         lay.addWidget(self._cfg)
         source_row = QHBoxLayout()
         self._source = QLineEdit()
+        self._source.setAccessibleName("Optional matching Prism client profile source")
         self._source.setPlaceholderText("Optional: matching Prism instance for client-only mods")
         suggested = getattr(self._instance, "prism_source", "") or ""
         if Path(suggested).is_dir() and (Path(suggested)/"mmc-pack.json").is_file():
             self._source.setText(suggested)
         source_row.addWidget(self._source, 1)
         pick = QPushButton("Browse…")
+        pick.setAccessibleName("Choose matching Prism profile for client export")
         pick.clicked.connect(self._pick_source)
         source_row.addWidget(pick)
         lay.addLayout(source_row)
 
         self._resourcepacks = QCheckBox(
             "Include resource packs from this Prism profile (off by default)"
+        )
+        self._resourcepacks.setAccessibleName(
+            "Include resource pack files from the selected Prism profile"
         )
         self._resourcepacks.setChecked(False)
         self._resourcepacks.setToolTip(
@@ -108,6 +125,9 @@ class ClientExportDialog(QDialog):
         lay.addWidget(self._resourcepacks)
 
         self._remember_source = QCheckBox("Remember this Prism source for future exports")
+        self._remember_source.setAccessibleName(
+            "Remember the selected Prism profile for future client exports"
+        )
         self._remember_source.setChecked(True)
         self._remember_source.setToolTip(
             "After a successful export, save this matching instance path in Crucible's server registry."
@@ -123,6 +143,7 @@ class ClientExportDialog(QDialog):
         lay.addWidget(caution)
 
         self._status = QLabel("")
+        self._status.setAccessibleName("Client archive export status")
         self._status.setWordWrap(True)
         self._status.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:11px;")
         lay.addWidget(self._status)
@@ -130,10 +151,12 @@ class ClientExportDialog(QDialog):
         btns = QHBoxLayout()
         btns.addStretch()
         self._export_btn = QPushButton("Export…")
+        self._export_btn.setAccessibleName("Build the selected server client pack archive")
         self._export_btn.setObjectName("PrimaryButton")
         self._export_btn.clicked.connect(self._do_export)
         btns.addWidget(self._export_btn)
         self._close_btn = QPushButton("Close")
+        self._close_btn.setAccessibleName("Close client pack export dialog")
         self._close_btn.clicked.connect(self.reject)
         btns.addWidget(self._close_btn)
         lay.addLayout(btns)

@@ -26,7 +26,21 @@ def test_capture_ui_previews_writes_expected_pngs(tmp_path):
     expected = (
         "main-empty.png",
         "add-server-menu.png",
+        "server-appearance-dialog.png",
         "main-selected.png",
+        "main-selected-compact.png",
+        "workspace-console.png",
+        "workspace-mods.png",
+        "workspace-mods-compact.png",
+        "workspace-mod-keyboard-focus.png",
+        "workspace-players.png",
+        "workspace-players-keyboard-focus.png",
+        "workspace-world.png",
+        "workspace-backups.png",
+        "workspace-backups-compact.png",
+        "workspace-diagnostics.png",
+        "workspace-keyboard-focus.png",
+        "server-rail-context-menu.png",
         "create-server.png",
         "import-files.png",
         "install-modpack.png",
@@ -37,4 +51,4 @@ def test_capture_ui_previews_writes_expected_pngs(tmp_path):
         data = path.read_bytes()
         assert data.startswith(b"\x89PNG\r\n\x1a\n"), filename
         assert len(data) > 1_000, filename
-    assert "Captured 6 UI previews" in result.stdout
+    assert "Captured 20 UI previews" in result.stdout

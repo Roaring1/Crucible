@@ -9,20 +9,31 @@ from __future__ import annotations
 import re
 from collections import deque
 
-from PyQt6.QtCore import Qt, QEvent, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
-    QColor, QFont, QTextCharFormat, QTextCursor,
-    QShortcut, QKeySequence, QTextDocument,
+    QColor,
+    QFont,
+    QKeySequence,
+    QShortcut,
+    QTextCharFormat,
+    QTextCursor,
+    QTextDocument,
 )
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout,
-    QPlainTextEdit, QLineEdit, QPushButton,
-    QLabel, QCheckBox, QListWidget,
+    QCheckBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ...data.instance_model import ServerInstance
-from ...process.log_watcher import LogWatcher
 from ...process.command_intent import lifecycle_intent
+from ...process.log_watcher import LogWatcher
 from .. import theme
 
 MAX_LINES    = 2000
@@ -150,6 +161,7 @@ class ConsoleTab(QWidget):
     # Emitted only after tmux accepted a command. The panel uses this to fold
     # lifecycle commands into the same state machine as GUI buttons.
     lifecycle_command_sent = pyqtSignal(str, str)  # instance_id, command
+    open_terminal_requested = pyqtSignal()
 
     """
     Displays the live server log and allows sending commands.
@@ -194,6 +206,7 @@ class ConsoleTab(QWidget):
 
         # Log view
         self._view = QPlainTextEdit()
+        self._view.setAccessibleName("Selected server live console output")
         self._view.setObjectName("ConsoleView")
         self._view.setReadOnly(True)
         self._view.setMaximumBlockCount(MAX_LINES)
@@ -224,6 +237,7 @@ class ConsoleTab(QWidget):
         fb_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         fb_layout.addWidget(fb_label)
         self._find_input = QLineEdit()
+        self._find_input.setAccessibleName("Find text in console output")
         self._find_input.setPlaceholderText("Search log…")
         self._find_input.returnPressed.connect(lambda: self._find(forward=True))
         self._find_input.textChanged.connect(self._on_find_text_changed)
@@ -254,10 +268,13 @@ class ConsoleTab(QWidget):
         sr_layout.setContentsMargins(8, 4, 8, 4)
 
         self._tps_label = QLabel("TPS: —")
+        self._tps_label.setAccessibleName("Current selected server ticks per second")
         self._tps_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         self._players_label = QLabel("Players: —")
+        self._players_label.setAccessibleName("Players currently connected to selected server")
         self._players_label.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         self._server_state_label = QLabel("")
+        self._server_state_label.setAccessibleName("Selected server lifecycle status")
         self._server_state_label.setStyleSheet("font-size: 11px; font-weight: 600;")
 
         sr_layout.addWidget(self._tps_label)
@@ -294,6 +311,7 @@ class ConsoleTab(QWidget):
         cr_layout.addWidget(prompt)
 
         self._cmd_input = _CommandLineEdit(self)
+        self._cmd_input.setAccessibleName("Send a command to the selected server")
         self._cmd_input.setObjectName("CommandInput")
         self._cmd_input.setPlaceholderText("Send command…  (Tab to complete · ↑↓ history)")
         self._cmd_input.returnPressed.connect(self._send_command)
@@ -302,46 +320,72 @@ class ConsoleTab(QWidget):
         cr_layout.addWidget(self._cmd_input, stretch=1)
 
         send_btn = QPushButton("Send")
+        send_btn.setAccessibleName("Send command to the selected server")
         send_btn.setFixedWidth(64)
         send_btn.clicked.connect(self._send_command)
         cr_layout.addWidget(send_btn)
 
-        # Options row
+        # Console options are split into two calm rows so compact windows
+        # don't squeeze action labels into narrower-than-text buttons.
         opts_row = QWidget()
         opts_row.setStyleSheet(f"background-color: {theme.MANTLE};")
-        or_layout = QHBoxLayout(opts_row)
+        or_layout = QVBoxLayout(opts_row)
         or_layout.setContentsMargins(8, 0, 8, 6)
-        or_layout.setSpacing(12)
+        or_layout.setSpacing(2)
+        toggles_row = QHBoxLayout()
+        toggles_row.setContentsMargins(0, 0, 0, 0)
+        toggles_row.setSpacing(12)
+        actions_row = QHBoxLayout()
+        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.setSpacing(8)
+        or_layout.addLayout(toggles_row)
+        or_layout.addLayout(actions_row)
 
         self._autoscroll_cb = QCheckBox("Auto-scroll")
+        self._autoscroll_cb.setAccessibleName("Automatically follow new console output")
         self._autoscroll_cb.setChecked(True)
         self._autoscroll_cb.toggled.connect(self._on_autoscroll_toggle)
-        or_layout.addWidget(self._autoscroll_cb)
-
-        clear_btn = QPushButton("Clear")
-        clear_btn.setFixedWidth(60)
-        clear_btn.clicked.connect(self._view.clear)
-        or_layout.addWidget(clear_btn)
-
-        open_log_btn = QPushButton("Open log file")
-        open_log_btn.clicked.connect(self._open_log)
-        or_layout.addWidget(open_log_btn)
-
-        copy_btn = QPushButton("Copy log")
-        copy_btn.setFixedWidth(72)
-        copy_btn.clicked.connect(self._copy_log)
-        or_layout.addWidget(copy_btn)
+        toggles_row.addWidget(self._autoscroll_cb)
 
         self._hide_perf_cb = QCheckBox("Hide TPS poll output")
+        self._hide_perf_cb.setAccessibleName("Hide repeating TPS poll replies from console output")
         self._hide_perf_cb.setChecked(True)
         self._hide_perf_cb.setToolTip(
             "Hide the repeating TPS / tick-query responses from the console.\n"
             "They're still used for the TPS readout above."
         )
         self._hide_perf_cb.toggled.connect(self._on_hide_perf_toggle)
-        or_layout.addWidget(self._hide_perf_cb)
+        toggles_row.addWidget(self._hide_perf_cb)
+        toggles_row.addStretch()
 
-        or_layout.addStretch()
+        clear_btn = QPushButton("Clear")
+        clear_btn.setAccessibleName("Clear visible console output")
+        clear_btn.setFixedWidth(60)
+        clear_btn.clicked.connect(self._view.clear)
+        actions_row.addWidget(clear_btn)
+
+        open_log_btn = QPushButton("Open log file")
+        open_log_btn.setAccessibleName("Open the selected server log file")
+        open_log_btn.clicked.connect(self._open_log)
+        actions_row.addWidget(open_log_btn)
+
+        # Keep the visible action label concise enough for the compact
+        # workspace. The tooltip and accessible name retain the full scope.
+        terminal_btn = QPushButton("Open terminal")
+        terminal_btn.setObjectName("ConsoleOpenTerminalButton")
+        terminal_btn.setAccessibleName("Open the selected server tmux session in a terminal")
+        terminal_btn.setToolTip(
+            "Open this server's managed tmux session in a separate terminal window."
+        )
+        terminal_btn.clicked.connect(self.open_terminal_requested)
+        actions_row.addWidget(terminal_btn)
+
+        copy_btn = QPushButton("Copy log")
+        copy_btn.setObjectName("ConsoleCopyLogButton")
+        copy_btn.setAccessibleName("Copy visible console output")
+        copy_btn.clicked.connect(self._copy_log)
+        actions_row.addWidget(copy_btn)
+        actions_row.addStretch()
 
         layout.addWidget(cmd_row)
         layout.addWidget(opts_row)
@@ -525,13 +569,13 @@ class ConsoleTab(QWidget):
 
     @pyqtSlot(float)
     def _on_server_started(self, secs: float) -> None:
-        self._set_state(f"● Online  (started in {secs:.1f}s)", theme.GREEN)
+        self._set_state(f"Online — started in {secs:.1f}s", theme.GREEN)
 
     @pyqtSlot()
     def _on_server_stopping(self) -> None:
         self._active_players.clear()
         self._update_player_label()
-        self._set_state("● Stopping…", theme.ORANGE)
+        self._set_state("Stopping…", theme.PROGRESS)
 
     @pyqtSlot()
     def _on_log_rotated(self) -> None:
@@ -541,7 +585,7 @@ class ConsoleTab(QWidget):
         self._last_tps = None
         self._last_mspt = None
         self._render_tps()
-        self._set_state("○ Restarting…", theme.YELLOW)
+        self._set_state("Restarting…", theme.PROGRESS)
 
     @pyqtSlot()
     def _on_log_missing(self) -> None:
@@ -567,18 +611,18 @@ class ConsoleTab(QWidget):
         always reflected even if no log signal fires.
         """
         mapping = {
-            "running":  ("● Online",      theme.GREEN),
-            "starting": ("⚡ Starting…",   theme.YELLOW),
-            "stopping": ("◌ Stopping…",   theme.ORANGE),
-            "stopped":  ("○ Offline",     theme.SURFACE2),
-            "tmux_missing": ("⚠ tmux missing", theme.RED),
-            "missing": ("⚠ Server files missing", theme.RED),
-            "unmanaged": ("⚠ Running outside managed tmux", theme.YELLOW),
-            "unknown": ("? Status check unavailable", theme.YELLOW),
+            "running":  ("Online", theme.GREEN),
+            "starting": ("Starting…", theme.PROGRESS),
+            "stopping": ("Stopping…", theme.PROGRESS),
+            "stopped":  ("Offline", theme.SURFACE2),
+            "tmux_missing": ("tmux unavailable", theme.RED),
+            "missing": ("Server files missing", theme.RED),
+            "unmanaged": ("Running outside managed tmux", theme.YELLOW),
+            "unknown": ("Status check unavailable", theme.YELLOW),
         }
         text, color = mapping.get(status, (status.capitalize(), theme.SURFACE2))
         # Don't clobber a more-specific log-watcher message for running state --
-        # e.g. "● Online  (started in 12.3s)" should survive a health-check ping.
+        # e.g. "Online — started in 12.3s" should survive a health-check ping.
         current = self._server_state_label.text()
         if status == "running" and "Online" in current:
             return
@@ -800,8 +844,8 @@ class ConsoleTab(QWidget):
         log = self._instance.get_log_path()
         if log is None:
             return
-        from PyQt6.QtGui import QDesktopServices
         from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(log)))
 
     # Display options

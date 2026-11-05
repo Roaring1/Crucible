@@ -929,13 +929,26 @@ class ApplyUpdateTests(TempDirCase):
         self._assert_live_untouched()
         self.assertIn("cancelled", res.summary())
 
-    def test_no_backup_callback_is_recorded_in_messages(self):
+    def test_update_fails_closed_without_a_fleet_backup_provider(self):
         res = apply_update(
             self._inst(), self._plan(), backup_cb=None, archive=self.pack,
             running_check=lambda: False, port_check=lambda _instance: None,
         )
-        self.assertTrue(res.ok, res.failed_reason)
-        self.assertTrue(any("no world backup" in m for m in res.messages))
+        self.assertFalse(res.ok)
+        self.assertIn("verified fleet backup generation", res.failed_reason)
+        self.assertEqual(self.backups, [])
+        self._assert_live_untouched()
+        self.assertFalse(list(self.tmp.glob("live.crucible-staging-*")))
+        self.assertFalse(list(self.tmp.glob("live.pre-update-*")))
+
+    def test_update_fails_closed_when_fleet_backup_provider_returns_no_generation(self):
+        res = self._apply(backup_cb=lambda: "")
+        self.assertFalse(res.ok)
+        self.assertIn("did not return a generation path", res.failed_reason)
+        self.assertEqual(self.backups, [])
+        self._assert_live_untouched()
+        self.assertFalse(list(self.tmp.glob("live.crucible-staging-*")))
+        self.assertFalse(list(self.tmp.glob("live.pre-update-*")))
 
     def test_log_callback_receives_progress(self):
         lines = []

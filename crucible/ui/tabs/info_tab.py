@@ -6,10 +6,17 @@ Info tab: read-only summary of the selected server instance.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QGridLayout,
-    QLabel, QFrame, QScrollArea,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ...data.instance_model import ServerInstance
@@ -31,15 +38,88 @@ def _field(label: str, value: str, value_color: str = theme.TEXT) -> tuple[QLabe
 
 
 class InfoTab(QWidget):
-    """Read-only metadata display for one server instance."""
+    """Server diagnostics, metadata, and live performance for one instance."""
+
+    fix_loading_requested = pyqtSignal(object)
+    inspect_logs_requested = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._instance: ServerInstance | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(12, 10, 12, 0)
+        outer.setSpacing(8)
+
+        heading = QLabel("Diagnostics")
+        heading.setStyleSheet(
+            f"color: {theme.TEXT}; font-size: 16px; font-weight: 700;"
+        )
+        outer.addWidget(heading)
+
+        health_group = QGroupBox("Health")
+        health_layout = QHBoxLayout(health_group)
+        health_layout.setContentsMargins(12, 22, 12, 10)
+        self._health_label = QLabel("Select a server to inspect its current state.")
+        self._health_label.setWordWrap(True)
+        self._health_label.setStyleSheet(
+            f"color: {theme.TEXT}; font-size: 12px; font-weight: 600;"
+        )
+        health_layout.addWidget(self._health_label)
+        outer.addWidget(health_group)
+
+        action_groups = QHBoxLayout()
+        action_groups.setSpacing(10)
+
+        logs_group = QGroupBox("Logs and crashes")
+        logs_layout = QVBoxLayout(logs_group)
+        logs_layout.setContentsMargins(12, 22, 12, 10)
+        logs_hint = QLabel(
+            "Read the latest server log or crash report. This is inspection only."
+        )
+        logs_hint.setWordWrap(True)
+        logs_hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
+        logs_layout.addWidget(logs_hint)
+
+        self._inspect_logs_btn = QPushButton("Inspect server logs and crashes")
+        self._inspect_logs_btn.setToolTip(
+            "Review the latest available server log and crash report. Does not change server files."
+        )
+        self._inspect_logs_btn.setAccessibleName("Inspect server logs and crash reports")
+        self._inspect_logs_btn.setEnabled(False)
+        self._inspect_logs_btn.clicked.connect(
+            lambda: self.inspect_logs_requested.emit(self._instance)
+            if self._instance is not None else None
+        )
+        logs_layout.addWidget(self._inspect_logs_btn)
+        action_groups.addWidget(logs_group, 1)
+
+        repair_group = QGroupBox("Fix loading errors")
+        repair_layout = QVBoxLayout(repair_group)
+        repair_layout.setContentsMargins(12, 22, 12, 10)
+        repair_hint = QLabel(
+            "Check a startup failure. Crucible shows the proposed mod quarantine "
+            "and asks before changing any files."
+        )
+        repair_hint.setWordWrap(True)
+        repair_hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
+        repair_layout.addWidget(repair_hint)
+
+        self._fix_loading_btn = QPushButton("Check loading repair…")
+        self._fix_loading_btn.setToolTip(
+            "Diagnose startup failures. Any proposed mod quarantine is shown for approval before files change."
+        )
+        self._fix_loading_btn.setAccessibleName("Check for safe server loading repairs")
+        self._fix_loading_btn.setEnabled(False)
+        self._fix_loading_btn.clicked.connect(
+            lambda: self.fix_loading_requested.emit(self._instance)
+            if self._instance is not None else None
+        )
+        repair_layout.addWidget(self._fix_loading_btn)
+        action_groups.addWidget(repair_group, 1)
+        outer.addLayout(action_groups)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -67,7 +147,10 @@ class InfoTab(QWidget):
         self._system = SystemTab()
 
     def load(self, instance: ServerInstance, status: str = "stopped") -> None:
-        """Rebuild the info display for the given instance."""
+        """Rebuild diagnostics for the given instance."""
+        self._instance = instance
+        self._inspect_logs_btn.setEnabled(True)
+        self._fix_loading_btn.setEnabled(True)
         # Detach (but do NOT delete) the persistent System performance
         # section before clearing everything else, so it survives this
         # rebuild and its resource-sampling timer keeps running uninterrupted.
@@ -92,10 +175,35 @@ class InfoTab(QWidget):
         status_color = {
             "running":      theme.GREEN,
             "stopped":      theme.SUBTEXT,
+            "starting":     theme.PROGRESS,
+            "stopping":     theme.PROGRESS,
             "tmux_missing": theme.YELLOW,
-        }.get(status, theme.SUBTEXT)
+            "missing":      theme.RED,
+            "unmanaged":    theme.YELLOW,
+        }.get(status, theme.YELLOW)
 
         problems    = instance.validate()
+        state_label = {
+            "running": "Running",
+            "stopped": "Stopped",
+            "starting": "Starting",
+            "stopping": "Stopping",
+            "tmux_missing": "tmux unavailable",
+            "missing": "Server files missing",
+            "unmanaged": "Unmanaged process",
+            "unknown": "Status unavailable",
+        }.get(status, status.replace("_", " ").title())
+        health_parts = [f"Server state: {state_label}."]
+        if problems:
+            health_parts.append(
+                f"{len(problems)} readiness/validation issue(s) need review."
+            )
+        else:
+            health_parts.append("The registered server folder passes local validation.")
+        health_parts.append(
+            "A status check never starts or stops the server."
+        )
+        self._health_label.setText(" ".join(health_parts))
         script      = instance.get_startscript()
         log         = instance.get_log_path()
         worlds      = instance.get_world_names()
