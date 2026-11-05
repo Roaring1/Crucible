@@ -758,13 +758,22 @@ class ResetWorldWorker(QObject):
     finished = pyqtSignal(object)    # SwapResult
     failed   = pyqtSignal(str)       # error message
 
-    def __init__(self, manager: BackupManager, parent: QObject | None = None):
+    def __init__(
+        self,
+        manager: BackupManager,
+        new_level_name: str | None = None,
+        parent: QObject | None = None,
+    ):
         super().__init__(parent)
         self._manager = manager
+        self._new_level_name = new_level_name
 
     def run(self) -> None:
         try:
-            result = self._manager.reset_world(progress_cb=lambda p: self.progress.emit(p))
+            result = self._manager.reset_world(
+                progress_cb=lambda p: self.progress.emit(p),
+                new_level_name=self._new_level_name,
+            )
             self.finished.emit(result)
         except Exception as exc:
             self.failed.emit(str(exc))
