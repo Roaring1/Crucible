@@ -789,6 +789,46 @@ class ClientExportTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
 
+    def test_unknown_server_mod_exactly_matching_selected_client_profile_is_confirmed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = root / "server"
+            server_mods = server / "mods"
+            server_mods.mkdir(parents=True)
+            source = root / "working-prism"
+            client_mods = source / ".minecraft" / "mods"
+            client_mods.mkdir(parents=True)
+            (source / "mmc-pack.json").write_text(json.dumps({
+                "formatVersion": 1,
+                "components": [
+                    {"uid": "net.minecraft", "version": "1.21.1"},
+                    {"uid": "net.neoforged", "version": "21.1.1"},
+                ],
+            }), encoding="utf-8")
+            server_jar = server_mods / "unknown-shared.jar"
+            with zipfile.ZipFile(server_jar, "w") as jar:
+                jar.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\\n")
+            # Same bytes under a different client filename are sufficient evidence.
+            (client_mods / "renamed-unknown-shared.jar").write_bytes(server_jar.read_bytes())
+            instance = SimpleNamespace(
+                path=str(server), name="TestPack", minecraft_version="1.21.1",
+                loader="neoforge", loader_version="21.1.1",
+            )
+            output = root / "client.zip"
+            result = client_export.export(
+                instance, output, fmt="prism", client_source=str(source), include_config=False
+            )
+            self.assertTrue(result.ok, result.error)
+            self.assertEqual(result.mod_count, 1)
+            self.assertFalse(
+                any("unknown client compatibility" in warning for warning in result.warnings),
+                result.warnings,
+            )
+            with zipfile.ZipFile(output) as archive:
+                names = set(archive.namelist())
+                self.assertIn("TestPack/.minecraft/mods/unknown-shared.jar", names)
+                self.assertNotIn("TestPack/.minecraft/mods/renamed-unknown-shared.jar", names)
+
     def test_gtnh_1_7_10_prism_zip_generates_recipient_defaults_not_owner_options(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
