@@ -653,8 +653,7 @@ class BackupManager:
         try:
             if new_level_name is not None:
                 self._write_level_name(new_level_name)
-        except Exception as exc:  # noqa: BLE001 - worker boundary reports every operation failure to the GUI
-            # A failed properties update must not strand the existing world
+        except Exception as exc:  # A failed properties update must not strand the existing world
             # under a new name. The mandatory backup remains as an extra copy.
             if pre_swap_dir is not None and pre_swap_dir.exists() and not world_root.exists():
                 try:
