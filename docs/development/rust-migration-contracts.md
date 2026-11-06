@@ -333,8 +333,8 @@ Create sanitized, small fixtures in the repository before writing a production R
 | Fixture family | Cases that must be represented |
 |---|---|
 | Registry | Version 1; missing optional keys; unknown `extra` fields; missing session name; invalid FML choice; duplicate ID/path/session; malformed/oversized registry |
-| Status/process scan | Running; stopped; unmanaged Java; missing folder; tmux missing; tmux timeout/unknown; marker-only process; shell wrapper plus Java child; complete empty scan; inaccessible `/proc`; absent `/proc`; transient GUI starting/stopping kept separately; tmux missing plus unmanaged Java |
-| Heartbeat/watchdog | Each of four states; missing boot ID; changed boot ID; interrupted stop same/different boot; absent, present and unknown tmux results; wrapper alive/Java gone; two misses; restart delay; crash-loop cap; stable uptime reset |
+| Status/process scan | Running; stopped; unmanaged Java; missing folder; tmux missing; tmux timeout/unknown; marker-only process; shell wrapper plus Java child; complete empty scan; inaccessible `/proc`; absent `/proc`; transient GUI starting/stopping kept separately; tmux missing plus unmanaged Java; watchdog process-call counts and slow per-instance tmux/pane probes |
+| Heartbeat/watchdog | Each of four states; missing boot ID; changed boot ID; interrupted stop same/different boot; absent, present and unknown tmux results; wrapper alive/Java gone; two misses; restart delay; crash-loop cap; stable uptime reset; 1/5/20/50 server tmux subprocess count and timeout latency |
 | World summary | Existing developed save; new folder; incomplete folder with `level.dat`; alternate developed save; changed selection; absent prior marker; path traversal; absolute path; symlink root/child; unreadable file |
 | Properties | GTNH 1.7.10 legacy keys; modern 1.20+ keys; removed 1.21.2 keys; duplicate keys; escaped key/value; malformed number/bool/enum; unknown key; comments and ordering |
 | Pack update | Unknown/running/stopped; stable update; downgrade blocker; beta warning; unsupported Java; multiple worlds; unsafe `level-name`; insufficient free space |
