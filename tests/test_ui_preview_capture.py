@@ -16,6 +16,7 @@ def test_capture_ui_previews_writes_expected_pngs(tmp_path):
     }
     result = subprocess.run(
         [sys.executable, str(script), "--output", str(tmp_path)],
+        check=False,
         env=env,
         capture_output=True,
         text=True,
@@ -36,8 +37,8 @@ def test_capture_ui_previews_writes_expected_pngs(tmp_path):
         "workspace-players.png",
         "workspace-players-keyboard-focus.png",
         "workspace-world.png",
-        "workspace-backups.png",
-        "workspace-backups-compact.png",
+        "workspace-world-recovery.png",
+        "workspace-world-recovery-compact.png",
         "workspace-diagnostics.png",
         "workspace-keyboard-focus.png",
         "server-rail-context-menu.png",

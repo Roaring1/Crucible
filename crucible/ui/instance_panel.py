@@ -3,9 +3,9 @@ crucible/ui/instance_panel.py
 
 Right-hand panel shown when an instance is selected.
 Header: server identity artwork, name, version, explicit text status, Start/Stop actions.
-Body: primary tabs Setup, Console, Mods, World, Backups. Less-frequent
-Config, Players, Notes, and Info pages live under a compact More menu. Info
-includes live System performance stats -- System is no longer a separate tab.
+Body: primary tabs Console, Mods, Worlds, Setup, and Diagnostics. Worlds
+is the home for saved worlds and recovery. Less-frequent Config, Players,
+Notes, and Info pages live under a compact More menu.
 
 Status state machine:
   stopped  -> starting  (tmux.start() succeeds)
@@ -55,7 +55,6 @@ from ..process.tmux_manager import TmuxManager
 from ..process.watchdog import Watchdog
 from . import theme
 from .tabs import (
-    BackupTab,
     ConfigTab,
     ConsoleTab,
     InfoTab,
@@ -309,7 +308,6 @@ class InstancePanel(QWidget):
         self._notes   = NotesTab(self._manager)
         self._info    = InfoTab()
         self._config  = ConfigTab()
-        self._backup  = BackupTab(self._manager)
         self._world   = WorldTab(self._manager)
         self._players = PlayersTab()
 
@@ -318,8 +316,7 @@ class InstancePanel(QWidget):
         # visible rather than hidden behind a secondary menu.
         self._tabs.addTab(self._console, "Console")
         self._tabs.addTab(self._mods,    "Mods")
-        self._tabs.addTab(self._world,   "World")
-        self._tabs.addTab(self._backup,  "Backups")
+        self._tabs.addTab(self._world,   "Worlds")
         self._tabs.addTab(self._setup,   "Setup")
         self._tabs.addTab(self._info,    "Diagnostics")
         self._tabs.addTab(self._config,  "Config")
@@ -327,9 +324,9 @@ class InstancePanel(QWidget):
         self._tabs.addTab(self._notes,   "Notes")
         # Only secondary configuration/reference pages live under More.
         self._more_tab_labels = {
-            6: "Config & settings",
-            7: "Players",
-            8: "Notes",
+            5: "Config & settings",
+            6: "Players",
+            7: "Notes",
         }
         self._more_tab_actions = {}
         self._more_menu = QMenu(self)
@@ -971,8 +968,6 @@ class InstancePanel(QWidget):
             self._info.load(inst, status)
         elif tab is self._config:
             self._config.load(inst)
-        elif tab is self._backup:
-            self._backup.load(inst)
         elif tab is self._world:
             self._world.load(inst)
         elif tab is self._players:
@@ -1380,12 +1375,10 @@ class InstancePanel(QWidget):
     def has_active_operations(self) -> bool:
         """True while closing could destroy a live worker or partial backup."""
         tmux_busy = any(t.isRunning() for t in self._worker_threads)
-        backup_thread = getattr(self._backup, "_thread", None)
-        backup_busy = bool(backup_thread and backup_thread.isRunning())
         world_busy = self._world.has_active_operation()
         setup_busy = self._setup.has_active_operation()
         mods_busy = self._mods.has_active_operation()
-        return tmux_busy or backup_busy or world_busy or setup_busy or mods_busy
+        return tmux_busy or world_busy or setup_busy or mods_busy
 
     def shutdown(self) -> None:
         """Stop worker-owned timers in their own threads, then join threads."""

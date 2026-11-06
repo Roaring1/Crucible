@@ -79,6 +79,10 @@ class _FleetBackupWorker(QObject):
                     "issues": manager.generation_issues(),
                     "state": self._read_state(manager.root / "state.json"),
                     "scheduler": backup_scheduler.scheduler_status(),
+                    "world_recovery_points": {
+                        str(instance.id): manager.list_world_recovery_points(instance.id)
+                        for instance in self._instances
+                    },
                     "legacy_sources": manager.legacy_source_inventory(),
                     "legacy_backup_blockers": manager.legacy_backup_blockers(),
                 }

@@ -21,6 +21,7 @@ import os
 import sys
 import tempfile
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -290,8 +291,11 @@ def capture_previews(output: Path) -> list[Path]:
             version="Synthetic",
         )
 
+        from crucible.data.backup_manager import BackupEntry
+        from crucible.data.fleet_backup import FleetBackupManager, WorldRecoveryPoint
         from crucible.process.tmux_manager import TmuxManager
-        from crucible.ui.tabs.backup_tab import BackupTab
+        from crucible.ui.tabs import world_tab
+        from crucible.ui.tabs.world_tab import WorldTab
 
         preview_statuses = {
             instance.id: "stopped",
@@ -303,80 +307,127 @@ def capture_previews(output: Path) -> list[Path]:
             unknown_instance.id: "unknown",
         }
 
-        # The backup page normally reads the fleet generation store. For a
-        # preview, provide two fake generation summaries directly so this
-        # renderer never reads or writes the owner's real backup directory.
+        # The Worlds page preview uses temporary, synthetic restore points.
+        # It never reads the owner's real fleet backup directory or timer.
         preview_generations = [
             GenerationSummary(
-                generation_id="20261102T232000000000Z-preview02",
+                generation_id="20261106T000000000000Z-preview02",
                 path=root / "preview-backups" / "generations" / "preview02",
-                created_at="2026-11-02T23:20:00.000000Z",
+                created_at="2026-11-06T00:00:00.000000Z",
                 server_count=7,
                 file_count=112,
                 logical_bytes=18_400_000,
                 bytes_copied=180_000,
+                server_ids=(instance.id,),
             ),
             GenerationSummary(
-                generation_id="20261102T231000000000Z-preview01",
+                generation_id="20261105T235000000000Z-preview01",
                 path=root / "preview-backups" / "generations" / "preview01",
-                created_at="2026-11-02T23:10:00.000000Z",
+                created_at="2026-11-05T23:50:00.000000Z",
                 server_count=7,
                 file_count=108,
                 logical_bytes=18_100_000,
                 bytes_copied=18_100_000,
+                server_ids=(instance.id,),
             ),
         ]
-        preview_backup_data = {
-            "generations": preview_generations,
-            "issues": [],
-            "legacy_sources": [
-                {
-                    "path": "retired-instance-id/old-world.zip",
-                    "kind": "retired_instance_world_archive",
-                    "instance_id": None,
-                    "instance_name": None,
-                    "status": "unassigned",
-                    "bytes": 5_000_000,
-                    "files": 1,
-                    "reason": "Retired instance ownership needs an explicit mapping.",
-                },
-                {
-                    "path": "manual/Example-Server-before-import",
-                    "kind": "manual_server_snapshot",
-                    "instance_id": instance.id,
-                    "instance_name": instance.name,
-                    "status": "mapped_pending",
-                    "bytes": 15_000_000,
-                    "files": 64,
-                    "reason": "Historical full-server folder is not yet in both fleet generations.",
-                },
+        preview_points = {
+            "preview-world": [
+                WorldRecoveryPoint(
+                    generation_id=preview_generations[0].generation_id,
+                    created_at=preview_generations[0].created_at,
+                    world_name="preview-world",
+                    active=True,
+                    size_bytes=540 * 1024 * 1024,
+                ),
+                WorldRecoveryPoint(
+                    generation_id=preview_generations[1].generation_id,
+                    created_at=preview_generations[1].created_at,
+                    world_name="preview-world",
+                    active=True,
+                    size_bytes=538 * 1024 * 1024,
+                ),
             ],
-            "state": {
-                "last_status": "success",
-                "last_completed_at_utc": "2026-11-02T23:20:00.000000Z",
-                "registered_servers": 7,
-                "legacy_archive_migration": {
-                    "source_archives_removed": 3,
-                    "source_bytes_removed": 640_000_000,
-                    "source_archives_pending": 1,
-                    "source_bytes_pending": 150_000_000,
-                    "cleanup_errors": [],
-                },
-            },
-            "scheduler": {
-                "active": "false",
-                "enabled": "false",
-                "next": "",
-                "detail": "Preview only · live systemd status disabled",
-            },
+            "saved-world": [
+                WorldRecoveryPoint(
+                    generation_id=preview_generations[0].generation_id,
+                    created_at=preview_generations[0].created_at,
+                    world_name="saved-world",
+                    active=False,
+                    size_bytes=3_300_000_000,
+                ),
+                WorldRecoveryPoint(
+                    generation_id=preview_generations[1].generation_id,
+                    created_at=preview_generations[1].created_at,
+                    world_name="saved-world",
+                    active=False,
+                    size_bytes=3_280_000_000,
+                ),
+            ],
+            "snapshot-only-world": [
+                WorldRecoveryPoint(
+                    generation_id=preview_generations[0].generation_id,
+                    created_at=preview_generations[0].created_at,
+                    world_name="snapshot-only-world",
+                    active=False,
+                    size_bytes=920_000_000,
+                ),
+                WorldRecoveryPoint(
+                    generation_id=preview_generations[1].generation_id,
+                    created_at=preview_generations[1].created_at,
+                    world_name="snapshot-only-world",
+                    active=False,
+                    size_bytes=900_000_000,
+                ),
+            ],
         }
+        saved_world_entry = BackupEntry(
+            filename="saved-world-preview.zip",
+            path=root / "preview-backups" / "saved-world-preview.zip",
+            size_bytes=3_300_000_000,
+            created_at=datetime.fromisoformat("2026-11-05T23:50:00+00:00"),
+            slot_name="Earlier expedition",
+        )
 
-        def preview_backup_list(tab, *_args):
-            tab._render_inventory(preview_backup_data)
+        class PreviewBackupManager:
+            def __init__(self, _instance):
+                pass
+
+            def list_backups(self):
+                return [saved_world_entry]
+
+            def _backup_level_name(self, _entry):
+                return "saved-world"
+
+            def list_pre_swap_dirs(self):
+                return []
+
+        def preview_recovery_list(tab, mode, **_kwargs):
+            if mode != "list":
+                return
+            tab._recovery_generations = preview_generations
+            tab._recovery_scheduler = {"active": "true", "enabled": "true"}
+            tab._recovery_state_data = {
+                "last_status": "success",
+                "last_completed_at_utc": preview_generations[0].created_at,
+            }
+            tab._world_recovery_points = preview_points
+            tab._render_recovery_status(tab._recovery_state_data)
+            tab._refresh()
 
         with (
             patch.object(MainWindow, "_run_crash_recovery", lambda self: None),
-            patch.object(BackupTab, "_run_job", preview_backup_list),
+            patch.object(world_tab, "BackupManager", PreviewBackupManager),
+            patch.object(
+                FleetBackupManager, "list_legacy_world_archives",
+                lambda self, instance_id: [],
+            ),
+            patch.object(WorldTab, "_run_recovery_job", preview_recovery_list),
+            patch.object(
+                type(instance),
+                "world_size_bytes",
+                lambda self: 540 * 1024 * 1024,
+            ),
             patch.object(
                 TmuxManager, "get_status",
                 lambda self, server: preview_statuses.get(server.id, "stopped"),
@@ -481,16 +532,43 @@ def capture_previews(output: Path) -> list[Path]:
                 )
 
             panel._tabs.setCurrentWidget(panel._world)
-            save(selected, "workspace-world.png", 1440, 900)
-
-            panel._tabs.setCurrentWidget(panel._backup)
-            panel._backup._render_inventory(preview_backup_data)
-            if not panel._backup._restore_btn.isEnabled():
+            QTest.qWait(80)
+            world_page = panel._world
+            if world_page._table.rowCount() != 3:
                 raise RuntimeError(
-                    "Selected-server restore action is not enabled in the synthetic Backups preview"
+                    "Unified Worlds preview did not show the active world, saved archive, and snapshot-only world"
                 )
-            save(selected, "workspace-backups.png", 1440, 900)
-            save(selected, "workspace-backups-compact.png", 900, 600)
+            if world_page._table.item(0, 4).text() != "2 points":
+                raise RuntimeError(
+                    "Active world preview is missing its two restore points"
+                )
+            if world_page._table.item(1, 4).text() != "2 points":
+                raise RuntimeError(
+                    "Saved archive preview is missing its two restore points"
+                )
+            if world_page._table.item(2, 0).text() != "snapshot-only-world":
+                raise RuntimeError(
+                    "Automatic-snapshot-only world was not added to Saved Worlds"
+                )
+            if world_page._table.item(2, 4).text() != "2 points":
+                raise RuntimeError(
+                    "Snapshot-only saved world is missing its restore history"
+                )
+            snapshot_actions = world_page._table.cellWidget(2, 5)
+            if not any(
+                button.text() == "Restore"
+                for button in snapshot_actions.findChildren(QPushButton)
+            ):
+                raise RuntimeError(
+                    "Snapshot-only saved world is missing its direct Restore action"
+                )
+            if world_page._backup_all_btn.text() != "Back up all servers now":
+                raise RuntimeError("Unified Recovery action is missing from Worlds")
+            if not world_page._restore_server_btn.isEnabled():
+                raise RuntimeError("Full-server restore is unavailable for the selected synthetic server")
+            save(selected, "workspace-world.png", 1440, 900)
+            save(selected, "workspace-world-recovery.png", 1440, 900)
+            save(selected, "workspace-world-recovery-compact.png", 900, 600)
 
             panel._tabs.setCurrentWidget(panel._info)
             save(selected, "workspace-diagnostics.png", 1440, 900)

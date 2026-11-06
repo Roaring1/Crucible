@@ -211,6 +211,33 @@ class WorldSwapTests(unittest.TestCase):
 
         self.assertTrue((result.pre_swap_dir / "junk.txt").exists())
 
+    def test_fleet_checkpoint_swap_does_not_create_extra_legacy_zip(self):
+        tmp = Path(tempfile.mkdtemp())
+        server_dir = _make_server(tmp, level_name="World")
+        mgr = _manager(tmp, server_dir, "TestSrv", "fleet-checkpoint-swap")
+        original_world = mgr._instance.world_root_path()
+        (original_world / "marker.txt").write_text("before swap", encoding="utf-8")
+        archive_path = mgr.create_backup(slot_name="SavedWorld")
+
+        entry = next(item for item in mgr.list_backups() if item.path == archive_path)
+        result = mgr.swap_world(
+            entry,
+            safety_backup_verified=True,
+            fleet_generation_id="verified-fleet-generation",
+        )
+
+        self.assertTrue(result.ok)
+        self.assertIsNone(result.pre_swap_backup_path)
+        self.assertIsNotNone(result.pre_swap_dir)
+        self.assertTrue((result.pre_swap_dir / "marker.txt").is_file())
+        self.assertEqual(
+            (result.pre_swap_dir / "marker.txt").read_text(encoding="utf-8"),
+            "before swap",
+        )
+        # The only ZIP was the pre-existing source archive. A verified fleet
+        # checkpoint must not create an additional hidden per-server ZIP.
+        self.assertEqual(len(mgr.list_backups()), 1)
+
     def test_prune_pre_swap_dirs_removes_old_ones(self):
         tmp = Path(tempfile.mkdtemp())
         server_dir = _make_server(tmp, level_name="World")

@@ -1,16 +1,15 @@
 """
 crucible/ui/tabs/world_tab.py
 
-World identification, named "world slot" backups, the safe world-swap
-workflow, and quick actions to set the seed, start fresh, or permanently
-delete the world (World Backup & Swap + World Actions feature).
+The Worlds page is the single home for the active world, saved worlds,
+automatic recovery points, manual backups, and safe restore/switch actions.
+The fleet snapshot engine remains shared across servers, while this page
+presents recovery in the context of the worlds a person actually manages.
 
-This is deliberately separate from BackupTab (which stays a simple "one zip
-per click" tool): WorldTab is where a user manages MULTIPLE named saved
-worlds, safely swaps the live world between them, and can start over with a
-clean world. Swapping/resetting/wiping are the highest-risk operations in
-Crucible, so every precondition is enforced here and explained in plain
-language before anything touches disk:
+World swaps, restores, resets, and wipes are high-risk operations. They use
+the shared fleet lock, require the server to be confirmed stopped before
+changing world folders, verify the selected recovery source, and preserve a
+rollback path before touching the active world.
 
   - The server must be fully stopped (checked live via tmux; any status
     other than the exact "stopped" value blocks the operation).
@@ -30,13 +29,19 @@ from __future__ import annotations
 
 import re
 import shutil
+import tempfile
+import zipfile
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -45,6 +50,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QStyle,
     QTableWidget,
     QTableWidgetItem,
@@ -59,6 +65,7 @@ from ...data.backup_manager import (
     SwapResult,
 )
 from ...data.fleet_backup import (
+    DEFAULT_FLEET_BACKUP_DIR,
     BackupAlreadyRunning,
     FleetBackupError,
     FleetBackupManager,
@@ -69,6 +76,7 @@ from ...data.instance_model import ServerInstance, dimension_label
 from ...process.tmux_manager import TmuxManager
 from .. import theme
 from ..thread_lifecycle import connect_thread_cleanup
+from .backup_tab import _FleetBackupWorker
 
 # Dimension lists longer than this are collapsed behind a "Show all" toggle --
 # GTNH-style packs can have 80-90+ dimensions, which as one giant paragraph of
@@ -77,31 +85,25 @@ _DIMS_COLLAPSE_THRESHOLD = 6
 
 
 class _WorldStatsWorker(QObject):
-    """Computes the (potentially slow) recursive world size and pre-swap
-    folder total off the GUI thread.
+    """Compute the active world's recursive size away from the GUI thread.
 
     GTNH-scale worlds can have 80-90+ dimension folders full of region
-    files, so walking them with Path.rglob() on the main thread -- which is
-    exactly what the old synchronous _refresh() did -- is what caused the
-    "UI not responding" freezes whenever this tab was opened or refreshed.
+    files, so walking them with Path.rglob() on the main thread would freeze
+    the workspace whenever Worlds opened or refreshed.
     """
 
-    done = pyqtSignal(int, int)   # world_size_bytes, presafe_total_bytes
+    done = pyqtSignal(int)  # world_size_bytes
 
-    def __init__(self, instance: ServerInstance, pre_swap_dirs: list[Path], parent=None):
+    def __init__(self, instance: ServerInstance, parent=None):
         super().__init__(parent)
         self._instance = instance
-        self._pre_swap_dirs = pre_swap_dirs
 
     def run(self) -> None:
         try:
             size = self._instance.world_size_bytes()
         except Exception:  # noqa: BLE001 - keep a failed background size scan from crashing the GUI
             size = 0
-        total = 0
-        for d in self._pre_swap_dirs:
-            total += _dir_size(d)
-        self.done.emit(size, total)
+        self.done.emit(size)
 
 
 class _FleetWorldActionWorker(QObject):
@@ -117,6 +119,7 @@ class _FleetWorldActionWorker(QObject):
         action: str,
         entry: BackupEntry | None = None,
         new_level_name: str | None = None,
+        world_recovery: dict[str, Any] | None = None,
     ):
         super().__init__()
         self._instances = list(instances)
@@ -124,12 +127,46 @@ class _FleetWorldActionWorker(QObject):
         self._action = action
         self._entry = entry
         self._new_level_name = new_level_name
+        self._world_recovery = dict(world_recovery) if world_recovery else None
 
     def run(self) -> None:
         try:
             fleet = FleetBackupManager(self._instances, TmuxManager())
             with fleet_operation_lock(fleet.root):
-                self._run_locked(fleet)
+                if self._world_recovery is not None:
+                    # Export the selected immutable snapshot before the next
+                    # fleet capture can rotate it out of the two-generation
+                    # window. The temporary archive is only a bridge into the
+                    # existing validated, rollback-safe world swap.
+                    with tempfile.TemporaryDirectory(
+                        prefix="crucible-world-restore-"
+                    ) as temporary:
+                        world_name = str(self._world_recovery["world_name"])
+                        archive = fleet.export_world_archive(
+                            str(self._world_recovery["generation_id"]),
+                            str(self._instance.id),
+                            world_name,
+                            Path(temporary) / "selected-world.zip",
+                            deep_verify=True,
+                            legacy_archive_filename=self._world_recovery.get(
+                                "legacy_archive_filename"
+                            ),
+                        )
+                        created_at = datetime.fromisoformat(
+                            str(archive["created_at"])
+                        ).astimezone()
+                        self._entry = BackupEntry(
+                            filename=str(archive["filename"]),
+                            path=Path(archive["path"]),
+                            size_bytes=int(archive["size_bytes"]),
+                            created_at=created_at,
+                            slot_name=world_name,
+                            sha256=str(archive["sha256"]),
+                            fleet_generation_id=str(archive["generation_id"]),
+                        )
+                        self._run_locked(fleet)
+                else:
+                    self._run_locked(fleet)
         except Exception as exc:  # noqa: BLE001 - a worker must report every failure through its Qt signal.
             self.failed.emit(str(exc))
 
@@ -300,8 +337,16 @@ class WorldTab(QWidget):
         # QThread is still alive is exactly the "QThread: Destroyed while
         # thread is still running" abort. Instead we stash the newest
         # requested args here and let _stats_thread_finished start it.
-        self._stats_pending: tuple[Path, list[Path]] | None = None
+        self._stats_pending: Path | None = None
         self._dims_expanded = False
+        self._recovery_thread: QThread | None = None
+        self._recovery_worker: _FleetBackupWorker | None = None
+        self._recovery_job_mode: str | None = None
+        self._recovery_generations = []
+        self._world_recovery_points: dict[str, list[Any]] = {}
+        self._recovery_scheduler: dict[str, str] = {}
+        self._recovery_state_data: dict[str, Any] = {}
+        self._timer_enabled = False
         self._build_ui()
 
     # Public API
@@ -325,18 +370,321 @@ class WorldTab(QWidget):
         self._manager = BackupManager(instance)
         self._dims_expanded = False
         self._refresh()
+        self._run_recovery_job("list")
 
     def has_active_operation(self) -> bool:
         thread_busy = bool(self._thread and self._thread.isRunning())
         stats_busy = bool(self._stats_thread and self._stats_thread.isRunning())
-        return thread_busy or stats_busy
+        recovery_busy = bool(
+            self._recovery_thread and self._recovery_thread.isRunning()
+        )
+        return thread_busy or stats_busy or recovery_busy
+
+    def _server_restore_generations(self) -> list[Any]:
+        if self._instance is None:
+            return []
+        instance_id = str(self._instance.id)
+        return [
+            item for item in self._recovery_generations
+            if instance_id in getattr(item, "server_ids", ())
+        ]
+
+    def _run_recovery_job(
+        self,
+        mode: str,
+        *,
+        restore_args: tuple[str, str, Path, str] | None = None,
+    ) -> None:
+        if not self._instance_manager or not self._instance:
+            return
+        if (
+            self._thread and self._thread.isRunning()
+            or self._recovery_thread and self._recovery_thread.isRunning()
+        ):
+            return
+        instances = list(self._instance_manager.instances)
+        if not instances:
+            return
+
+        self._recovery_job_mode = mode
+        self._set_recovery_busy(True, mode)
+        self._recovery_thread = QThread()
+        self._recovery_thread.setObjectName("CrucibleWorldRecoveryThread")
+        self._recovery_worker = _FleetBackupWorker(
+            instances, mode, restore_args=restore_args
+        )
+        self._recovery_worker.moveToThread(self._recovery_thread)
+        self._recovery_thread.started.connect(self._recovery_worker.run)
+        self._recovery_worker.finished.connect(self._on_recovery_job_finished)
+        self._recovery_worker.failed.connect(self._on_recovery_job_failed)
+        self._recovery_worker.finished.connect(self._recovery_thread.quit)
+        self._recovery_worker.failed.connect(self._recovery_thread.quit)
+        self._recovery_worker.finished.connect(self._recovery_worker.deleteLater)
+        self._recovery_worker.failed.connect(self._recovery_worker.deleteLater)
+        connect_thread_cleanup(
+            self._recovery_thread, self._recovery_thread_finished
+        )
+        self._recovery_thread.start()
+
+    def _set_recovery_busy(self, busy: bool, mode: str = "") -> None:
+        for button in (
+            self._backup_all_btn,
+            self._verify_backups_btn,
+            self._schedule_btn,
+            self._open_folder_btn,
+        ):
+            button.setEnabled(not busy)
+        self._restore_server_btn.setEnabled(
+            not busy and bool(self._server_restore_generations())
+        )
+        if busy:
+            labels = {
+                "list": "Checking backups…",
+                "verify": "Verifying backups…",
+                "install_timer": "Enabling automatic backups…",
+                "remove_timer": "Pausing automatic backups…",
+                "restore": "Restoring server copy…",
+            }
+            self._recovery_state.setText(labels.get(mode, "Working…"))
+        else:
+            self._render_recovery_status(self._recovery_state_data)
+
+    def _on_recovery_job_finished(self, result: Any) -> None:
+        mode = self._recovery_job_mode
+        if mode == "list":
+            self._recovery_generations = list(result.get("generations", []))
+            self._recovery_scheduler = dict(result.get("scheduler", {}))
+            self._recovery_state_data = dict(result.get("state", {}))
+            by_server = result.get("world_recovery_points", {})
+            self._world_recovery_points = dict(
+                by_server.get(str(self._instance.id), {})
+            )
+            self._render_recovery_status(self._recovery_state_data)
+            self._refresh()
+        elif mode == "verify":
+            failures = [item for item in result if not item.get("ok")]
+            if failures:
+                details = "\n".join(
+                    f"{Path(item['path']).name}: "
+                    + "; ".join(item.get("errors", [])[:3])
+                    for item in failures
+                )
+                QMessageBox.warning(
+                    self, "Backup verification", f"Some backups need attention:\n\n{details}"
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "Backups verified",
+                    f"All {len(result)} retained restore points passed SHA-256 verification.",
+                )
+        elif mode == "install_timer":
+            QMessageBox.information(
+                self,
+                "Automatic backups enabled",
+                "Crucible will back up every registered server about every 10 minutes.",
+            )
+        elif mode == "remove_timer":
+            QMessageBox.information(
+                self,
+                "Automatic backups paused",
+                "Existing restore points are unchanged.",
+            )
+        elif mode == "restore":
+            QMessageBox.information(
+                self,
+                "Server restored",
+                f"{result['server_name']} was restored to a separate folder:\n\n"
+                f"{result['target']}\n\n"
+                "The live registered server was not changed. Start the restored copy manually.",
+            )
+
+    def _on_recovery_job_failed(self, error: str) -> None:
+        mode = self._recovery_job_mode
+        self._recovery_state_data = {
+            **self._recovery_state_data,
+            "last_status": "failed",
+        }
+        self._recovery_state.setText("Backup operation needs attention")
+        if mode == "restore":
+            title = "Server restore failed"
+        elif mode == "verify":
+            title = "Backup verification failed"
+        elif mode in {"install_timer", "remove_timer"}:
+            title = "Automatic backup schedule"
+        else:
+            title = "Could not load recovery points"
+        QMessageBox.warning(self, title, error)
+
+    def _recovery_thread_finished(self) -> None:
+        mode = self._recovery_job_mode
+        self._recovery_thread = None
+        self._recovery_worker = None
+        self._recovery_job_mode = None
+        self._set_recovery_busy(False)
+        if mode in {"verify", "install_timer", "remove_timer", "restore"}:
+            QTimer.singleShot(100, lambda: self._run_recovery_job("list"))
+
+    def _render_recovery_status(self, state: dict[str, Any] | None = None) -> None:
+        state = state or {}
+        active = self._recovery_scheduler.get("active") == "true"
+        enabled = self._recovery_scheduler.get("enabled") == "true"
+        self._timer_enabled = active or enabled
+        if active:
+            self._recovery_state.setText("Automatic · every 10 min · 2 restore points")
+            self._schedule_btn.setText("Pause")
+            self._schedule_btn.setAccessibleName("Pause automatic backups")
+            self._schedule_btn.setIcon(
+                QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause)
+            )
+        elif enabled:
+            self._recovery_state.setText("Schedule enabled · timer not running")
+            self._schedule_btn.setText("Disable")
+            self._schedule_btn.setAccessibleName("Disable automatic backups")
+            self._schedule_btn.setIcon(
+                QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
+            )
+        else:
+            self._recovery_state.setText("Automatic backups off")
+            self._schedule_btn.setText("Enable")
+            self._schedule_btn.setAccessibleName("Enable automatic backups")
+            self._schedule_btn.setIcon(
+                QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+            )
+
+        last_completed = (
+            state.get("last_completed_at_utc")
+            or (self._recovery_generations[0].created_at if self._recovery_generations else None)
+        )
+        self._recovery_last.setText(
+            f"Last: {_friendly_datetime(last_completed)}" if last_completed else "No backup yet"
+        )
+        last_status = state.get("last_status")
+        if last_status == "failed":
+            self._recovery_state.setText(
+                self._recovery_state.text() + " · last run failed"
+            )
+            self._recovery_state.setStyleSheet(
+                f"color: {theme.YELLOW}; font-size: 12px; font-weight: 600; background: transparent;"
+            )
+        else:
+            self._recovery_state.setStyleSheet(
+                f"color: {theme.TEXT}; font-size: 12px; font-weight: 600; background: transparent;"
+            )
+
+    def _confirm_backup_all(self) -> None:
+        if not self._instance_manager or not self._instance_manager.instances:
+            QMessageBox.information(self, "Back up servers", "No servers are registered.")
+            return
+        reply = QMessageBox.question(
+            self,
+            "Back up all servers?",
+            "Create one verified recovery point for every registered server and world? "
+            "Running servers are safely flushed. Crucible will not start or stop servers.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._start_fleet_action("backup")
+
+    def _toggle_backup_schedule(self) -> None:
+        if self._timer_enabled:
+            reply = QMessageBox.question(
+                self,
+                "Pause automatic backups?",
+                "Pause the ten-minute schedule? Existing restore points will be kept.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._run_recovery_job("remove_timer")
+        else:
+            self._run_recovery_job("install_timer")
+
+    def _open_backup_folder(self) -> None:
+        DEFAULT_FLEET_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(
+            QUrl.fromLocalFile(str(DEFAULT_FLEET_BACKUP_DIR))
+        )
+
+    def _restore_full_server(self) -> None:
+        generations = self._server_restore_generations()
+        if self._instance is None or not generations:
+            QMessageBox.information(
+                self,
+                "Restore server",
+                "No retained full-server restore point includes this server yet.",
+            )
+            return
+        labels = [
+            f"{_friendly_datetime(item.created_at)} · {item.server_count} servers"
+            for item in generations
+        ]
+        choice, ok = QInputDialog.getItem(
+            self, "Restore full server", "Choose a restore point:", labels, 0, False
+        )
+        if not ok or choice not in labels:
+            return
+        generation = generations[labels.index(choice)]
+        parent_text = QFileDialog.getExistingDirectory(
+            self,
+            "Choose where to restore the server copy",
+            str(Path.home()),
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not parent_text:
+            return
+        safe_name = "".join(
+            char if char.isalnum() or char in "._-" else "-"
+            for char in self._instance.name
+        ).strip(".-") or "Crucible-server"
+        target = Path(parent_text) / (
+            f"{safe_name}-restored-{generation.generation_id[-8:]}"
+        )
+        if target.exists() or target.is_symlink():
+            QMessageBox.warning(
+                self, "Restore destination exists",
+                f"Crucible will not overwrite an existing folder:\n\n{target}",
+            )
+            return
+        reply = QMessageBox.question(
+            self,
+            "Restore a full server copy?",
+            f"Restore {self._instance.name} from {_friendly_datetime(generation.created_at)} "
+            f"to this new folder?\n\n{target}\n\n"
+            "The registered server and its live folder will not be changed. "
+            "The restored copy will remain stopped until you start it yourself.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._run_recovery_job(
+            "restore",
+            restore_args=(
+                generation.generation_id,
+                str(self._instance.id),
+                target,
+                self._instance.name,
+            ),
+        )
 
     # UI construction
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(12)
+        scroll.setWidget(content)
+        root_layout.addWidget(scroll)
 
         def add_card(title: str, subtitle: str = ""):
             card = QFrame()
@@ -404,8 +752,8 @@ class WorldTab(QWidget):
         # One obvious, safe path to a fresh named world. Dangerous deletion is
         # deliberately tucked into Advanced instead of competing for attention.
         _, actions = add_card(
-            "CREATE OR SWITCH WORLDS",
-            "Create a named fresh world, save the current one, or switch to a saved world below.",
+            "WORLD ACTIONS",
+            "Create a fresh world or switch to one below.",
         )
         action_row = QHBoxLayout()
         action_row.setSpacing(8)
@@ -422,16 +770,6 @@ class WorldTab(QWidget):
         )
         self._reset_btn.clicked.connect(self._confirm_and_reset)
 
-        self._backup_btn = QPushButton("Save current world")
-        self._backup_btn.setIcon(
-            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
-        )
-        self._backup_btn.setMinimumHeight(40)
-        self._backup_btn.setToolTip(
-            "Create a verified fleet recovery point covering this world and every managed server."
-        )
-        self._backup_btn.clicked.connect(self._start_named_backup)
-
         self._seed_btn = QPushButton("Set seed")
         self._seed_btn.setAccessibleName("Change the active world seed for newly generated chunks")
         self._seed_btn.setIcon(
@@ -444,7 +782,6 @@ class WorldTab(QWidget):
         self._seed_btn.clicked.connect(self._set_seed)
 
         action_row.addWidget(self._reset_btn, stretch=2)
-        action_row.addWidget(self._backup_btn, stretch=2)
         action_row.addWidget(self._seed_btn, stretch=1)
         actions.addLayout(action_row)
 
@@ -483,8 +820,101 @@ class WorldTab(QWidget):
         )
         self._wipe_btn.clicked.connect(self._confirm_and_wipe)
         advanced_panel_layout.addWidget(self._wipe_btn)
+
+        self._presafe_label = QLabel("")
+        self._presafe_label.setStyleSheet(
+            f"color: {theme.SUBTEXT}; font-size: 11px; background: transparent;"
+        )
+        self._presafe_label.setWordWrap(True)
+        self._cleanup_btn = QPushButton("Clean up old world copies")
+        self._cleanup_btn.setAccessibleName(
+            "Create and verify a fleet snapshot before cleaning old world copies"
+        )
+        self._cleanup_btn.clicked.connect(self._cleanup_pre_swap_dirs)
+        advanced_panel_layout.addWidget(self._presafe_label, stretch=1)
+        advanced_panel_layout.addWidget(self._cleanup_btn)
+
         self._advanced_panel.hide()
         actions.addWidget(self._advanced_panel)
+
+        # Recovery belongs beside worlds. Keep the normal view to one status
+        # line and a handful of direct actions; generation IDs and file-level
+        # diagnostics stay in explicit details/verification flows.
+        _, recovery = add_card("RECOVERY")
+        recovery_header = QHBoxLayout()
+        self._recovery_state = QLabel("Checking automatic backups…")
+        self._recovery_state.setAccessibleName("Automatic backup status")
+        self._recovery_state.setStyleSheet(
+            f"color: {theme.TEXT}; font-size: 12px; font-weight: 600; background: transparent;"
+        )
+        recovery_header.addWidget(self._recovery_state, stretch=1)
+        self._recovery_last = QLabel(" ")
+        self._recovery_last.setAccessibleName("Last completed backup")
+        self._recovery_last.setStyleSheet(
+            f"color: {theme.SUBTEXT}; font-size: 11px; background: transparent;"
+        )
+        recovery_header.addWidget(self._recovery_last)
+        recovery.addLayout(recovery_header)
+
+        recovery_actions = QHBoxLayout()
+        recovery_actions.setSpacing(8)
+        self._backup_all_btn = QPushButton("Back up all servers now")
+        self._backup_all_btn.setObjectName("PrimaryButton")
+        self._backup_all_btn.setAccessibleName("Back up all registered servers now")
+        self._backup_all_btn.setIcon(
+            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
+        )
+        self._backup_all_btn.setMinimumHeight(36)
+        self._backup_all_btn.setToolTip(
+            "Create a complete recovery point for every registered server and world."
+        )
+        self._backup_all_btn.clicked.connect(self._confirm_backup_all)
+
+        self._verify_backups_btn = QPushButton("Verify")
+        self._verify_backups_btn.setAccessibleName("Verify retained automatic backups")
+        self._verify_backups_btn.setIcon(
+            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
+        )
+        self._verify_backups_btn.setMinimumHeight(36)
+        self._verify_backups_btn.setToolTip(
+            "Check every retained backup file against its SHA-256 manifest."
+        )
+        self._verify_backups_btn.clicked.connect(
+            lambda: self._run_recovery_job("verify")
+        )
+
+        self._restore_server_btn = QPushButton("Restore full server…")
+        self._restore_server_btn.setAccessibleName("Restore a complete server backup to a new folder")
+        self._restore_server_btn.setIcon(
+            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+        )
+        self._restore_server_btn.setMinimumHeight(36)
+        self._restore_server_btn.clicked.connect(self._restore_full_server)
+
+        self._schedule_btn = QPushButton("Pause")
+        self._schedule_btn.setAccessibleName("Pause automatic backups")
+        self._schedule_btn.setIcon(
+            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause)
+        )
+        self._schedule_btn.setMinimumHeight(36)
+        self._schedule_btn.setToolTip("Pause or resume the ten-minute automatic backup schedule.")
+        self._schedule_btn.clicked.connect(self._toggle_backup_schedule)
+
+        self._open_folder_btn = QToolButton()
+        self._open_folder_btn.setAccessibleName("Open Crucible backup storage folder")
+        self._open_folder_btn.setToolTip("Open backup storage folder")
+        self._open_folder_btn.setIcon(
+            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
+        )
+        self._open_folder_btn.setMinimumSize(36, 36)
+        self._open_folder_btn.clicked.connect(self._open_backup_folder)
+
+        recovery_actions.addWidget(self._backup_all_btn)
+        recovery_actions.addWidget(self._verify_backups_btn)
+        recovery_actions.addWidget(self._restore_server_btn)
+        recovery_actions.addWidget(self._schedule_btn)
+        recovery_actions.addWidget(self._open_folder_btn)
+        recovery.addLayout(recovery_actions)
 
         self._progress_lbl = QLabel("")
         self._progress_lbl.setStyleSheet(
@@ -501,21 +931,23 @@ class WorldTab(QWidget):
 
         # Saved worlds are the switcher: every row has one direct, named action.
         _, slots = add_card(
-            "SAVED WORLDS",
-            "Your named world snapshots live here. Switching always protects the world you are leaving.",
+            "WORLDS & RECOVERY",
+            "Active and saved worlds with restore points.",
         )
-        self._table = QTableWidget(0, 4)
-        self._table.setAccessibleName("Saved world archives")
+        self._table = QTableWidget(0, 6)
+        self._table.setAccessibleName("Worlds and recovery points")
         self._table.setAccessibleDescription(
-            "Legacy world archives available to restore or switch into the selected server."
+            "Active and saved worlds with their available recovery history and safe switch actions."
         )
-        self._table.setHorizontalHeaderLabels(["World name", "Size", "Saved", ""])
+        self._table.setHorizontalHeaderLabels(
+            ["World", "State", "Size", "Saved", "Recovery", "Actions"]
+        )
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self._table.setColumnWidth(3, 250)
+        for column in (1, 2, 3, 4):
+            hh.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(5, 260)
         self._table.verticalHeader().setVisible(False)
         self._table.setShowGrid(False)
         self._table.setAlternatingRowColors(True)
@@ -523,20 +955,7 @@ class WorldTab(QWidget):
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         slots.addWidget(self._table)
 
-        presafe_row = QHBoxLayout()
-        self._presafe_label = QLabel("")
-        self._presafe_label.setStyleSheet(
-            f"color: {theme.SUBTEXT}; font-size: 11px; background: transparent;"
-        )
-        self._presafe_label.setWordWrap(True)
-        self._cleanup_btn = QPushButton("Clean up old world copies")
-        self._cleanup_btn.setAccessibleName(
-            "Create and verify a fleet snapshot before cleaning old world copies"
-        )
-        self._cleanup_btn.clicked.connect(self._cleanup_pre_swap_dirs)
-        presafe_row.addWidget(self._presafe_label, stretch=1)
-        presafe_row.addWidget(self._cleanup_btn)
-        slots.addLayout(presafe_row)
+
 
     def _toggle_advanced_actions(self, expanded: bool) -> None:
         self._advanced_panel.setVisible(expanded)
@@ -552,12 +971,6 @@ class WorldTab(QWidget):
         inst = self._instance
         world_root = inst.world_root_path()
         has_active_world = world_root.is_dir()
-        self._backup_btn.setEnabled(has_active_world)
-        self._backup_btn.setToolTip(
-            "Save a verified backup of the active world."
-            if has_active_world
-            else "There is no generated active world folder to save yet."
-        )
 
         if has_active_world:
             # Dimension listing is a cheap shallow directory scan (just the
@@ -593,71 +1006,168 @@ class WorldTab(QWidget):
         )
         entries.sort(key=lambda entry: entry.created_at, reverse=True)
 
-        self._table.setRowCount(len(entries))
-        for row, entry in enumerate(entries):
-            name_item = QTableWidgetItem(entry.display_name)
-            fleet_generation_id = getattr(entry, "fleet_generation_id", None)
-            if fleet_generation_id:
-                name_item.setToolTip(
-                    f"Verified immutable fleet archive from generation {fleet_generation_id}."
+        rows: list[dict[str, Any]] = []
+        active_points = self._world_recovery_points.get(world_root.name, [])
+        represented_worlds: set[str] = set()
+        if has_active_world:
+            rows.append({
+                "kind": "active",
+                "name": world_root.name,
+                "points": active_points,
+            })
+            represented_worlds.add(world_root.name)
+        for entry in entries:
+            try:
+                archive_world_name = self._manager._backup_level_name(entry)
+            except (OSError, ValueError, zipfile.BadZipFile):
+                archive_world_name = entry.display_name
+            # An archive of the active world's own folder belongs in that
+            # row's History, not as a duplicate Saved row.
+            if has_active_world and archive_world_name == world_root.name:
+                represented_worlds.add(archive_world_name)
+                continue
+            represented_worlds.add(archive_world_name)
+            rows.append({
+                "kind": "archive",
+                "name": entry.display_name,
+                "world_name": archive_world_name,
+                "entry": entry,
+                "points": self._world_recovery_points.get(archive_world_name, []),
+            })
+
+        # Folder worlds found in automatic fleet generations are also saved
+        # worlds. They do not need a separate imported ZIP to appear here.
+        snapshot_worlds = sorted(
+            (
+                (name, points)
+                for name, points in self._world_recovery_points.items()
+                if name not in represented_worlds and points
+            ),
+            key=lambda item: item[1][0].created_at,
+            reverse=True,
+        )
+        for world_name, points in snapshot_worlds:
+            rows.append({
+                "kind": "snapshot",
+                "name": world_name,
+                "world_name": world_name,
+                "points": points,
+            })
+
+        self._table.setRowCount(len(rows))
+        for row, item in enumerate(rows):
+            points = item["points"]
+            latest = points[0] if points else None
+            if item["kind"] == "active":
+                name_item = QTableWidgetItem(item["name"])
+                name_item.setIcon(
+                    QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirHomeIcon)
                 )
-            elif not entry.slot_name:
-                name_item.setToolTip("Legacy world archive awaiting fleet migration.")
+                name_item.setToolTip("The world currently selected by server.properties.")
+                self._table.setItem(row, 0, name_item)
+                self._table.setItem(row, 1, QTableWidgetItem("Active"))
+                size_text = _human_size(latest.size_bytes) if latest else "—"
+                self._table.setItem(row, 2, QTableWidgetItem(size_text))
+                self._table.setItem(
+                    row, 3,
+                    QTableWidgetItem(_friendly_datetime(latest.created_at) if latest else "Not backed up"),
+                )
+            elif item["kind"] == "archive":
+                entry = item["entry"]
+                name_item = QTableWidgetItem(item["name"])
+                name_item.setIcon(
+                    QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+                )
+                fleet_generation_id = getattr(entry, "fleet_generation_id", None)
+                if fleet_generation_id:
+                    name_item.setToolTip("Verified saved-world archive.")
+                elif not entry.slot_name:
+                    name_item.setToolTip("Legacy saved-world archive.")
+                else:
+                    name_item.setToolTip("Named saved-world archive.")
+                self._table.setItem(row, 0, name_item)
+                self._table.setItem(row, 1, QTableWidgetItem("Saved"))
+                self._table.setItem(row, 2, QTableWidgetItem(entry.size_display))
+                self._table.setItem(row, 3, QTableWidgetItem(_friendly_datetime(entry.created_at)))
             else:
-                name_item.setToolTip(
-                    "Legacy world archive. It will be retired from this folder after "
-                    "two fleet generations verify its contents."
+                name_item = QTableWidgetItem(item["name"])
+                name_item.setIcon(
+                    QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
                 )
-            self._table.setItem(row, 0, name_item)
+                name_item.setToolTip("World captured in automatic server recovery snapshots.")
+                self._table.setItem(row, 0, name_item)
+                self._table.setItem(row, 1, QTableWidgetItem("Saved"))
+                self._table.setItem(
+                    row, 2, QTableWidgetItem(_human_size(latest.size_bytes))
+                )
+                self._table.setItem(
+                    row, 3, QTableWidgetItem(_friendly_datetime(latest.created_at))
+                )
 
-            size_item = QTableWidgetItem(entry.size_display)
-            size_item.setTextAlignment(int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter))
-            self._table.setItem(row, 1, size_item)
-
-            self._table.setItem(row, 2, QTableWidgetItem(entry.created_at.strftime("%b %d  %H:%M")))
+            recovery_text = (
+                f"{len(points)} points" if points
+                else ("Protected archive" if item["kind"] == "archive" else "No backup yet")
+            )
+            self._table.setItem(row, 4, QTableWidgetItem(recovery_text))
 
             actions = QWidget()
             actions_layout = QHBoxLayout(actions)
             actions_layout.setContentsMargins(2, 0, 2, 0)
             actions_layout.setSpacing(4)
 
-            swap_btn = QPushButton("Switch to this")
-            swap_btn.setAccessibleName(f"Switch to saved world {entry.display_name}")
-            swap_btn.clicked.connect(lambda _checked=False, e=entry: self._confirm_and_swap(e))
-
-            actions_layout.addWidget(swap_btn)
-
-            # Fleet-generation archives are immutable members of a complete
-            # restore point. There is deliberately no per-row delete action:
-            # that would imply a per-world retention exception. The rolling
-            # two-generation policy governs their lifetime.
-            if not getattr(entry, "fleet_generation_id", None):
-                rename_btn = QPushButton("Rename")
-                rename_btn.setAccessibleName(f"Rename legacy world archive {entry.display_name}")
-                rename_btn.setToolTip(
-                    "Change the saved-world label while this legacy source is being migrated."
+            if points:
+                history_btn = QPushButton("History")
+                history_btn.setAccessibleName(f"View restore points for world {item['name']}")
+                history_btn.setMinimumHeight(30)
+                history_btn.setMinimumWidth(history_btn.sizeHint().width() + 4)
+                history_btn.clicked.connect(
+                    lambda _checked=False, world=item["world_name"] if item["kind"] == "archive" else item["name"]:
+                    self._show_world_history(world)
                 )
-                rename_btn.clicked.connect(
-                    lambda _checked=False, e=entry: self._rename_entry(e)
+                actions_layout.addWidget(history_btn)
+
+            if item["kind"] == "archive":
+                entry = item["entry"]
+                swap_btn = QPushButton("Switch")
+                swap_btn.setAccessibleName(f"Switch to saved world {entry.display_name}")
+                swap_btn.clicked.connect(
+                    lambda _checked=False, e=entry: self._confirm_and_swap(e)
                 )
-                actions_layout.addWidget(rename_btn)
-            self._table.setCellWidget(row, 3, actions)
-            self._table.setRowHeight(row, 32)
+                actions_layout.addWidget(swap_btn)
+
+                # Imported archives can still be renamed while they remain
+                # in their legacy location. Immutable fleet copies are read-only.
+                if not getattr(entry, "fleet_generation_id", None):
+                    rename_btn = QPushButton("Rename")
+                    rename_btn.setAccessibleName(
+                        f"Rename legacy world archive {entry.display_name}"
+                    )
+                    rename_btn.clicked.connect(
+                        lambda _checked=False, e=entry: self._rename_entry(e)
+                    )
+                    actions_layout.addWidget(rename_btn)
+            elif item["kind"] == "snapshot" and latest is not None:
+                restore_btn = QPushButton("Restore")
+                restore_btn.setAccessibleName(f"Restore saved world {item['name']}")
+                restore_btn.clicked.connect(
+                    lambda _checked=False, world=item["world_name"], point=latest:
+                    self._confirm_restore_generation(world, point)
+                )
+                actions_layout.addWidget(restore_btn)
+            self._table.setCellWidget(row, 5, actions)
+            self._table.setRowHeight(row, 34)
 
         pre_swap_dirs = self._manager.list_pre_swap_dirs()
         if pre_swap_dirs:
             self._presafe_label.setText(
-                f"{len(pre_swap_dirs)} old world folder copy/copies are kept for recovery "
-                "(calculating size\u2026). These are an extra safety net kept alongside "
-                "your world folder -- once you've confirmed your current world is good, "
-                "you can delete them."
+                f"{len(pre_swap_dirs)} previous world copy/copies kept for recovery."
             )
             self._cleanup_btn.setEnabled(True)
         else:
             self._presafe_label.setText("No extra old world folders.")
             self._cleanup_btn.setEnabled(False)
 
-        self._start_stats_worker(world_root, pre_swap_dirs)
+        self._start_stats_worker(world_root)
 
     def _set_dims_text(self, dims: list[Path]) -> None:
         """Render the dimension list, collapsing long lists (GTNH-scale packs
@@ -698,8 +1208,8 @@ class WorldTab(QWidget):
 
     # Background world-size scan
 
-    def _start_stats_worker(self, world_root: Path, pre_swap_dirs: list[Path]) -> None:
-        if not world_root.is_dir() and not pre_swap_dirs:
+    def _start_stats_worker(self, world_root: Path) -> None:
+        if not world_root.is_dir():
             return
         inst = self._instance
         if inst is None:
@@ -712,17 +1222,17 @@ class WorldTab(QWidget):
         # running" abort. Queue this request instead; _stats_thread_finished
         # will start it the moment the in-flight scan actually finishes.
         if self._stats_thread is not None and self._stats_thread.isRunning():
-            self._stats_pending = (world_root, pre_swap_dirs)
+            self._stats_pending = world_root
             return
 
         self._stats_generation += 1
         generation = self._stats_generation
 
         thread = QThread()
-        worker = _WorldStatsWorker(inst, pre_swap_dirs)
+        worker = _WorldStatsWorker(inst)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.done.connect(lambda size, total: self._on_stats_done(generation, size, total))
+        worker.done.connect(lambda size: self._on_stats_done(generation, size))
         worker.done.connect(thread.quit)
         worker.done.connect(worker.deleteLater)
         # Only clear the tracked refs if THIS thread is still the current one
@@ -739,45 +1249,17 @@ class WorldTab(QWidget):
             self._stats_thread = None
             self._stats_worker = None
             if self._stats_pending is not None:
-                world_root, pre_swap_dirs = self._stats_pending
+                world_root = self._stats_pending
                 self._stats_pending = None
-                self._start_stats_worker(world_root, pre_swap_dirs)
+                self._start_stats_worker(world_root)
 
-    def _on_stats_done(self, generation: int, size: int, presafe_total: int) -> None:
-        if generation != self._stats_generation or self._instance is None or self._manager is None:
+    def _on_stats_done(self, generation: int, size: int) -> None:
+        if generation != self._stats_generation or self._instance is None:
             return  # stale -- instance changed or a newer refresh already started
         world_root = self._instance.world_root_path()
         if world_root.is_dir():
             self._world_label.setText(f"World: {world_root.name}   ({_human_size(size)})")
-        pre_swap_dirs = self._manager.list_pre_swap_dirs()
-        if pre_swap_dirs:
-            self._presafe_label.setText(
-                f"{len(pre_swap_dirs)} old world folder copy/copies are kept for recovery "
-                f"({_human_size(presafe_total)}). These are an extra safety net kept alongside "
-                "your world folder -- once you've confirmed your current world is good, "
-                "you can delete them."
-            )
 
-    # Backup action
-
-    def _start_named_backup(self) -> None:
-        if not self._manager or not self._instance:
-            return
-        if self._thread and self._thread.isRunning():
-            return
-        reply = QMessageBox.question(
-            self,
-            "Save a recovery point?",
-            "Crucible will create a verified fleet snapshot covering this world "
-            "and every registered managed server. Running servers are safely "
-            "flushed; unknown or unmanaged server states fail closed. Crucible "
-            "will not start or stop any server.\n\nContinue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        self._start_fleet_action("backup")
 
     def _start_fleet_action(
         self,
@@ -785,6 +1267,7 @@ class WorldTab(QWidget):
         entry: BackupEntry | None = None,
         *,
         new_level_name: str | None = None,
+        world_recovery: dict[str, Any] | None = None,
     ) -> None:
         if not self._instance_manager or not self._instance:
             QMessageBox.warning(
@@ -792,7 +1275,10 @@ class WorldTab(QWidget):
                 "The server registry is unavailable; no world action was started.",
             )
             return
-        if self._thread and self._thread.isRunning():
+        if (
+            self._thread and self._thread.isRunning()
+            or self._recovery_thread and self._recovery_thread.isRunning()
+        ):
             return
 
         self._begin_operation(action)
@@ -805,6 +1291,7 @@ class WorldTab(QWidget):
             action,
             entry,
             new_level_name,
+            world_recovery,
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -862,6 +1349,66 @@ class WorldTab(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
         self._start_fleet_action("swap", entry)
+
+    def _show_world_history(self, world_name: str) -> None:
+        points = self._world_recovery_points.get(world_name, [])
+        if not points:
+            QMessageBox.information(
+                self, "World recovery", f"No retained restore points were found for {world_name}."
+            )
+            return
+        labels = [
+            f"{_friendly_datetime(point.created_at)} · {_human_size(point.size_bytes)}"
+            + (" · Active then" if point.active else "")
+            for point in points
+        ]
+        choice, ok = QInputDialog.getItem(
+            self, f"{world_name} backups", "Choose a restore point:", labels, 0, False
+        )
+        if not ok or choice not in labels:
+            return
+        self._confirm_restore_generation(
+            world_name, points[labels.index(choice)]
+        )
+
+    def _confirm_restore_generation(self, world_name: str, point: Any) -> None:
+        if not self._instance or not self._manager:
+            return
+        if self._thread and self._thread.isRunning():
+            return
+        status = TmuxManager().get_status(self._instance)
+        if status != "stopped":
+            QMessageBox.warning(
+                self, "Restore cancelled",
+                "Stop the server before restoring a world. Crucible will not move a world "
+                f"folder while the server is {status!r}.",
+            )
+            return
+        if self._config_guard is not None and not self._config_guard():
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            "Restore this world?",
+            f"Restore {world_name} from {_friendly_datetime(point.created_at)}?\n\n"
+            "Crucible will first create a fresh full-server recovery point, move the "
+            "current world aside, verify the restored world, and roll back automatically "
+            "if anything fails. The server will remain stopped.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._start_fleet_action(
+            "swap",
+            world_recovery={
+                "generation_id": point.generation_id,
+                "world_name": world_name,
+                "legacy_archive_filename": getattr(
+                    point, "legacy_archive_filename", None
+                ),
+            },
+        )
 
     def _on_swap_done(self, result: SwapResult) -> None:
         self._op_result = ("done", result)
@@ -1124,6 +1671,14 @@ class WorldTab(QWidget):
         self._wipe_btn.setEnabled(False)
         self._advanced_toggle.setEnabled(False)
         self._table.setEnabled(False)
+        for button in (
+            self._backup_all_btn,
+            self._verify_backups_btn,
+            self._restore_server_btn,
+            self._schedule_btn,
+            self._open_folder_btn,
+        ):
+            button.setEnabled(False)
         self._progress.setRange(0, 0)
         labels = {
             "backup": "Creating backup...",
@@ -1219,6 +1774,7 @@ class WorldTab(QWidget):
             elif result[0] == "failed":
                 QMessageBox.critical(self, "World cleanup failed", result[1])
         self._refresh()
+        self._run_recovery_job("list")
 
     # Rename / delete / cleanup
 
@@ -1295,18 +1851,36 @@ def _human_size(b: int) -> str:
         return f"{b / 1_073_741_824:.1f} GB"
     if b >= 1_048_576:
         return f"{b / 1_048_576:.0f} MB"
-    return f"{b / 1024:.0f} KB"
+    if b >= 1024:
+        return f"{b / 1024:.0f} KB"
+    if b > 0:
+        return "<1 KB"
+    return "0 B"
 
 
-def _dir_size(path: Path) -> int:
-    total = 0
+def _friendly_datetime(value: str | datetime | None) -> str:
+    """Format timestamps for a human glance, using the computer's local time."""
+    if not value:
+        return "-"
     try:
-        for fpath in path.rglob("*"):
-            try:
-                if fpath.is_file() and not fpath.is_symlink():
-                    total += fpath.stat().st_size
-            except OSError:
-                continue
-    except OSError:
-        return total
-    return total
+        moment = (
+            value
+            if isinstance(value, datetime)
+            else datetime.fromisoformat(str(value))
+        )
+        moment = moment.astimezone()
+    except (TypeError, ValueError, OverflowError):
+        return str(value)
+    now = datetime.now().astimezone()
+    clock = moment.strftime("%I:%M %p").lstrip("0")
+    if moment.date() == now.date():
+        return f"Today · {clock}"
+    if moment.date().toordinal() == now.date().toordinal() - 1:
+        return f"Yesterday · {clock}"
+    month_day = moment.strftime("%b %d").replace(" 0", " ")
+    date = (
+        month_day
+        if moment.year == now.year
+        else f"{month_day}, {moment.year}"
+    )
+    return f"{date} · {clock}"

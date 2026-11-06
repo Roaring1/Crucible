@@ -163,6 +163,19 @@ class GenerationSummary:
     legacy_sources: tuple[str, ...] = ()
     legacy_source_count: int = 0
     legacy_source_bytes: int = 0
+    server_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class WorldRecoveryPoint:
+    """One world restore point backed by an immutable fleet generation."""
+
+    generation_id: str
+    created_at: str
+    world_name: str
+    active: bool
+    size_bytes: int
+    legacy_archive_filename: str | None = None
 
 
 def _utc_now() -> str:
@@ -250,6 +263,12 @@ def _world_inventory(server_root: Path, active_world: str) -> list[dict[str, Any
         if child.is_symlink() or not child.is_dir():
             continue
         if _is_excluded_directory(child.name):
+            continue
+        # A pre-swap directory is a temporary rollback copy of a prior active
+        # world, not a separately named world slot. It remains fully captured
+        # as part of the server tree, but is surfaced through the existing
+        # previous-world cleanup/recovery controls rather than as a world row.
+        if re.search(r"\.pre-swap-\d{8}_\d{6}_\d{6}$", child.name):
             continue
         level_dat = child / "level.dat"
         try:
@@ -994,12 +1013,389 @@ class FleetBackupManager:
                         legacy_sources=legacy_source_names,
                         legacy_source_count=len(legacy_sources),
                         legacy_source_bytes=legacy_source_bytes,
+                        server_ids=tuple(str(item.get("id") or "") for item in server_entries),
                     )
                 )
             except (OSError, ValueError, KeyError, TypeError, FleetBackupError):
                 continue
         found.sort(key=lambda summary: summary.created_at, reverse=True)
         return found
+
+    @staticmethod
+    def _legacy_archive_world_name(path: Path) -> str:
+        """Read one safe world root from an immutable, checksum-verified ZIP."""
+        try:
+            with zipfile.ZipFile(path, "r") as archive:
+                infos = archive.infolist()
+        except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+            raise FleetBackupError(
+                f"Could not inspect saved-world archive {path.name}: {exc}"
+            ) from exc
+        roots: set[str] = set()
+        has_level_dat = False
+        for info in infos:
+            name = info.filename
+            relative = PurePosixPath(name)
+            if (
+                not name.strip("/")
+                or "\\x00" in name
+                or "\\\\" in name
+                or relative.is_absolute()
+                or ".." in relative.parts
+                or not relative.parts
+            ):
+                raise FleetBackupError(
+                    f"Saved-world archive {path.name} contains an unsafe path."
+                )
+            roots.add(relative.parts[0])
+            if (
+                len(relative.parts) == 2
+                and relative.parts[1] == "level.dat"
+                and not info.is_dir()
+                and info.file_size > 0
+            ):
+                has_level_dat = True
+        base_roots = [
+            root for root in roots
+            if not root.endswith(("_nether", "_the_end"))
+        ]
+        if len(base_roots) != 1 or not has_level_dat:
+            raise FleetBackupError(
+                f"Saved-world archive {path.name} does not contain one complete world."
+            )
+        world_name = base_roots[0]
+        has_world_level_dat = any(
+            PurePosixPath(info.filename).parts == (world_name, "level.dat")
+            and not info.is_dir()
+            and info.file_size > 0
+            for info in infos
+        )
+        if not has_world_level_dat:
+            raise FleetBackupError(
+                f"Saved-world archive {path.name} has no level.dat at its world root."
+            )
+        relative = _safe_relative(world_name)
+        if len(relative.parts) != 1 or world_name in {".", ".."}:
+            raise FleetBackupError(
+                f"Saved-world archive {path.name} has an unsafe world root."
+            )
+        return world_name
+
+    def list_world_recovery_points(
+        self, instance_id: str
+    ) -> dict[str, list[WorldRecoveryPoint]]:
+        """List world-folder and migrated ZIP restore points by world name."""
+        points: dict[str, list[WorldRecoveryPoint]] = {}
+        seen_archives: set[tuple[str, str]] = set()
+        for summary in self.list_generations():
+            manifest = self._load_manifest(summary.path)
+            if manifest is None:
+                continue
+            server = next(
+                (
+                    item for item in manifest.get("instances", [])
+                    if isinstance(item, dict)
+                    and str(item.get("id")) == str(instance_id)
+                ),
+                None,
+            )
+            if server is None:
+                continue
+            file_records = [
+                item for item in server.get("files", [])
+                if isinstance(item, dict) and isinstance(item.get("path"), str)
+            ]
+            for world in server.get("world_saves", []):
+                if not isinstance(world, dict):
+                    continue
+                world_name = str(world.get("name") or "")
+                try:
+                    relative_root = _safe_relative(world_name)
+                except FleetBackupError:
+                    continue
+                if len(relative_root.parts) != 1:
+                    continue
+                world_roots = {
+                    world_name,
+                    f"{world_name}_nether",
+                    f"{world_name}_the_end",
+                }
+                world_files = [
+                    item for item in file_records
+                    if str(item["path"]).split("/", 1)[0] in world_roots
+                ]
+                level_dat = next(
+                    (
+                        item for item in world_files
+                        if str(item["path"]) == f"{world_name}/level.dat"
+                    ),
+                    None,
+                )
+                if level_dat is None or int(level_dat.get("size", 0)) <= 0:
+                    continue
+                points.setdefault(world_name, []).append(
+                    WorldRecoveryPoint(
+                        generation_id=summary.generation_id,
+                        created_at=summary.created_at,
+                        world_name=world_name,
+                        active=bool(world.get("active")),
+                        size_bytes=sum(int(item.get("size", 0)) for item in world_files),
+                    )
+                )
+
+            archive_root = (
+                summary.path
+                / "servers"
+                / _server_key(str(instance_id))
+                / "legacy-world-archives"
+            )
+            for record in server.get("legacy_world_archives", []):
+                if not isinstance(record, dict):
+                    continue
+                filename = record.get("filename")
+                digest = str(record.get("sha256") or "")
+                if (
+                    not isinstance(filename, str)
+                    or Path(filename).name != filename
+                    or not filename.lower().endswith(".zip")
+                    or not digest
+                ):
+                    continue
+                identity = (filename, digest)
+                if identity in seen_archives:
+                    continue
+                archive_path = archive_root / filename
+                try:
+                    if (
+                        archive_path.is_symlink()
+                        or not archive_path.is_file()
+                        or archive_path.stat().st_size != int(record.get("size", -1))
+                        or archive_path.stat().st_mode & 0o222
+                    ):
+                        continue
+                    world_name = self._legacy_archive_world_name(archive_path)
+                    created_at = str(record.get("created_at_utc") or summary.created_at)
+                    points.setdefault(world_name, []).append(
+                        WorldRecoveryPoint(
+                            generation_id=summary.generation_id,
+                            created_at=created_at,
+                            world_name=world_name,
+                            active=False,
+                            size_bytes=int(record.get("size", 0)),
+                            legacy_archive_filename=filename,
+                        )
+                    )
+                    seen_archives.add(identity)
+                except (OSError, ValueError, TypeError, FleetBackupError):
+                    continue
+
+        for world_points in points.values():
+            world_points.sort(key=lambda item: item.created_at, reverse=True)
+        return points
+
+    def export_world_archive(
+        self,
+        generation_id: str,
+        instance_id: str,
+        world_name: str,
+        archive_path: Path,
+        *,
+        deep_verify: bool = True,
+        legacy_archive_filename: str | None = None,
+    ) -> dict[str, Any]:
+        """Export one verified world restore point as a temporary ZIP.
+
+        Folder snapshots and previously saved-world ZIPs are both held inside
+        immutable fleet generations. This method materializes only the chosen
+        world and bridges it to BackupManager's rollback-safe world swap.
+        """
+        try:
+            world_root = _safe_relative(world_name)
+        except FleetBackupError as exc:
+            raise FleetBackupError(
+                f"Unsafe world name in restore request: {world_name!r}"
+            ) from exc
+        if (
+            len(world_root.parts) != 1
+            or world_name in {".", ".."}
+            or "\\" in world_name
+            or "\x00" in world_name
+        ):
+            raise FleetBackupError(
+                f"Unsafe world name in restore request: {world_name!r}"
+            )
+
+        if not generation_id or Path(generation_id).name != generation_id:
+            raise FleetBackupError("Invalid fleet generation ID in world restore request.")
+        source_generation = self.generations_dir / generation_id
+        verification = self.verify_generation(source_generation, deep=deep_verify)
+        if not verification["ok"]:
+            raise FleetBackupError(
+                "Refusing to restore an invalid generation: "
+                + "; ".join(verification["errors"][:8])
+            )
+        server = next(
+            (
+                item for item in verification["manifest"].get("instances", [])
+                if isinstance(item, dict)
+                and str(item.get("id")) == str(instance_id)
+            ),
+            None,
+        )
+        if server is None:
+            raise FleetBackupError(
+                f"Generation {generation_id} does not contain server {instance_id}."
+            )
+
+        target = Path(archive_path).expanduser()
+        if not target.is_absolute():
+            target = Path.cwd() / target
+        target = Path(os.path.abspath(target))
+        if target.exists() or target.is_symlink():
+            raise FleetBackupError(f"Temporary world archive already exists: {target}")
+        for instance in self.instances:
+            live_server = Path(instance.path).expanduser().resolve()
+            if target == live_server or live_server in target.parents:
+                raise FleetBackupError(
+                    "Refusing to write a temporary recovery archive inside a live server folder."
+                )
+        current = Path(target.parent.anchor or "/")
+        for component in target.parent.parts[1:]:
+            current = current / component
+            if current.is_symlink():
+                raise FleetBackupError(
+                    f"Refusing a symbolic link in the temporary archive path: {current}"
+                )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial = target.with_name(target.name + ".partial")
+        if partial.exists() or partial.is_symlink():
+            raise FleetBackupError(f"Temporary archive staging path already exists: {partial}")
+
+        try:
+            if legacy_archive_filename is not None:
+                if (
+                    Path(legacy_archive_filename).name != legacy_archive_filename
+                    or not legacy_archive_filename.lower().endswith(".zip")
+                ):
+                    raise FleetBackupError("Unsafe saved-world archive filename.")
+                record = next(
+                    (
+                        item for item in server.get("legacy_world_archives", [])
+                        if isinstance(item, dict)
+                        and item.get("filename") == legacy_archive_filename
+                    ),
+                    None,
+                )
+                if record is None:
+                    raise FleetBackupError(
+                        f"Generation {generation_id} does not contain saved-world archive "
+                        f"{legacy_archive_filename!r}."
+                    )
+                source = (
+                    source_generation
+                    / "servers"
+                    / _server_key(str(instance_id))
+                    / "legacy-world-archives"
+                    / legacy_archive_filename
+                )
+                expected_hash = str(record.get("sha256") or "")
+                if (
+                    source.is_symlink()
+                    or not source.is_file()
+                    or source.stat().st_size != int(record.get("size", -1))
+                    or not expected_hash
+                    or _hash_file(source) != expected_hash
+                ):
+                    raise FleetBackupError(
+                        f"Saved-world archive {legacy_archive_filename} failed its generation checksum."
+                    )
+                if self._legacy_archive_world_name(source) != world_name:
+                    raise FleetBackupError(
+                        "The selected saved-world archive does not match the requested world."
+                    )
+                shutil.copyfile(source, partial)
+                digest = _hash_file(partial)
+                created_at = str(record.get("created_at_utc") or verification["manifest"]["created_at_utc"])
+            else:
+                world = next(
+                    (
+                        item for item in server.get("world_saves", [])
+                        if isinstance(item, dict) and item.get("name") == world_name
+                    ),
+                    None,
+                )
+                if world is None:
+                    raise FleetBackupError(
+                        f"Generation {generation_id} does not contain world {world_name!r}."
+                    )
+                matching_files = [
+                    item for item in server.get("files", [])
+                    if isinstance(item, dict)
+                    and isinstance(item.get("path"), str)
+                    and str(item["path"]).split("/", 1)[0] in {
+                        world_name, f"{world_name}_nether", f"{world_name}_the_end"
+                    }
+                ]
+                level_dat_record = next(
+                    (
+                        item for item in matching_files
+                        if item["path"] == f"{world_name}/level.dat"
+                    ),
+                    None,
+                )
+                if level_dat_record is None or int(level_dat_record.get("size", 0)) <= 0:
+                    raise FleetBackupError(
+                        f"World {world_name!r} has no valid level.dat in generation {generation_id}."
+                    )
+
+                server_files_root = (
+                    source_generation / "servers" / _server_key(str(instance_id)) / "files"
+                )
+                allowed_roots = {
+                    world_name, f"{world_name}_nether", f"{world_name}_the_end"
+                }
+                with zipfile.ZipFile(
+                    partial, "w", compression=zipfile.ZIP_STORED, allowZip64=True
+                ) as archive:
+                    for directory in server.get("directories", []):
+                        if not isinstance(directory, dict):
+                            continue
+                        relative = _safe_relative(str(directory.get("path", "")))
+                        if relative.parts[0] not in allowed_roots:
+                            continue
+                        source = server_files_root.joinpath(*relative.parts)
+                        if source.is_symlink() or not source.is_dir():
+                            raise FleetBackupError(
+                                f"World directory is missing or unsafe: {relative}"
+                            )
+                        archive.write(source, relative.as_posix() + "/")
+                    for record in matching_files:
+                        relative = _safe_relative(str(record["path"]))
+                        source = server_files_root.joinpath(*relative.parts)
+                        if source.is_symlink() or not source.is_file():
+                            raise FleetBackupError(
+                                f"World file is missing or unsafe: {relative}"
+                            )
+                        archive.write(source, relative.as_posix())
+                digest = _hash_file(partial)
+                created_at = str(verification["manifest"]["created_at_utc"])
+
+            if not partial.is_file() or partial.is_symlink():
+                raise FleetBackupError("Temporary world archive was not created safely.")
+            os.replace(partial, target)
+            return {
+                "path": target,
+                "filename": target.name,
+                "size_bytes": target.stat().st_size,
+                "sha256": digest,
+                "world_name": world_name,
+                "generation_id": generation_id,
+                "created_at": created_at,
+            }
+        except Exception:
+            partial.unlink(missing_ok=True)
+            target.unlink(missing_ok=True)
+            raise
 
     def _latest_generation(self) -> tuple[Path, dict[str, Any]] | None:
         for summary in self.list_generations():

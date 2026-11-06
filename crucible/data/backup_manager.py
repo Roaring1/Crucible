@@ -339,12 +339,13 @@ class BackupManager:
 
         pre_swap_backup_path: Path | None = None
         if current_world_root.is_dir():
-            pre_swap_backup_path = self.create_pre_swap_backup()
-        if current_world_root.is_dir() and safety_backup_verified and not fleet_generation_id:
-            raise OSError(
-                "A verified fleet generation ID is required when the operation "
-                "delegates its safety backup to the fleet backup system."
-            )
+            if safety_backup_verified and not fleet_generation_id:
+                raise OSError(
+                    "A verified fleet generation ID is required when the operation "
+                    "delegates its safety backup to the fleet backup system."
+                )
+            if not safety_backup_verified:
+                pre_swap_backup_path = self.create_pre_swap_backup()
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         pre_swap_dir = current_world_root.with_name(
@@ -707,7 +708,6 @@ class BackupManager:
 
         pre_swap_backup_path: Path | None = None
         pre_swap_dir: Path | None = None
-        cleanup_warning = ""
 
         if world_root.is_dir():
             if not safety_backup_verified:
