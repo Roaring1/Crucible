@@ -260,6 +260,18 @@ It also checks pack identity/version ordering, downgrades, stable/beta/RC channe
 
 
 
+### 2.7.2 GTNH release-version parsing and ordering contract
+
+The current Python reference is `parse_pack_version()` and `channel_of()` in `crucible/importers/pack_update.py`.
+
+- A valid version requires major and minor decimal components separated by a dot. Patch is optional and defaults to zero. A leading `v` or `V` is optional.
+- An optional prerelease channel is `alpha`, `beta`, or `rc`, case-insensitive. Zero or more `-`, `_`, `.`, or space separators may appear before the channel and between the channel and its optional decimal sequence. Missing prerelease number defaults to zero. The separators may be absent (for example, `2.8.4beta3`).
+- Sort key is exactly `(major, minor, patch, channel_rank, prerelease_number)`; ranks are alpha=0, beta=1, rc=2, stable=3. Thus prereleases sort below the corresponding stable version, and RC sorts above beta. Unparseable inputs return no version; `channel_of()` returns `unknown`.
+- Python uses `re.IGNORECASE` and Unicode-aware `\d`, then Python integers. The first Rust pilot accepts ASCII digits only. This is a recorded incompatibility, not full semantic parity. The Rust parser is not callable from production code; resolve Unicode decimal support or add a Python fallback before any integration.
+- Rust stores decimal components as canonical strings and compares by digit length then lexicographically. This avoids a fixed-width integer bound while preserving integer ordering; fixtures include values larger than 64-bit ranges.
+- The shared fixture is `rust/crucible-core/fixtures/pack-version-cases.tsv`. Rust unit tests and `tests/test_rust_pack_version_fixtures.py` must both consume that exact file. Keep the fixture authoritative for accepted syntax, canonical tuple, and channel output. Add edge cases there before widening the parser.
+- This slice has no filesystem, network, tmux, Qt, or process effects and makes no performance claim. It must not alter release selection in Python.
+
 ### 2.7.1 Pack-update and world-mutation effect/lock contract
 
 The shared operation lock is an OS-level inter-process lock, not a Python-only mutex: `fleet_operation_lock()` opens `DEFAULT_FLEET_BACKUP_DIR / fleet-operation.lock` with no-follow semantics (current default: `~/.local/share/crucible-backups/fleet/fleet-operation.lock`) and takes non-blocking exclusive `flock`. A second process receives `BackupAlreadyRunning` rather than capturing or mutating a partially-swapped tree. The lock serializes scheduled/manual fleet backup with pack updates and destructive world operations.
@@ -506,6 +518,7 @@ Create sanitized, small fixtures in the repository before writing a production R
 | Heartbeat/watchdog | Each of four states; missing boot ID; changed boot ID; interrupted stop same/different boot; absent, present and unknown tmux results; wrapper alive/Java gone; two misses; restart delay; crash-loop cap; stable uptime reset; 1/5/20/50 server tmux subprocess count and timeout latency |
 | World summary | Existing developed save; new folder; incomplete folder with `level.dat`; alternate developed save; changed selection; absent prior marker; path traversal; absolute path; symlink root/child; unreadable selected file; unreadable alternate save; missing/unreadable/symlinked/broken `server.properties`; exact `level-name=`; whitespace/colon/escaped key spellings; valid default and custom `level-name`; large file-count traversal |
 | Properties | GTNH 1.7.10 legacy keys; modern 1.20+ keys; removed 1.21.2 keys; duplicate keys; escaped colon in level-type; malformed number/bool/enum; unknown key; comments/order/whitespace normalization; colon/whitespace separators and continuations as explicit unsupported/current-parser divergence cases; missing vs unreadable file; conflicting GUI/CLI/world/port/update readers |
+| GTNH version parser | Leading v/V; two- or three-component versions; alpha/beta/rc spellings and separators; absent prerelease number; leading zeroes; huge decimal components; stable/prerelease ordering; malformed suffixes; empty and whitespace input; Python Unicode digits versus Rust ASCII-only boundary |
 | Pack update | Unknown/running/stopped; unmanaged JVM; incomplete process scan; stable update; downgrade blocker; beta warning; unsupported Java; multiple worlds; unreadable root/alternate world; incomplete size estimate; inventory changed after plan; unsafe `level-name`; insufficient free space |
 | Mod metadata | Fabric/Quilt/Forge/NeoForge/legacy metadata; malformed JSON/TOML; multiple declared mods; oversized metadata; unsupported format; explicit client/server/both; absent side remains unknown; huge central directory |
 | Crash diagnosis/quarantine | Authoritative invalid-dist signature; named JAR/mod ID; exact metadata mapping; fallback explicit client-only scan; unknown culprit; large central directory; no-apply preview; conflicting enabled/disabled name; manually disabled file; receipt-owned quarantine; log corruption/symlink/write failure; interrupted partial quarantine; server running or unknown; backup lock contention; restore only verified receipt entries |
