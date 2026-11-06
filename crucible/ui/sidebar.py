@@ -50,6 +50,7 @@ class InstanceItem(QListWidgetItem):
         "missing":      theme.RED,
         "unmanaged":    theme.YELLOW,
         "unknown":      theme.YELLOW,
+        "checking":     theme.PROGRESS,
     }
 
     def __init__(self, instance: ServerInstance, status: str = "stopped"):
@@ -177,6 +178,7 @@ class InstanceRowWidget(QWidget):
         "missing": "Server files missing",
         "unmanaged": "Unmanaged process",
         "unknown": "Status unavailable",
+        "checking": "Checking",
     })
 
     def __init__(self, instance: ServerInstance, status: str, parent=None):
@@ -441,6 +443,7 @@ class Sidebar(QWidget):
     instance_selected = pyqtSignal(object)  # ServerInstance
     add_requested     = pyqtSignal()
     appearance_requested = pyqtSignal(object)  # ServerInstance
+    shortcuts_requested = pyqtSignal(object)  # ServerInstance
     # Context menu actions
     start_requested   = pyqtSignal(object)  # ServerInstance
     stop_requested    = pyqtSignal(object)  # ServerInstance
@@ -656,6 +659,7 @@ class Sidebar(QWidget):
         open_folder_act = menu.addAction(action_icon("folder"), "Open server folder")
         open_backups_act = menu.addAction(action_icon("archive"), "Open fleet backups folder")
         copy_path_act = menu.addAction(action_icon("copy"), "Copy server path")
+        shortcut_act = menu.addAction("Create shortcuts…")
         menu.addSection("DIAGNOSTICS")
         inspect_act = menu.addAction(action_icon("search-log"), "Inspect server logs…")
         repair_act = menu.addAction(action_icon("repair"), "Check loading repair…")
@@ -683,6 +687,8 @@ class Sidebar(QWidget):
             self._open_backups_folder(inst)
         elif chosen == copy_path_act:
             QApplication.clipboard().setText(inst.path)
+        elif chosen == shortcut_act:
+            self.shortcuts_requested.emit(inst)
         elif chosen == inspect_act:
             self.inspect_logs_requested.emit(inst)
         elif chosen == repair_act:

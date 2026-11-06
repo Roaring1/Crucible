@@ -21,18 +21,21 @@ Every time a monitored instance is confirmed running, a small heartbeat file
 is written recording:
   - the Linux boot id in effect at that moment (/proc/sys/kernel/random/boot_id)
   - the tmux session name
-  - a state: "running" | "stopped_clean" | "crashed_handled"
+  - a state: "running" | "stop_requested" | "stopped_clean" | "crashed_handled"
 
-A graceful Stop, or a live-witnessed Watchdog crash, updates that state
-immediately. So on the *next* launch, if a heartbeat still says "running"
-but the current boot id differs from the one it recorded, AND tmux confirms
-no live session exists now, the only remaining explanation is that the
-entire host went down (and came back up) while nobody was watching -- e.g.
-the 2026-07-22 ~20:59 PDT power cut this module was written to catch.
+A graceful Stop first records "stop_requested" so a live Watchdog will not
+mistake the disappearing tmux session for a crash and restart it. Only after
+the server is confirmed gone does Crucible write "stopped_clean". If the
+stop fails, a confirmed-running server is restored to "running"; an uncertain
+result remains disarmed until status can be confirmed.
 
-Closing the Crucible window on purpose, or the normal "stop" flow, never
-leaves a stale "running" heartbeat behind, so neither can ever be
-misreported as a crash.
+On the *next* launch, if a heartbeat says "running" or "stop_requested" but
+the current boot id differs from the one it recorded, AND tmux positively
+confirms no live session exists now, Crucible reports a possible whole-host
+failure. An uncertain tmux probe never becomes a clean-stop conclusion.
+
+Closing the Crucible window on purpose never stops or modifies a server
+heartbeat. A confirmed normal Stop is marked clean and is not misreported.
 """
 
 from __future__ import annotations
@@ -51,6 +54,7 @@ STATE_DIR = Path.home() / ".config" / "crucible" / "state" / "heartbeats"
 _BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 
 RUNNING = "running"
+STOP_REQUESTED = "stop_requested"
 STOPPED_CLEAN = "stopped_clean"
 CRASHED_HANDLED = "crashed_handled"
 
@@ -141,6 +145,18 @@ class HeartbeatStore:
             },
         )
 
+    def mark_stop_requested(self, instance_id: str) -> None:
+        """Disarm a live watchdog while an external graceful Stop is in flight.
+
+        This is distinct from stopped_clean: if the host loses power before
+        the stop completes, startup reconciliation must still report it.
+        """
+        existing = self.read(instance_id) or {}
+        self._write(
+            instance_id,
+            {**existing, "state": STOP_REQUESTED, "updated_at": datetime.now().isoformat()},
+        )
+
     def mark_stopped_clean(self, instance_id: str) -> None:
         existing = self.read(instance_id) or {}
         self._write(
@@ -209,10 +225,10 @@ def reconcile(
     heartbeats are immediately marked "crashed_handled" so the same
     historical crash is never re-reported on a later launch.
 
-    Callers should surface each CrashReport to the user and, for instances
-    with auto_restart enabled, start the server again automatically --
-    reconcile() itself never starts anything, so it stays safe to call from
-    a read-only context (tests, CLI diagnostics, etc.).
+    Callers surface each CrashReport to the user. Recovery is observational:
+    a host reboot never grants permission to start Minecraft, even when an
+    instance has its in-session crash watchdog enabled. The owner explicitly
+    chooses when to start the server after reviewing the report.
     """
     store = store or HeartbeatStore()
     current_boot_id = get_boot_id()
@@ -220,17 +236,44 @@ def reconcile(
 
     for instance in instances:
         heartbeat = store.read(instance.id)
-        if not heartbeat or heartbeat.get("state") != RUNNING:
+        if not heartbeat or heartbeat.get("state") not in {RUNNING, STOP_REQUESTED}:
             continue
+        state = heartbeat.get("state")
         recorded_boot_id = heartbeat.get("boot_id")
         # Without a boot id on either side we cannot tell a reboot apart
         # from "still the same session" -- never guess.
         if not recorded_boot_id or not current_boot_id:
             continue
-        if recorded_boot_id == current_boot_id:
+
+        available = getattr(tmux, "tmux_available", None)
+        if callable(available) and not available():
             continue
-        if tmux.is_running(instance):
+        probe = getattr(tmux, "probe_running", None)
+        running = probe(instance) if callable(probe) else tmux.is_running(instance)
+        if running is None:
+            # A failed/uncertain tmux probe is never evidence of a clean Stop
+            # or a host crash. Preserve the pending heartbeat for a later
+            # launch/reconciliation attempt.
+            continue
+        java_up = None
+        if state == STOP_REQUESTED and running:
+            java_probe = getattr(tmux, "is_java_foreground", None)
+            java_up = java_probe(instance) if callable(java_probe) else None
+        if recorded_boot_id == current_boot_id:
+            if state == STOP_REQUESTED:
+                if running and java_up is True:
+                    # The interrupted stop was cancelled and Minecraft is
+                    # positively back in its JVM run state.
+                    store.mark_running(instance.id, instance.tmux_session)
+                elif not running:
+                    store.mark_stopped_clean(instance.id)
+                # A live wrapper with Java absent/unknown may still be
+                # completing the requested stop. Keep stop_requested.
+            continue
+        if running:
             # Somehow still running (e.g. tmux itself survived) -- not a crash.
+            if state == STOP_REQUESTED and java_up is True:
+                store.mark_running(instance.id, instance.tmux_session)
             continue
 
         evidence = detect_torn_log(instance)

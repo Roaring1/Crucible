@@ -17,9 +17,9 @@ pushes updates to sidebar and instance panel.
 
 from __future__ import annotations
 
+import os
 import shutil
 import uuid
-from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import (
@@ -61,7 +61,9 @@ from ..process.tmux_manager import TmuxManager
 from . import theme
 from .add_dialog import AddInstanceDialog
 from .instance_panel import InstancePanel
+from .shortcuts_dialog import ShortcutsDialog
 from .sidebar import Sidebar
+from .system_tray import SystemTrayController
 
 HEALTH_CHECK_INTERVAL_MS = 5_000
 
@@ -93,6 +95,12 @@ class MainWindow(QMainWindow):
         self._manager = manager
         self._tmux = TmuxManager()
         self._settings = QSettings("Crucible", "Crucible")
+        self._keep_in_tray = self._settings.value("ui/keep_in_tray", False, type=bool)
+        self._tray_controller: SystemTrayController | None = None
+        self._tray_action = None
+        self._quit_requested = False
+        self._status_map: dict[str, str] = {}
+        self._transient_status: dict[str, str] = {}
         self._reduce_motion = self._settings.value(
             "ui/reduce_motion", False, type=bool
         )
@@ -125,12 +133,13 @@ class MainWindow(QMainWindow):
         QApplication.instance().installEventFilter(self)
         self._populate_sidebar()
         self._start_health_timer()
+        QTimer.singleShot(0, self._restore_tray_preference)
 
         # Auto-select first instance
         if manager.instances:
             self._sidebar.select_by_id(manager.instances[0].id)
 
-        # Detect + self-heal instances that went down together with the
+        # Detect and report instances that went down together with the
         # whole host (power loss, hard freeze) since Crucible last ran.
         # Deferred one tick so the window is on screen before any dialog.
         QTimer.singleShot(0, self._run_crash_recovery)
@@ -151,6 +160,7 @@ class MainWindow(QMainWindow):
         self._sidebar.remove_requested.connect(self._on_remove_requested)
         self._sidebar.rename_requested.connect(self._on_rename_requested)
         self._sidebar.appearance_requested.connect(self._on_appearance_requested)
+        self._sidebar.shortcuts_requested.connect(self._on_shortcuts_requested)
         self._sidebar.inspect_logs_requested.connect(self._on_inspect_logs_requested)
         self._sidebar.fix_loading_requested.connect(self._on_fix_loading_requested)
         self._sidebar.order_changed.connect(self._on_order_changed)
@@ -160,6 +170,7 @@ class MainWindow(QMainWindow):
         # Right: instance panel (must be created before wiring sidebar RMB signals)
         self._panel = InstancePanel(self._manager)
         self._panel.status_changed.connect(self._on_status_changed)
+        self._panel.action_feedback_requested.connect(self._on_panel_action_feedback)
         self._panel.fix_loading_requested.connect(self._on_fix_loading_requested)
         self._panel.inspect_logs_requested.connect(self._on_inspect_logs_requested)
         self._splitter.addWidget(self._panel)
@@ -190,6 +201,231 @@ class MainWindow(QMainWindow):
         )
         self._reduce_motion_action.toggled.connect(self._set_reduce_motion)
         menu.addAction(self._reduce_motion_action)
+
+        settings_menu = self.menuBar().addMenu("&Settings")
+        self._tray_action = QAction(
+            "Keep Crucible running in the system tray when its window closes", self
+        )
+        self._tray_action.setCheckable(True)
+        self._tray_action.setChecked(self._keep_in_tray)
+        self._tray_action.setStatusTip(
+            "Closing the window hides Crucible in the tray; Quit Crucible exits the manager without stopping Minecraft."
+        )
+        self._tray_action.toggled.connect(self._on_keep_in_tray_toggled)
+        settings_menu.addAction(self._tray_action)
+
+    def _restore_tray_preference(self) -> None:
+        """Restore tray residency only when the active desktop provides a tray."""
+        if self._keep_in_tray:
+            if not self._enable_system_tray(initial=True):
+                # Do not keep a checked preference that this desktop session
+                # cannot honor. The user can re-enable it when a tray is
+                # available again.
+                self._keep_in_tray = False
+                self._settings.setValue("ui/keep_in_tray", False)
+                if self._tray_action is not None:
+                    self._tray_action.blockSignals(True)
+                    self._tray_action.setChecked(False)
+                    self._tray_action.blockSignals(False)
+                    self._tray_action.setEnabled(
+                        SystemTrayController.is_available()
+                    )
+        elif self._tray_action is not None:
+            available = SystemTrayController.is_available()
+            self._tray_action.setEnabled(available)
+            if not available:
+                self._tray_action.setToolTip(
+                    "This desktop session does not currently expose a system tray."
+                )
+
+    def _on_keep_in_tray_toggled(self, enabled: bool) -> None:
+        if enabled:
+            if not self._enable_system_tray(initial=False):
+                if self._tray_action is not None:
+                    self._tray_action.blockSignals(True)
+                    self._tray_action.setChecked(False)
+                    self._tray_action.blockSignals(False)
+                self._keep_in_tray = False
+                self._settings.setValue("ui/keep_in_tray", False)
+                return
+            self._keep_in_tray = True
+            self._settings.setValue("ui/keep_in_tray", True)
+            return
+
+        self._keep_in_tray = False
+        self._settings.setValue("ui/keep_in_tray", False)
+        if self._tray_controller is not None:
+            self._tray_controller.shutdown()
+            self._tray_controller.deleteLater()
+            self._tray_controller = None
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            app.setQuitOnLastWindowClosed(True)
+
+    def _enable_system_tray(self, *, initial: bool) -> bool:
+        if self._tray_controller is not None:
+            self._tray_controller.show()
+            return True
+        if not SystemTrayController.is_available():
+            if self._tray_action is not None:
+                self._tray_action.setEnabled(False)
+                self._tray_action.setToolTip(
+                    "This desktop session does not currently expose a system tray."
+                )
+            if not initial:
+                QMessageBox.information(
+                    self,
+                    "System tray unavailable",
+                    "Crucible cannot find a system tray in this desktop session. "
+                    "The window will close normally instead.",
+                )
+            return False
+        try:
+            self._tray_controller = SystemTrayController(
+                self,
+                instances=lambda: list(self._manager.instances),
+                statuses=lambda: dict(self._status_map),
+                open_ui=self._show_from_tray,
+                open_server=self._open_server_from_tray,
+                lifecycle=self._run_tray_lifecycle,
+                quit_app=self._quit_from_tray,
+                gui_pid=os.getpid(),
+            )
+        except Exception as exc:  # noqa: BLE001 - a broken optional tray must never prevent the main UI opening
+            self._tray_controller = None
+            if not initial:
+                QMessageBox.warning(
+                    self, "Could not create system tray icon", str(exc)
+                )
+            return False
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            app.setQuitOnLastWindowClosed(False)
+        if self._tray_action is not None:
+            self._tray_action.setEnabled(True)
+            self._tray_action.setToolTip(
+                "Closing the window hides Crucible in the tray. Quit Crucible exits the manager; Minecraft servers keep running."
+            )
+        return True
+
+    def _show_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _open_server_from_tray(self, instance: ServerInstance) -> None:
+        self._show_from_tray()
+        if self._panel.current_instance_id() == instance.id:
+            self._panel.focus_console()
+            return
+        self._sidebar.select_by_id(instance.id)
+        # A same-row selection does not emit instance_selected, so explicitly
+        # focus the console after Qt has applied the selection.
+        QTimer.singleShot(0, self._panel.focus_console)
+
+    def _tray_message(self, title: str, message: str, *, warning: bool = False) -> None:
+        if self._tray_controller is not None:
+            self._tray_controller.show_message(title, message, warning=warning)
+        elif self.isVisible():
+            QMessageBox.warning(self, title, message) if warning else QMessageBox.information(
+                self, title, message
+            )
+
+    def _run_tray_lifecycle(self, instance: ServerInstance, action: str) -> None:
+        """Dispatch tray actions through the shared InstancePanel lifecycle worker."""
+        expected = "stopped" if action == "start" else "running"
+        current = self._status_map.get(instance.id, "unknown")
+        if current != expected:
+            self._tray_message(
+                "Server action unavailable",
+                f"{instance.name} is {current.replace('_', ' ')}. "
+                f"{action.title()} requires {expected.title()} to be confirmed.",
+                warning=True,
+            )
+            return
+        if self._panel.has_active_operations():
+            self._tray_message(
+                "Operation in progress",
+                f"Wait for the current Crucible operation to finish before changing {instance.name}.",
+                warning=True,
+            )
+            return
+
+        # Reuse the existing InstancePanel lifecycle worker. Start can require
+        # the Forge startup question, so restore the main window for that
+        # interaction. A graceful Stop on the already-selected server can
+        # complete from the tray without opening the full UI.
+        if action == "start":
+            self._show_from_tray()
+            if self._panel.current_instance_id() != instance.id:
+                self._sidebar.select_by_id(instance.id)
+            self._panel._do_start_for(instance, status_hint=current)
+        elif action == "stop":
+            self._panel._do_stop_for(
+                instance,
+                status_hint=current,
+                graceful_only=True,
+            )
+        else:
+            self._tray_message(
+                "Server action unavailable",
+                "That server action is not supported.",
+                warning=True,
+            )
+
+    def _on_panel_action_feedback(
+        self, title: str, message: str, warning: bool
+    ) -> None:
+        self._tray_message(title, message, warning=warning)
+
+    def _quit_from_tray(self) -> None:
+        if self._panel.has_active_operations():
+            self._show_from_tray()
+            QMessageBox.information(
+                self,
+                "Operation in progress",
+                "Wait for the current Crucible operation to finish before quitting. "
+                "Minecraft servers will remain independent of Crucible.",
+            )
+            return
+        self._quit_requested = True
+        closed = self.close()
+        if closed:
+            from PyQt6.QtWidgets import QApplication
+            QApplication.quit()
+        else:
+            self._quit_requested = False
+
+    def _on_shortcuts_requested(self, instance: ServerInstance) -> None:
+        saved_directory = str(
+            self._settings.value("shortcuts/desktop_directory", "") or ""
+        )
+        dialog = ShortcutsDialog(
+            instance,
+            saved_desktop_directory=saved_directory,
+            parent=self,
+        )
+        if not dialog.exec():
+            return
+        new_directory = dialog.created_desktop_directory
+        if new_directory:
+            if saved_directory and Path(saved_directory).expanduser() != Path(new_directory):
+                try:
+                    from ..desktop_shortcuts import ShortcutError, remove_shortcuts
+                    remove_shortcuts(
+                        instance.id,
+                        desktop_directories=(saved_directory,),
+                        include_applications=False,
+                    )
+                except (ShortcutError, OSError) as exc:
+                    QMessageBox.warning(
+                        self,
+                        "Old desktop shortcuts could not be removed",
+                        f"The new shortcuts were created, but the previous desktop location needs cleanup: {exc}",
+                    )
+            self._settings.setValue("shortcuts/desktop_directory", new_directory)
 
     def _set_reduce_motion(self, enabled: bool) -> None:
         self._reduce_motion = bool(enabled)
@@ -272,8 +508,12 @@ class MainWindow(QMainWindow):
     # Population
 
     def _populate_sidebar(self) -> None:
-        initial = "stopped" if self._tmux.tmux_available() else "tmux_missing"
+        # The first status is not guessed: a background tmux check starts as
+        # soon as the UI is built. Until it returns, every registered server
+        # reads "Checking" rather than a misleading provisional Stopped.
+        initial = "checking" if self._tmux.tmux_available() else "tmux_missing"
         status_map = {inst.id: initial for inst in self._manager.instances}
+        self._status_map = dict(status_map)
         self._sidebar.populate(self._manager.instances, status_map)
         self._update_status_bar()
 
@@ -291,45 +531,30 @@ class MainWindow(QMainWindow):
         if not reports:
             return
 
-        by_id = {inst.id: inst for inst in self._manager.instances}
-        restarted: list[str] = []
-        not_restarted: list[str] = []
-
-        for report in reports:
-            instance = by_id.get(report.instance_id)
-            if instance is not None and instance.auto_restart:
-                ok, msg = self._tmux.start(instance)
-                if ok:
-                    instance.last_started = datetime.now().isoformat()
-                    try:
-                        self._manager.update_instance(instance)
-                    except Exception as exc:
-                        print(f"[crucible] could not persist auto-restart: {exc}")
-                    restarted.append(instance.name)
-                else:
-                    not_restarted.append(f"{instance.name} (restart failed: {msg})")
-            else:
-                not_restarted.append(report.instance_name)
+        # Startup discovery is read-only: opening Crucible never starts a
+        # Minecraft server, including after a host reboot. A crash report is
+        # surfaced to the owner; they choose when to press Start.
+        not_restarted = [report.instance_name for report in reports]
 
         lines = [
-            "Crucible found that one or more servers were still marked running "
-            "the last time it saw them, but the system has since rebooted "
-            "without a normal stop ever being recorded. This points to the "
-            "whole PC losing power or freezing, not a Crucible or server bug.",
+            (
+                "Crucible found that one or more servers were still marked running "
+                "the last time it saw them, but the system has since rebooted "
+                "without a normal stop ever being recorded. This points to the "
+                "whole PC losing power or freezing, not a Crucible or server bug."
+            ),
             "",
         ]
         for report in reports:
             lines.append(f"• {report.message}")
             if report.log_evidence:
                 lines.append(f"  {report.log_evidence}")
-        if restarted:
-            lines.append("")
-            lines.append("Auto-restarted (auto-restart was enabled): " + ", ".join(restarted))
         if not_restarted:
             lines.append("")
             lines.append(
-                "Not auto-restarted (enable auto-restart on the server's settings "
-                "to do this automatically next time): " + ", ".join(not_restarted)
+                "No Minecraft servers were started during startup recovery. "
+                "Review their state, then start each server when you are ready: "
+                + ", ".join(not_restarted)
             )
 
         QMessageBox.warning(self, "Recovered from an unexpected shutdown", "\n".join(lines))
@@ -380,10 +605,32 @@ class MainWindow(QMainWindow):
     @pyqtSlot(object)
     def _apply_health_status(self, status_map) -> None:
         self._health_busy = False
-        self._sidebar.update_all_statuses(status_map)
+        self._status_map = dict(status_map)
+        # Lifecycle workers may outlive a single status sample, particularly
+        # the non-selected server Stop dispatched from the tray. Preserve
+        # their explicit Starting/Stopping intent until the worker completes.
+        self._status_map.update(self._transient_status)
+        # Preserve lifecycle intent from the selected panel while a server
+        # start/stop worker is still resolving. The session may appear before
+        # Minecraft has reached its ready state.
+        selected = self._panel.current_instance_id()
+        if selected and self._panel._current_status in {"starting", "stopping"}:
+            self._status_map[selected] = self._panel._current_status
+        # The shared lifecycle worker owns these transient states until it
+        # reports completion; periodic polling must not re-enable actions early.
+        self._sidebar.update_all_statuses(self._status_map)
         selected = self._sidebar.selected_instance()
-        if selected and selected.id in status_map:
-            self._panel.update_status(status_map[selected.id])
+        if (
+            selected
+            and self._panel.current_instance_id() == selected.id
+            and self._panel._current_status in {"starting", "stopping"}
+        ):
+            self._status_map[selected.id] = self._panel._current_status
+            self._sidebar.update_status(selected.id, self._panel._current_status)
+        if selected and selected.id in self._status_map:
+            self._panel.update_status(self._status_map[selected.id])
+        if self._tray_controller is not None:
+            self._tray_controller.refresh_server_menu()
         self._update_status_bar()
 
     # Status bar
@@ -480,6 +727,8 @@ class MainWindow(QMainWindow):
             return
 
         self._sidebar.refresh_instance_icon(instance.id)
+        if self._tray_controller is not None:
+            self._tray_controller.refresh_server_menu(force=True)
         if self._panel.current_instance_id() == instance.id:
             self._panel.show_feedback(feedback)
 
@@ -673,7 +922,20 @@ class MainWindow(QMainWindow):
         SharePlayersDialog(instance, self, manager=self._manager).exec()
 
     def _on_status_changed(self, instance_id: str, status: str) -> None:
-        self._sidebar.update_status(instance_id, status)
+        effective = status
+        if (
+            self._panel.current_instance_id() == instance_id
+            and self._panel._current_status in {"starting", "stopping"}
+        ):
+            effective = self._panel._current_status
+        self._status_map[instance_id] = effective
+        if effective in {"starting", "stopping"}:
+            self._transient_status[instance_id] = effective
+        else:
+            self._transient_status.pop(instance_id, None)
+        self._sidebar.update_status(instance_id, effective)
+        if self._tray_controller is not None:
+            self._tray_controller.refresh_server_menu()
 
     def _on_remove_requested(self, instance) -> None:
         # Destructive decisions never trust the periodically cached sidebar status.
@@ -780,6 +1042,7 @@ class MainWindow(QMainWindow):
                 return
             self._sidebar.remove_instance(instance.id)
             print(f'[crucible] Deleted "{instance.name}" server files; external backups kept')
+        self._transient_status.pop(instance.id, None)
         if self._sidebar.selected_instance() is None:
             self._panel.clear()
         self._update_status_bar()
@@ -874,16 +1137,33 @@ class MainWindow(QMainWindow):
             )
             event.ignore()
             return
+
+        if (
+            not self._quit_requested
+            and self._tray_controller is not None
+            and self._tray_controller.visible
+            and SystemTrayController.is_available()
+        ):
+            # A normal window close hides the UI only. The same window,
+            # status worker and tray controller remain alive; Minecraft
+            # sessions are never modified by this transition.
+            event.ignore()
+            self.hide()
+            return
+
         self._cancel_identity_transition()
         self._health_timer.stop()
         if self._health_thread.isRunning():
             self._health_thread.quit()
             if not self._health_thread.wait(3000):
+                self._health_timer.start()
                 QMessageBox.information(
                     self, "Health check finishing",
                     "Wait a moment for the tmux health check to finish, then close again.",
                 )
                 event.ignore()
                 return
+        if self._tray_controller is not None:
+            self._tray_controller.shutdown()
         self._panel.shutdown()
         super().closeEvent(event)

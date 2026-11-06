@@ -17,11 +17,16 @@ Design:
 
 from __future__ import annotations
 
-
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 
 from ..data.instance_model import ServerInstance
-from .crash_recovery import HeartbeatStore
+from .crash_recovery import (
+    CRASHED_HANDLED,
+    RUNNING,
+    STOP_REQUESTED,
+    STOPPED_CLEAN,
+    HeartbeatStore,
+)
 from .tmux_manager import TmuxManager
 
 POLL_INTERVAL_MS   = 10_000   # 10 seconds
@@ -60,6 +65,7 @@ class Watchdog(QObject):
         self._miss_count: dict[str, int]             = {}
         self._java_miss_count: dict[str, int]        = {}
         self._watch_generation: dict[str, int]       = {}
+        self._heartbeat_state: dict[str, str | None] = {}
 
         # Timer created in start() on the worker thread
         self._poll_timer: QTimer | None = None
@@ -82,6 +88,19 @@ class Watchdog(QObject):
             self._poll_timer.deleteLater()
             self._poll_timer = None
 
+    def _stop_polling_if_idle(self) -> None:
+        """Do not keep a 10-second timer alive when no instance needs watching."""
+        has_pending_external_stop = any(
+            self._heartbeat_state.get(instance_id) == STOP_REQUESTED
+            for instance_id in self._instances
+        )
+        if (
+            self._poll_timer is not None
+            and not any(self._watching.values())
+            and not has_pending_external_stop
+        ):
+            self._poll_timer.stop()
+
     # Registration
 
     @pyqtSlot(object, bool)
@@ -93,15 +112,28 @@ class Watchdog(QObject):
         iid = instance.id
         already_known = iid in self._instances
         self._instances[iid] = instance
-        self._watching[iid] = True
         self._auto_restart[iid] = auto_restart
         self._miss_count[iid] = 0
         self._java_miss_count[iid] = 0
+        heartbeat = self._heartbeats.read(iid)
+        if heartbeat and heartbeat.get("state") == STOP_REQUESTED:
+            # A failed intentional Stop can leave a wrapper countdown alive
+            # after Java exits. Keep a low-cost pending watch until either
+            # Java is confirmed back or the tmux session is confirmed gone.
+            self._watching[iid] = False
+            self._heartbeat_state[iid] = STOP_REQUESTED
+            if self._poll_timer is not None and not self._poll_timer.isActive():
+                self._poll_timer.start(POLL_INTERVAL_MS)
+            return
+        self._watching[iid] = True
         # Record that this instance is now believed running under the CURRENT
         # boot session. If the whole host dies before unwatch()/_handle_crash()
         # ever run again, crash_recovery.reconcile() detects the stale
         # "running" heartbeat against a new boot id on the next launch.
         self._heartbeats.mark_running(iid, instance.tmux_session)
+        self._heartbeat_state[iid] = RUNNING
+        if self._poll_timer is not None and not self._poll_timer.isActive():
+            self._poll_timer.start(POLL_INTERVAL_MS)
         # A manual stop removes the instance entirely, so a later manual start
         # resets the sequence. Re-watching after an automatic restart preserves
         # the count until the server has remained healthy for STABLE_UPTIME_MS.
@@ -118,10 +150,11 @@ class Watchdog(QObject):
     def unwatch(self, instance_id: str) -> None:
         """
         Deregister an instance.
-        Call BEFORE a graceful Stop — otherwise we'd mistake a clean
-        shutdown for a crash.
+        Call BEFORE a graceful Stop. It records stop intent before removing
+        the watch; stop_completed() records the clean result after confirmation.
         """
-        self._heartbeats.mark_stopped_clean(instance_id)
+        self._heartbeats.mark_stop_requested(instance_id)
+        self._heartbeat_state[instance_id] = STOP_REQUESTED
         self._watching.pop(instance_id, None)
         self._instances.pop(instance_id, None)
         self._auto_restart.pop(instance_id, None)
@@ -129,6 +162,14 @@ class Watchdog(QObject):
         self._miss_count.pop(instance_id, None)
         self._java_miss_count.pop(instance_id, None)
         self._watch_generation.pop(instance_id, None)
+        self._stop_polling_if_idle()
+
+    @pyqtSlot(str)
+    def stop_completed(self, instance_id: str) -> None:
+        """Record an intentional stop only after the server is confirmed gone."""
+        self._heartbeats.mark_stopped_clean(instance_id)
+        self._heartbeat_state.pop(instance_id, None)
+        self._stop_polling_if_idle()
 
     # Poll
 
@@ -137,6 +178,66 @@ class Watchdog(QObject):
             return
 
         for iid, instance in list(self._instances.items()):
+            heartbeat = self._heartbeats.read(iid)
+            state = heartbeat.get("state") if heartbeat else None
+            previous_state = self._heartbeat_state.get(iid)
+            self._heartbeat_state[iid] = state
+
+            if state == STOP_REQUESTED:
+                self._watching[iid] = False
+                self._miss_count[iid] = 0
+                self._java_miss_count[iid] = 0
+                # Intentional Stop is not a crash. Keep crash auto-restart
+                # disarmed, but continue a bounded tmux/JVM status check so a
+                # wrapper countdown cannot become a false crash or a permanent
+                # pending heartbeat.
+                running = self._tmux.probe_running(instance)
+                if running is None:
+                    continue
+                if not running:
+                    self._heartbeats.mark_stopped_clean(iid)
+                    self._heartbeat_state.pop(iid, None)
+                    self._watching.pop(iid, None)
+                    self._instances.pop(iid, None)
+                    self._auto_restart.pop(iid, None)
+                    self._crash_count.pop(iid, None)
+                    self._miss_count.pop(iid, None)
+                    self._java_miss_count.pop(iid, None)
+                    self._watch_generation.pop(iid, None)
+                    continue
+                java_up = self._tmux.is_java_foreground(instance)
+                if java_up is True:
+                    # A failed Stop was positively cancelled and Minecraft
+                    # is back. Restore the configured watchdog policy now.
+                    self._heartbeats.mark_running(iid, instance.tmux_session)
+                    self._heartbeat_state[iid] = RUNNING
+                    self._watching[iid] = True
+                    self._auto_restart[iid] = bool(instance.auto_restart)
+                    self._miss_count[iid] = 0
+                    self._java_miss_count[iid] = 0
+                continue
+
+            if state == STOPPED_CLEAN:
+                self._watching.pop(iid, None)
+                self._instances.pop(iid, None)
+                self._auto_restart.pop(iid, None)
+                self._crash_count.pop(iid, None)
+                self._miss_count.pop(iid, None)
+                self._java_miss_count.pop(iid, None)
+                self._watch_generation.pop(iid, None)
+                self._heartbeat_state.pop(iid, None)
+                continue
+
+            if state == RUNNING and previous_state == STOP_REQUESTED:
+                # The external Stop failed and its caller confirmed that the
+                # session is still running. Resume the watch that was paused
+                # for that stop request. A clean stop followed by a new
+                # external start is deliberately not auto-watched until the
+                # normal GUI readiness signal calls watch().
+                self._watching[iid] = True
+                self._miss_count[iid] = 0
+                self._java_miss_count[iid] = 0
+
             if not self._watching.get(iid):
                 continue
             # Require repeated misses: one timed-out/failed tmux query must not
@@ -170,11 +271,18 @@ class Watchdog(QObject):
                 continue
             if java_up:
                 self._java_miss_count[iid] = 0
+                # A failed intentional Stop may temporarily register this
+                # server with auto-restart disabled while a wrapper script
+                # finishes its countdown. Restore the user's saved policy only
+                # after Java itself is confirmed back in the foreground.
+                self._auto_restart[iid] = bool(instance.auto_restart)
                 continue
             java_misses = self._java_miss_count.get(iid, 0) + 1
             self._java_miss_count[iid] = java_misses
             if java_misses >= CRASH_CONFIRM_POLLS:
                 self._handle_crash(iid)
+
+        self._stop_polling_if_idle()
 
     def _handle_crash(self, iid: str) -> None:
         self._watching[iid] = False   # stop watching until/unless restarted
@@ -188,6 +296,7 @@ class Watchdog(QObject):
         # This crash was witnessed live -- mark it handled so a later
         # Crucible restart never re-reports it as an unseen host-level crash.
         self._heartbeats.mark_crashed_handled(iid)
+        self._heartbeat_state[iid] = CRASHED_HANDLED
 
         self.crash_detected.emit(iid)
 
@@ -225,6 +334,9 @@ class Watchdog(QObject):
             self._watching[iid] = True   # resume monitoring
             self._miss_count[iid] = 0
             self._heartbeats.mark_running(iid, instance.tmux_session)
+            self._heartbeat_state[iid] = RUNNING
+            if self._poll_timer is not None and not self._poll_timer.isActive():
+                self._poll_timer.start(POLL_INTERVAL_MS)
             self.restarted.emit(iid)
         else:
             self.restart_failed.emit(iid, msg)
