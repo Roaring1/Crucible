@@ -347,3 +347,10 @@ Relevant existing regression coverage includes incremental hard-link reuse, rete
 - Maturin's guide documents Python wheel/native extension packaging: https://www.maturin.rs/
 
 Crucible's CI currently supports Python 3.11 and 3.13, not 3.15. Use `-X importtime`, `cProfile`, and `timeit` for the current baseline; do not rely on new Python 3.15-only profiling interfaces until the supported runtime matrix changes.
+
+## 6. Current Rust pilot and performance interpretation
+
+The first Rust code in this PR is a dependency-free GTNH version parser/comparator at `rust/crucible-core/src/pack_version.rs`. It is intentionally chosen as a low-risk contract/toolchain exercise because its behavior is deterministic and independent of application I/O. It is not identified as a current performance bottleneck. Version parsing is a tiny part of pack-index processing; no benchmark has shown it to dominate update planning or release selection.
+
+The pilot therefore makes **no speed claim** and does not justify a runtime bridge, parallelism, or replacement of the Python implementation. Its acceptance gate is semantic parity for the shared ASCII fixture set plus green Rust formatting/tests/Clippy and the existing Python suite. The known Unicode-decimal difference remains unresolved and prevents production use. The measured-performance backlog remains the watchdog, process discovery, world scanning, backup I/O, client export and cold-start work described above.
+
