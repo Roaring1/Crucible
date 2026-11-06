@@ -324,6 +324,22 @@ Behavioral contracts that must survive any future CLI migration:
 
 This interface must be tested as a CLI, not just by calling internal handler functions. Build a golden argv corpus that captures parsed options/defaults, stdout, stderr, exit code, TTY vs non-TTY behavior, environment/working-directory assumptions, and whether the invocation reads or mutates the registry, server files, tmux, network, or backup state. Do not replace the CLI until its command-by-command parity and installed launcher behavior are proven.
 
+### 2.11 Installed launcher and release-artifact contract
+
+The current release path publishes a source ZIP and its exact SHA-256 text asset. The one-line installer selects the latest release tag from GitHub's API, validates the tag and exact asset URLs, bounds both downloads, verifies the source archive checksum, rejects unsafe ZIP names/links/oversized expansion, verifies CRCs, and invokes install.sh.
+
+The per-user installer:
+- selects a supported Python 3.11+ interpreter, preferring one that can already import PyQt6; honours a supported CRUCIBLE_PYTHON override;
+- creates a venv using --system-site-packages;
+- stages the source tree separately from the venv and excludes build/VCS/cache files;
+- compiles and smoke-tests the staged package, then atomically renames the old app aside and publishes the staged app;
+- smoke-tests the final installed path before discarding the rollback copy;
+- writes the command and desktop integration, while keeping server data/backups outside the application tree.
+
+The launcher resolves its own symlink and prepends the copied source tree to PYTHONPATH before executing the venv's Python module. This is a native-extension integration constraint: a PyO3 wheel installed only into venv/site-packages may be shadowed by the source package. A future artifact design must explicitly place the native module where the imported package can load it, or change the install model to install the complete wheel without source shadowing.
+
+No update may require the user to install Rust or build a native library. Release artifacts must be prebuilt for the supported platform/architecture/Python ABI, have explicit size and checksum expectations, be staged atomically, import successfully from the final path, and roll back to the previous installation if the native artifact is missing/incompatible. Test fresh install and upgrade/rollback separately. The existing installer smoke test is only --help plus import/version; a Rust extension needs a separate import-and-call self-test that has no tmux, filesystem mutation, network or Qt side effects.
+
 ## 3. Recommended first Rust core types and functions
 
 Do not begin by mirroring all Python classes one-for-one. The first Rust crate should model a small number of explicit, versioned values:
@@ -363,7 +379,7 @@ Create sanitized, small fixtures in the repository before writing a production R
 | Client export | Exact JAR hash; unknown/manual JAR; conflicting distribution decision; source mutates after review; scan incomplete; duplicate/unsafe ZIP member; manifest mismatch |
 | Provider/download | Same-host HTTPS redirect; HTTPS cross-host CDN redirect where permitted; HTTP/FTP downgrade redirect blocked; userinfo/unsafe port; oversized body; timeout; 401/403/429/5xx; missing/invalid digest; wrong digest; credential redaction; cancelled transfer; provider-disabled path before key/network |
 | Share | Valid Gofile result; unsafe host/path; malformed optional MD5/size; mismatched size/MD5; source file replacement attempt; cancellation before/during transfer |
-| CLI | Each of 32 subcommands; short/long options, defaults, hidden shortcut action, TTY and non-TTY Start confirmation, exit codes, stdout/stderr, registry/filesystem/tmux/network effects | Golden argv/output/result corpus for Python/Rust parity and installed-launcher smoke tests |
+| CLI | Each of 32 subcommands; short/long options, defaults, hidden shortcut action, TTY and non-TTY Start confirmation, exit codes, stdout/stderr, registry/filesystem/tmux/network effects | Golden argv/output/result corpus for Python/Rust parity and installed-launcher smoke tests |\n| Installer/release | Exact source/checksum asset pairing; ZIP path/link/size/CRC validation; Python selection; PyQt discovery; source shadowing; staging, rollback and desktop integration | Generated release fixture with a tiny fake native module, corrupted/missing artifact, ABI mismatch, final-path import and rollback verification |
 
 Fixtures should contain no user secrets, private URLs or real server/world data. Use generated files with deterministic contents and fake IDs/paths.
 
