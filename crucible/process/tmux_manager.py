@@ -604,9 +604,9 @@ class TmuxManager:
         """
         Stop the server.
 
-        graceful=True  → sends 'stop' to the console, waits up to timeout_s
-                         seconds for the session to disappear on its own.
-                         Falls through to force-kill if the server hangs.
+        graceful=True  → sends 'stop' to the console and waits up to
+                         timeout_s seconds for the session to disappear.
+                         Returns a failure if it does not; never force-kills.
         graceful=False → immediately kills the tmux session (no world save).
         """
         running = self.probe_running(instance)
