@@ -172,6 +172,8 @@ This is an adapter snapshot, not a new source of process truth. Preserve the exi
 
 A batched `list-panes -a -F` design must match the exact per-session/current-window/first-pane behavior of the existing `list-panes -t =session:` command. Do not assume "active pane" is equivalent to the first row the existing code reads. Golden fixtures should cover two or more sessions, multiple windows per session, multiple panes in the current window, absent sessions, a wrapper shell, tmux timeout, pane-query error and malformed output.
 
+The current watchdog tick is every 10 seconds, but it does not yet use this batch snapshot: it calls `probe_running()` (`tmux has-session`, 2-second timeout) once per watched instance, then calls `is_java_foreground()` (`tmux list-panes`, 2-second timeout) for each present session. The loop is serial, so the source-level count is up to 2N tmux subprocesses per poll for N healthy watched servers. The main-window health worker is a separate, batched `list-sessions` path. This mismatch with the watchdog module docstring is source-confirmed; the wall-time impact has not been measured. The batch adapter should report per-instance session/pane observations and batch-level failures rather than collapsing one failed query into false for all servers. Measure subprocess count, p50/p95 tick duration, and per-instance delay at 1, 5, 20 and 50 watched servers, including a slow/timeout case. The Rust core should receive the finished observation snapshot; it should not own the Qt timer or start a parallel poller.
+
 ### 2.5 World-start summary contract
 
 `WorldStartSummary` is an immutable point-in-time result with fields:
