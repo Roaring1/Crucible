@@ -213,6 +213,31 @@ Start/stop paths use the shared TmuxManager, exact instance/session targets, sta
 
 Do not split this state machine between Python and Rust. If a Rust core is used, it should initially return a pure eligibility/classification result from a caller-supplied snapshot; Python remains the only layer issuing tmux commands and presenting user confirmation.
 
+
+
+### 3.2.1 Heartbeat and watchdog state are separate from live tmux status
+
+The lifecycle model uses two related but distinct sources of truth:
+
+- Live status comes from a fresh tmux/process observation. The GUI's cached five-second status map is presentation state only; destructive operations and lifecycle actions probe again.
+- Crash recovery is an on-disk per-instance heartbeat under Crucible's state directory. It stores `state`, Linux `boot_id`, `tmux_session`, and `updated_at` when running is recorded. Stop-intent/clean-stop/handled-crash transitions preserve the prior boot/session metadata where present.
+
+The observed heartbeat states are `running`, `stop_requested`, `stopped_clean`, and `crashed_handled`. Ordering is material: graceful Stop records `stop_requested` before the server is stopped (disarming watchdog restart); only confirmed completion records `stopped_clean`. If the machine reboots during a requested Stop, the old boot ID plus `stop_requested` still produces an owner-visible crash report. An uncertain tmux probe or missing boot ID is not treated as evidence of clean shutdown. A crash report is marked handled so it is not repeatedly shown on later launches.
+
+`HeartbeatStore._write()` writes a same-directory temporary file, flushes/fsyncs the file, and publishes it with `os.replace()`. The code does not currently fsync the parent state directory after the rename. This makes the rename atomic to concurrent readers but is not the same as the full directory-entry durability protocol used by fleet backup publication. Record this as a durability question to assess separately; a Rust implementation must not claim stronger crash durability than it actually provides.
+
+The watchdog is a Qt QObject living in its own QThread. It creates its QTimer only after `start()` runs on that thread. It polls every 10 seconds, requires two consecutive misses to confirm a crash, waits 30 seconds before an automatic restart, stops after three consecutive crashes, and resets the count only after 10 minutes of stable uptime. It separately tracks tmux-session misses and Java-foreground misses because GTNH-style wrapper shells can survive JVM exits. `stop_requested` disables restart while still observing a pending wrapper countdown. Restart re-runs world-start inspection and fails closed if the selected world is unsafe, unavailable, or requires an owner confirmation.
+
+Tests already cover heartbeat read/write transitions, reboot detection, same-boot interrupted Stop, cross-boot interrupted Stop, uncertain tmux/Java probes, wrapper-alive/Java-gone pending state, repeated crash confirmation, and Stop coordination. Preserve these as Rust/Python cross-implementation fixtures if watchdog logic is ever extracted. Do not move the QTimer, watchdog thread, restart scheduling, or tmux commands into Rust as a first slice.
+
+### 3.2.2 World-start confirmation is a read-only gate with a persisted last choice
+
+The configured `level-name` is read raw and preserved. The inspector rejects empty, dot, traversal, absolute, and path-like names before using the value as one direct child of the server root. It rejects symlinks and non-directory targets, never follows directory symlinks, recognizes developed alternate saves using `level.dat` plus region/player data (including selected Forge dimension subtrees), and scans the configured world for size, newest regular-file mtime, region count, and playerdata count. Permission or walk errors result in `unavailable`, not an assumed empty/new world.
+
+The summary is immutable data returned from a short-lived worker thread. The UI checks its generation and selected instance ID to discard stale results. Immediately before dispatching Start it re-checks that the server is still confirmed stopped and that `level-name` still matches the inspected folder; it repeats that check after the FML prompt. Only after `tmux.start()` succeeds does the UI persist `instance.extra["last_started_world"]` through the ordinary registry update. New/incomplete folders, changed selections, or older records with other developed saves require explicit confirmation. Other save folders are retained.
+
+The watchdog uses the same inspection helper but cannot show a modal confirmation during an automatic restart. It therefore refuses the restart whenever the selection is unsafe/unavailable or `requires_confirmation` is true. Keep the inspection pure/read-only and separate from the lifecycle action that follows it.
+
 ### 3.3 Fleet backup
 
 BackupTab and WorldTab dispatch to FleetBackupManager in workers. The manager serializes backup/world/update operations with a global operation lock, snapshots the full registered fleet, checks process status/readiness, flushes running worlds, stages immutable generations, verifies, publishes by atomic rename/fsync, rotates retention only after successful publication, and defers source cleanup until retained generations are safe.
