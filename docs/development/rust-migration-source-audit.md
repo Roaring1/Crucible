@@ -380,18 +380,25 @@ The separation pattern is useful. The release profile is not automatically the r
 
 ## 7. Packaging and release constraints
 
-Current installation behavior observed in `install.sh`:
+The installed layout is important to the Rust integration choice. Current install.sh behavior:
 
-- Chooses Python 3.11+ and prefers an interpreter that already imports PyQt6.
-- Creates a per-user venv using `--system-site-packages`.
-- Copies source into a staging directory, runs `compileall`, imports PyQt6/Crucible, and invokes `crucible --help`.
-- Publishes by rename, retains rollback copy until final-path smoke check, creates per-user desktop integration.
-- The one-line installer verifies exact source/checksum release assets and validates ZIP paths, links, expansion limits and CRC before invoking install.sh.
+- Candidate interpreter order is Python 3.13, 3.12, 3.11, then python3; a valid CRUCIBLE_PYTHON override is honored. It prefers an interpreter that already imports PyQt6.
+- Creates a per-user venv with --system-site-packages. If Qt is not already visible, Nobara/Fedora gets a dnf package attempt; otherwise PyQt6 is installed with pip inside the venv.
+- Copies distributable source into $APP_ROOT/source, excluding Git metadata, caches, build output and previous venvs.
+- Runs compileall, imports PyQt6 and Crucible, checks the package version, and invokes crucible --help before publishing.
+- The launcher resolves its own symlink with readlink -f, derives the real app root, prepends $APP_ROOT/source to PYTHONPATH, and execs $APP_ROOT/venv/bin/python -m crucible.
+- Existing app directory is renamed to a .crucible-previous.* rollback path. Staged app is atomically renamed into place; the final-path launcher is smoke-tested before the rollback copy is deleted. Desktop integration is written after publication.
+- Backups live outside the app root; a legacy in-tree backup directory is copied with no-overwrite behavior.
+- The one-line installer queries GitHub's latest release, requires the exact Crucible-tag-source.zip and Crucible-tag-SHA256.txt asset names, bounds download sizes, verifies SHA-256, rejects unsafe ZIP paths/symlinks/oversized expansion, requires exactly one install.sh, tests ZIP CRCs, then invokes the installer.
 - No Rust toolchain is currently required from the owner at installation time.
 
-Therefore, a production Rust component must be delivered as a verified prebuilt artifact or compatible wheel. Do not make every user install Rust or compile the application during normal updates. The build pipeline must produce, include, verify, stage and smoke-test the Rust artifact before publishing the new install, with rollback if it is missing or incompatible.
+**Packaging trap for PyO3:** the launcher prepends the copied source tree to PYTHONPATH. Simply pip-installing a wheel into the venv may not make its extension visible, because crucible is imported from $APP_ROOT/source before site-packages. A production design must deliberately place the native module inside the imported package tree, install the complete project as a wheel and stop shadowing it with a source path, or define another explicit loader strategy. Do not assume "pip installed the wheel" means the imported crucible package can see its extension.
 
-If PyO3 is selected, measure wheel size/build matrix and Python 3.11/3.13 compatibility. PyO3's newest stable-ABI features and Python 3.15/free-threaded support are not a reason to raise Crucible's runtime requirement. If a JSON worker is selected, keep it long-lived and batch meaningful work rather than paying process startup on every status check.
+Therefore, any production Rust component must be delivered as a verified prebuilt artifact or compatible wheel. Do not make owners install Rust or compile the app during routine updates. The build pipeline must produce platform/Python-compatible artifacts, include and verify them, stage them with the app, test import from the final path, and restore the old installation if the artifact is missing or incompatible.
+
+tests/test_release_scripts.py contains nine focused checks covering installer staging/rollback markers, interpreter selection (including CRUCIBLE_PYTHON), symlink-resolving launcher behavior, lazy tab data loading, CLI lifecycle wiring, exact verified release assets, and package data declarations. These tests use source checks/stubs; they do not replace a real installed-upgrade test on each supported target environment.
+
+If PyO3 is selected, measure wheel size/build matrix and Python 3.11/3.13 compatibility. PyO3's newest stable-ABI features and Python 3.15/free-threaded support are not a reason to raise Crucible's runtime requirement. If a JSON worker is selected, package a matching executable with the app and keep it long-lived, using batched meaningful work rather than paying process startup on every small status check.
 
 ## 8. Current tests and behavioral coverage
 
