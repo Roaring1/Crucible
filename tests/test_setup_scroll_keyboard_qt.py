@@ -182,8 +182,8 @@ def test_setup_tab_keyboard_navigation_keeps_focused_controls_visible(tmp_path):
     assert report["bottom_scroll_value"] == report["scroll_maximum"]
     assert report["hidden_focus"] == []
     assert report["page_up_changed_scroll"]
-    assert any("Save memory settings" in row["label"] for row in report["focused_descendants"])
-    assert any("Check for updates" in row["label"] for row in report["focused_descendants"])
+    assert any("Save selected server Java memory settings" in row["label"] for row in report["focused_descendants"])
+    assert any("Check the selected server modpack for updates" in row["label"] for row in report["focused_descendants"])
 
     screenshot = Path(report["screenshot"])
     assert screenshot.is_file()
