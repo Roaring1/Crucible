@@ -315,6 +315,33 @@ The repository tree contains 62 Python test/support files. Relevant named suites
 
 The workflow creates a private temporary tmux socket directory. Do not point Rust integration tests at the user's normal tmux socket, installed app, server registry, or server root. Use generated temporary roots and fixture-only process snapshots.
 
+
+
+### 8.1 Coverage strengths and migration gaps
+
+The existing Python tests already form a useful reference for several safety contracts:
+
+| Contract area | Existing coverage evidence | What the Rust migration still needs |
+|---|---|---|
+| Registry and identity | `test_core.py` covers duplicate sessions, path/session validation, unknown/malformed registry writes, external-change reconciliation, delete guards, and Java argument handling | Sanitized golden registry rows that explicitly test every known/unknown key round-trip through Rust |
+| Process state/lifecycle | `test_core.py` covers exact tmux targets, unknown timeouts, unmanaged Java, wrapper survival, graceful-only Stop, and action-time removal checks | A shared per-instance PID association contract, fixture parity, and performance tests with scaled fake process tables |
+| Heartbeats | `test_crash_recovery.py` covers all four states, atomic writes, same/different boot, unknown probes, and interrupted Stop with Java/wrapper distinctions | Golden heartbeat JSON and pure state-transition parity tests |
+| World start | `test_world_start_summary.py` covers existing/new/incomplete saves, alternate saves, selection change, traversal, symlink and modded dimension detection | More malformed inventory/permission fixtures and direct pure-classifier fixtures separate from filesystem scan tests |
+| Properties | `test_properties_validation.py` covers legacy GTNH 1.7.10 keys, modern-version removals, unknown versions, loader inference, Java property escapes and semantically unsafe guesses | Text-level parser/validator fixtures with ordering, duplicate keys, comments, escapes and version matrix |
+| Pack update | `test_pack_update.py` covers version parsing, variant policy, world preservation, running/unknown blockers, downgrade warnings, insufficient disk, repeated live-state checks, rollback and cancellation | Serialized update-plan golden fixtures and parity on warnings/blocker reason codes |
+| Client export/share | `test_client_export.py` and `test_client_export_review.py` cover archive membership, source hash changes, exact SHA decisions, privacy checks, symlinks, duplicate mods and prohibited JARs | Golden sealed-manifest fixtures and a source-mutation parity corpus; do not benchmark by dropping review passes |
+| Fleet backup/world swap | `test_fleet_backup.py` and `test_world_backup_swap.py` cover incremental reuse, immutable generations, fsync/publication failures, unknown/running refusal, symlinks, archive safety, rollback and restore | Golden schema-1 manifests and fault-injection fixtures before any backup core is moved |
+| General security boundaries | `test_security_boundaries.py` covers registry shapes, last-key-wins properties, bounded crash logs/JAR metadata, uncertain probes, path escapes and ZIP limits | Reuse identical malicious/oversized fixture files against both languages |
+
+Some representative test files contain dozens of focused cases (for example, 83 tests in `test_pack_update.py`, 57 in `test_core.py`, and 29 + 21 in the client-export/archive-review suites). The suite is not merely smoke testing; it includes behavioral and failure-path coverage.
+
+Two important limits remain:
+
+1. The current CI workflow runs Python 3.11 and 3.13 tests, Qt smoke and UI preview. It does **not** run Cargo checks/tests or a repeatable performance benchmark suite.
+2. Existing tests protect current Python behavior. They are not yet a cross-language parity harness and do not prove that a Rust replacement returns identical output, errors, ordering or side-effect boundaries.
+
+For the candidate procfs optimization specifically, `test_machine_resources.py` confirms exact session-marker matching and excludes false Java matches from non-Java commands, while `test_resource_monitor.py` covers per-instance marker and Java/path matching. A new batch association map needs explicit multi-instance tests: marker-to-ID association, legacy Java fallback, overlapping paths, empty/inaccessible `cmdline`, process exit during scan, and no cross-instance PID attribution. Performance tests should use controlled fake procfs or helper processes, not the owner's live server process table.
+
 ## 9. Full Python source inventory
 
 The following list was generated from the recursive tree at the recorded `main` baseline.
