@@ -93,8 +93,11 @@ otherwise. Removing shortcuts removes only Crucible's exact generated
 filenames for that instance; it never removes the server or folder.
 
 Shortcut files are written atomically, owner-writable by the user, and checked
-against symlink/non-regular targets. No system-wide directory or root
-permission is required.
+against symlink/non-regular targets. When a generated hash filename already
+exists, Crucible also verifies its embedded instance/action identity before
+updating or removing it; an unrelated user launcher is never overwritten just
+because its filename collides. No system-wide directory or root permission is
+required.
 
 ## Future Rust port boundary
 

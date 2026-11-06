@@ -8,6 +8,7 @@
 - Add per-server Start and graceful Stop desktop shortcuts in Desktop, Applications menu, or both. Desktop location is editable; launchers use stable instance IDs, fail closed on uncertain states, and never offer force-kill. A two-phase stop heartbeat disarms the live watchdog before Stop and marks clean only after the session is confirmed gone.
 - Keep the existing crash watchdog dormant when no server needs monitoring; its 10-second timer resumes when a server is watched again.
 - Show Checking until the immediate startup tmux inventory resolves. Host-reboot crash recovery now reports what happened without starting Minecraft; the owner explicitly chooses when each server starts.
+- Verify shortcut ownership before updating/removing an existing hashed desktop-entry filename, so a coincidentally named user launcher is never overwritten or deleted.
 - Add regression coverage for shortcut file safety, server-state gates, resource aggregation, and tray menu behavior.
 
 - Fix the Add Mod dialog startup race: deferred initial search is now owned by the dialog and cannot launch a background request after early close. The Qt smoke regression verifies that close-before-startup launches no worker.
