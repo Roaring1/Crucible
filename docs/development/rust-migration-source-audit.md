@@ -101,6 +101,23 @@ The two existing PID matchers share a broad shape, but their precise semantics m
 
 The current `_unmanaged_pids()` helper catches every exception and returns `[]`; `_iter_pids()` also returns an empty list when `/proc/self/stat` is not visible. That best-effort behavior may be tolerable for a non-authoritative metrics display, but it is not a sound proof of process absence for lifecycle safety. The call sites include `is_server_ready()` (which gates save/backup consistency), `get_status()` and `status_map()` (which can classify an unmanaged live JVM as stopped), `safe_to_remove()` (which gates registry removal and folder deletion), `stop()`/`attach()` (which refuse to control an unmanaged process), and `_force_kill()` (which uses an empty PID list after `tmux kill-session` as proof the JVM died, and again after SIGTERM/SIGKILL as proof escalation succeeded). When process discovery is incomplete, `_force_kill()` can falsely report success while a JVM survives, and status/backup paths can treat an incomplete observation as stopped. A future API should distinguish `complete scan with no match`, `matching PIDs`, and `incomplete/unavailable scan`. Keep metrics best-effort while requiring complete observations for safety actions. For explicit force-kill, report that process exit could not be verified; never declare success from an incomplete scan.
 
+
+
+### 2.3.2 Watchdog polling: implementation does not match its batch comment
+
+The module docstring in `watchdog.py` says one `tmux list-sessions` call per poll covers all watched instances. The current `Watchdog._poll()` does not use that operation:
+
+- It reads each watched instance's heartbeat JSON inside the loop.
+- For each ordinary `running` heartbeat, it calls `probe_running(instance)`, which launches `tmux has-session -t =<session>`.
+- When the session is present, it calls `is_java_foreground(instance)`, which launches `tmux list-panes -t =<session>:`.
+- A pending `stop_requested` heartbeat also probes the exact session, and queries the pane while the wrapper remains present.
+
+This is roughly two tmux client subprocesses per watched instance on a normal 10-second poll, not one list-sessions command total. The 10-second timer is demand-driven and stops when no watch or pending Stop remains; do not replace that with an always-running poller.
+
+A batched adapter is plausible: one `list-sessions` observation, followed by one `list-panes -a -F` snapshot when relevant sessions exist. The tmux manual documents `list-panes -a` as listing all panes on the server and `-F` as a format for each line; formats include `session_name`, `window_active`, `pane_index`, `pane_active`, and `pane_current_command` (see https://man.archlinux.org/man/tmux.1.en and https://github.com/tmux/tmux/wiki/Formats). The prototype must map the batch rows to the same active-window/first-pane behavior that the current per-target query returns. Simply taking the first arbitrary pane or the active pane could silently change crash detection. Keep unknown query/format output distinct from Java-not-foreground.
+
+Current tests cover unknown probes, wrapper survival, two-miss confirmation, pending Stop, crash loop limits and world-selection confirmation, but set up one watched instance at a time. There is no multi-instance query-count test, global pane snapshot fixture, or parity test for multiple windows/panes. Add these before changing the watchdog implementation.
+
 ### 2.4 Importers and pack-update domain
 
 - `prism.py`: Prism/MultiMC detection, archive probing/extraction, path validation, import receipts, copy/staging.
