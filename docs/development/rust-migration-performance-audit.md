@@ -79,6 +79,32 @@ This creates a potential scaling cost: with many stopped instances, the same hos
 
 There is an important existing building block: `crucible/process/machine_resources.py::_instance_processes(instances)` already scans `/proc` once for all registered instances, but returns only an aggregate PID list for resource reporting. The health path in `tmux_manager.py` still calls the per-instance `ResourceSampler.find_instance_pids()` helper. A promising refactor is to share one matcher that returns per-instance PID associations, then use it in the health status map and resource sampler. This would remove repeated enumeration without introducing Rust or changing the safety model. Preserve the exact current semantics in the first parity pass: an exact marker token is accepted without checking `/proc/<pid>/comm`; only the fallback path/cwd match requires `comm == java`. The marker behavior needs a wrapper-process fixture because `TmuxManager.start()` embeds the marker inside a `bash -c` command string. Also preserve incomplete-scan semantics: the current best-effort helper collapses some `/proc` failures into an empty list, which is not valid proof of absence for destructive preflight. Do not cache stale results across lifecycle actions; safety-critical actions must still revalidate immediately.
 
+
+
+### 2.8 Watchdog polling is also per-instance today
+
+The watchdog runs on a demand-driven 10-second QTimer and stops its timer when no instance is watched and no external Stop is pending. That idle behavior is good and should be preserved.
+
+There is a second, separate query-scaling issue while servers are being watched:
+
+- `Watchdog._poll()` loops over the watched instances.
+- For each normal `running` heartbeat it calls `TmuxManager.probe_running(instance)`, which launches `tmux has-session -t =session`.
+- If the session is present, it calls `is_java_foreground(instance)`, which launches `tmux list-panes -t =session:`.
+- For an external `stop_requested` heartbeat it likewise probes the exact session and then queries the pane when the wrapper still exists.
+- Each instance also reads its heartbeat JSON on each poll.
+
+Thus a normal tick can launch roughly two tmux subprocesses per watched instance, plus heartbeat reads. The module docstring says one `list-sessions` call per poll covers all watched instances, but the current `_poll()` implementation does not use that batch path; the comment and implementation have diverged. This is a source-confirmed discrepancy, not a measured latency claim.
+
+A possible Python-side refactor is a `watchdog_snapshot(instances)` adapter that uses one `list-sessions` call to determine exact session presence and, when sessions exist, one `list-panes -a` call with session name plus pane-current-command to build a per-session snapshot. Its output must distinguish:
+- positively absent session;
+- present session with Java foreground;
+- present wrapper/shell with Java not foreground;
+- pane/query unavailable or malformed (unknown).
+
+Do not infer Java is gone when the pane query failed. Preserve the two-poll crash confirmation, pending Stop semantics, heartbeat ordering, and world-review gate before auto-restart. This would reduce subprocess startup overhead as the watched fleet grows; whether it matters should be measured before implementation.
+
+Existing watchdog tests strongly cover one-instance safety semantics, including unknown probes, wrapper survival, two-miss confirmation, restart limits, pending Stops and world confirmation. They do not currently assert the number of tmux subprocesses for multiple simultaneous watched instances or validate a batched snapshot. The performance benchmark and new batch tests should therefore be kept separate from the existing safety suite.
+
 ### 2.5 Resource sampling is on-demand, not a resident monitor
 
 `sample_machine_usage()` builds the managed PID set, samples procfs counters, waits 350 ms for a CPU delta, samples again, and optionally invokes `nvidia-smi` with a 1.5-second timeout. Its docstring explicitly says no timer is installed and no work continues after the call returns.
@@ -103,9 +129,9 @@ The performance audit should measure event-loop stalls and worker queue latency 
 | 1 | Share one per-instance procfs matcher across health and resource reporting | Health uses per-instance scans; resource reporting already has a one-pass aggregate matcher | High for destructive preflight: matching and incomplete-scan semantics must be explicit | Benchmark health refresh at 1, 5, 20, and 50 stopped instances; compare exact per-instance associations and unavailable-procfs behavior; preserve action-time revalidation |
 | 2 | Measure backup copy + destination readback | Fresh copies are hashed while streaming and fsynced, then read back and hashed again; the legacy archive path has a similar verification pass | High: removing verification could weaken backup integrity | Benchmark full, unchanged, and changed generations; compare disk read/write counters and CPU; retain exact-byte verification |
 | 3 | Measure per-file durability and inventory overhead | Every fresh file is fsynced; staging is walked twice; every directory is sealed and fsynced; source files receive final stat checks | High: durability and race guarantees | Use synthetic trees with many small files and large files; profile syscall counts and time before considering batching |
-| 4 | Reduce startup module/widget work, if material | Ten tab modules are imported and eight tab widgets are constructed during `InstancePanel._build_ui()`; only data loading is lazy | Medium: deferring widgets changes Qt object and signal lifetimes | Measure import, first-paint, initial RSS, and first-open latency; then prototype a single deferred secondary tab |
-| 5 | Reduce redundant client-export passes without weakening verification | Fingerprinting, JAR inspection, distribution review, archive sealing, and final re-fingerprinting can each read the same inputs | High: every reviewed artifact must match the bytes actually packaged | Measure per-stage time/bytes; explore a staged immutable input inventory only if it preserves source-change and exact-SHA checks |
-| 6 | Rust rewrite of Qt or tmux lifecycle | No evidence that language execution is the bottleneck; Qt/process control is mostly waiting on external systems | Very high | Do not pursue in the initial migration |
+| 5 | Reduce startup module/widget work, if material | Ten tab modules are imported and eight tab widgets are constructed during `InstancePanel._build_ui()`; only data loading is lazy | Medium: deferring widgets changes Qt object and signal lifetimes | Measure import, first-paint, initial RSS, and first-open latency; then prototype a single deferred secondary tab |
+| 6 | Reduce redundant client-export passes without weakening verification | Fingerprinting, JAR inspection, distribution review, archive sealing, and final re-fingerprinting can each read the same inputs | High: every reviewed artifact must match the bytes actually packaged | Measure per-stage time/bytes; explore a staged immutable input inventory only if it preserves source-change and exact-SHA checks |
+| 7 | Rust rewrite of Qt or tmux lifecycle | No evidence that language execution is the bottleneck; Qt/process control is mostly waiting on external systems | Very high | Do not pursue in the initial migration |
 
 ### 3.1 Client export has multiple intentional full-content passes\n\n`client_export.py` is a large, safety-sensitive pipeline. `_fingerprint_input_tree()` hashes every eligible file in `mods`, `config`, `kubejs`, Prism `patches` and `libraries`, and optionally resource packs. For Prism exports, the pipeline may compute the input fingerprint before building and recompute it after the archive is sealed to ensure that source inputs did not change. JARs are also inspected for metadata, hashed for exact distribution-catalog decisions, copied into the archive, then read from the archive by `_seal_archive()` to build a member digest and run bounded privacy checks. The final ZIP is hashed as a whole.\n\nThese are not automatically wasteful duplicate loops: they prove that the exact JAR bytes reviewed are the bytes bundled, that the archive itself is intact, and that the source set did not change during the operation. But these full passes can dominate a large pack export. Benchmark each phase and record bytes read, not just wall time. A future optimization might build a staged immutable input snapshot with one digest inventory consumed by review and archive creation, but it must still reject source mutation and tie each catalog decision to the exact payload hash. Never use metadata-only caching as proof of content identity.\n\n### 3.2 World and archive operations already avoid UI-thread blocking\n\nWorld-size scans and world-start inspection run through dedicated workers rather than the Qt event loop. Prism archive extraction uses 1 MiB streaming reads, caps member count/expanded size/single-member size/compression ratio, rejects unsafe paths and symbolic links, and creates its temporary extraction tree under the destination parent when supplied. This avoids expanding a multi-GiB modpack into a small tmpfs `/tmp` and helps the final staged tree stay on the destination filesystem. Preserve these choices.\n\n## 4. Why Rust may or may not improve the hot paths
 
@@ -162,7 +188,7 @@ Do not port a module for a marginal microbenchmark. A candidate should show a re
 
 Do **not** start with fleet backup or tmux.
 
-The first Rust work should still be a pure, side-effect-free core crate and parity harness. But the first production integration should be selected only after the baseline identifies a real hot path. If procfs scanning is confirmed dominant, first refactor the existing Python aggregate matcher into a shared per-instance association helper and prove fixture parity; only consider Rust if that optimized Python implementation remains a measured bottleneck. If backup I/O dominates, optimize the Python algorithm and filesystem strategy first; a Rust rewrite may not improve the storage bottleneck.
+The first Rust work should still be a pure, side-effect-free core crate and parity harness. But the first production integration should be selected only after the baseline identifies a real hot path. If watchdog subprocess startup is confirmed dominant, batch session/pane snapshots in Python first and prove multi-instance parity. If procfs scanning is confirmed dominant, refactor the existing Python aggregate matcher into a shared per-instance association helper. Only consider Rust if those optimized Python implementations remain measured bottlenecks. If backup I/O dominates, optimize the Python algorithm and filesystem strategy first; a Rust rewrite may not improve the storage bottleneck.
 
 The best performance outcome may be:
 - Rust for one measured CPU-heavy primitive;
@@ -227,7 +253,7 @@ The minimum supported Python matrix should remain 3.11/3.13 until a separate pro
 - `crucible/process/resource_monitor.py`
 - `crucible/process/machine_resources.py` (including its existing one-pass `_instance_processes` matcher)
 - `crucible/process/tmux_manager.py`
-- `crucible/process/watchdog.py`
+- `crucible/process/watchdog.py` (including the current per-instance tmux polling loop)
 - `crucible/ui/main_window.py`
 - `crucible/ui/instance_panel.py`
 - `crucible/diagnostics/loadcheck.py`
