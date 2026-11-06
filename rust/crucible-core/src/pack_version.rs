@@ -90,7 +90,9 @@ impl PackVersion {
             self.major.0,
             self.minor.0,
             self.patch.0,
-            self.channel.rank().expect("parsed versions have a known channel"),
+            self.channel
+                .rank()
+                .expect("parsed versions have a known channel"),
             self.prerelease_number.0
         )
     }
@@ -138,9 +140,7 @@ fn consume_separators(bytes: &[u8], mut position: usize) -> usize {
 }
 
 fn decimal_from_range(input: &str, start: usize, end: usize) -> Option<Decimal> {
-    input
-        .get(start..end)
-        .map(Decimal::from_ascii_digits)
+    input.get(start..end).map(Decimal::from_ascii_digits)
 }
 
 /// Parse the ASCII form of a GTNH release version.
@@ -243,7 +243,7 @@ pub fn channel_of(raw: &str) -> Channel {
 
 #[cfg(test)]
 mod tests {
-    use super::{channel_of, parse_pack_version, Channel};
+    use super::{Channel, channel_of, parse_pack_version};
 
     #[test]
     fn shared_python_fixture_cases_match() {
@@ -310,10 +310,7 @@ mod tests {
 
     #[test]
     fn arbitrary_length_components_do_not_overflow() {
-        let larger = parse_pack_version(
-            "123456789012345678901234567890.1.0",
-        )
-        .unwrap();
+        let larger = parse_pack_version("123456789012345678901234567890.1.0").unwrap();
         let smaller = parse_pack_version("99999999999999999999999999999.1.0").unwrap();
         assert!(larger > smaller);
     }
