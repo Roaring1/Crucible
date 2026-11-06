@@ -2292,7 +2292,8 @@ class FleetBackupManager:
                 instance,
                 "save-off",
                 re.compile(
-                    r"(?:automatic saving is now disabled|saving is already turned off)",
+                    r"(?:automatic saving is now disabled|saving is already turned off|"
+                    r"turned off world auto-saving)",
                     re.IGNORECASE,
                 ),
             )
@@ -2326,9 +2327,13 @@ class FleetBackupManager:
                 instance,
                 "save-all",
                 re.compile(
-                    r"(?:saved the game|unable to save the game)", re.IGNORECASE
+                    r"(?:saved the game|saved the world|unable to save the game|"
+                    r"saving failed:.*)",
+                    re.IGNORECASE,
                 ),
-                success_pattern=re.compile(r"saved the game", re.IGNORECASE),
+                success_pattern=re.compile(
+                    r"(?:saved the game|saved the world)", re.IGNORECASE
+                ),
             )
         except Exception as exc:
             original_error = str(exc)
@@ -2350,7 +2355,8 @@ class FleetBackupManager:
             instance,
             "save-on",
             re.compile(
-                r"(?:automatic saving is now enabled|saving is already turned on)",
+                r"(?:automatic saving is now enabled|saving is already turned on|"
+                r"turned on world auto-saving)",
                 re.IGNORECASE,
             ),
         )
