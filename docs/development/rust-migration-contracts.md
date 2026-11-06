@@ -279,6 +279,30 @@ The Gofile upload result includes the exact download URL/file identity/name/size
 
 A Rust port must not collapse build/review/upload into one function or auto-upload as a side effect of export.
 
+
+### 2.9 Network/provider boundary contracts
+
+Crucible does not have one generic HTTP policy. The source currently has several distinct adapters whose behavior must be preserved and made explicit before consolidation:
+
+| Adapter | Current responsibility | Important constraints and behavior |
+|---|---|---|
+| `download_http.py` | Shared downloader request/redirect helper | HTTPS-only initial URL, rejects URL userinfo, nonstandard ports, and API-key query names; CurseForge host allowlist is explicit; current CurseForge policy rejects before key lookup/network; authenticated requests cannot redirect outside the CurseForge host set; generic redirects are rebuilt key-free |
+| `importers/downloader.py` | Indexed modpack JAR retrieval | Bounded JSON/index and JAR sizes, finite timeout, 64 KiB stream chunks, cancellation checks, temp file in destination directory, hash verification (SHA-512 preferred, SHA-1 fallback), retries for network/hash failures, atomic rename; CurseForge item requests are blocked by the current fallback |
+| `mods/modrinth.py` | Modrinth API search/version/dependency and mod file operations | API JSON bounded at 16 MiB and normal API timeout 12 seconds; compatible version resolution refuses to guess if server loader/Minecraft metadata is absent; actual JAR downloads use the shared safe redirect/request helper and have a 2 GiB limit |
+| `mods/icon_fetch.py` | Current Add Mod dialog icon retrieval | Strict `cdn.modrinth.com` allowlist; redirects must remain within the provider allowlist; no credentials; maximum 8 MiB; socket timeout/deadline capped at 8 seconds; errors do not echo untrusted URL/header content |
+| `mods/curseforge.py` | Legacy provider/API adapter | Online browsing, API/CDN, provider-backed install/version and media path are code-disabled pending policy review; the key file must be user-owned/private if this is ever re-enabled |
+| `importers/serverloader.py` | Mojang/Fabric/Forge/NeoForge/Quilt metadata and installer downloads | Fixed public vendor endpoints, default TLS verification, 30-second timeout, 3 retries, 16 MiB metadata and 2 GiB download caps; 64 KiB streamed writes to same-directory temporary files, cancellation checks and atomic replace |
+| `importers/pack_update.py` | GTNH version index and server-pack download | HTTPS-only initial URL, 30-second timeout, retries, 16 MiB index and 8 GiB pack caps, 256 KiB chunks, cancellable staging; pack URL comes from the GTNH versions index or explicit owner-supplied HTTPS link, never a guessed URL |
+| `sharing/gofile.py` | Player-pack upload | Direct TLS connection to fixed `upload.gofile.io` endpoint; guest mode by default; optional owner token only in Authorization header; same no-follow-open file is hashed, rewound and streamed in 256 KiB chunks; transmitted bytes and file identity are rechecked; cancellation is honored before final multipart boundary; response capped at 1 MiB and download page host/path/ID validated; optional remote size/MD5 are only claimed verified when present and matching |
+
+**Important redirect caveat in the current Python baseline:** `serverloader.py` and `pack_update.py` validate the starting URL as HTTPS but use the default `urllib.request.urlopen()` opener. `modrinth._get()` and the older `modrinth.fetch_bytes()` helper also use default `urlopen()`. Python 3.11 and 3.13 document that the default `HTTPRedirectHandler` accepts redirect targets using HTTP, HTTPS, or FTP; it does not itself enforce HTTPS-only redirects. Therefore, an HTTPS-only check on the original URL is not an end-to-end HTTPS guarantee for these paths. This matters especially for server-loader and modpack archives, which contain executable code.
+
+This has not been exercised as a live network exploit or changed in this documentation PR. Before a Rust network client replaces any of these paths, add deterministic mock-redirect tests and a narrowly scoped Python hardening change: each download operation should validate every redirect target, require HTTPS after every hop, reject userinfo/unsafe ports, and preserve the host policy appropriate to that operation. Do not apply a rigid host allowlist to owner-supplied modpack URLs if legitimate hosts and CDN redirects are intentionally supported; use an HTTPS-only redirect policy there while retaining strict provider allowlists for icon and authenticated provider requests. Preserve finite redirect counts and ensure credentials are never forwarded across hosts.
+
+Official references for the supported runtime matrix: [Python 3.11 urllib.request](https://docs.python.org/3.11/library/urllib.request.html) and [Python 3.13 urllib.request](https://docs.python.org/3.13/library/urllib.request.html).
+
+**Do not conflate provider adapters.** Gofile upload uses `http.client.HTTPSConnection`, not urllib redirects; icon fetching has its own deliberately strict host policy; indexed JAR download uses `download_http`; serverloader and pack update have separate retry/redirect/size behavior. A Rust implementation may eventually share low-level TLS, bounded-body and redirect primitives, but its policy must be supplied per operation as explicit data. Keep provider approval, URL provenance, retry safety, cancellation semantics, and exact artifact checksum validation in the higher-level workflow.
+
 ## 3. Recommended first Rust core types and functions
 
 Do not begin by mirroring all Python classes one-for-one. The first Rust crate should model a small number of explicit, versioned values:
@@ -316,7 +340,7 @@ Create sanitized, small fixtures in the repository before writing a production R
 | Pack update | Unknown/running/stopped; stable update; downgrade blocker; beta warning; unsupported Java; multiple worlds; unsafe `level-name`; insufficient free space |
 | Fleet backup | Complete generation; prior generation; reused file; changed file; legacy archive; checksum mismatch; missing/symlinked path; retention and publish failure |
 | Client export | Exact JAR hash; unknown/manual JAR; conflicting distribution decision; source mutates after review; scan incomplete; duplicate/unsafe ZIP member; manifest mismatch |
-| Provider | Valid/invalid redirect; oversized body; timeout; 401/403/429/5xx; missing/invalid digest; wrong digest; credential redaction; cancelled transfer |
+| Provider/download | Same-host HTTPS redirect; HTTPS cross-host CDN redirect where permitted; HTTP/FTP downgrade redirect blocked; userinfo/unsafe port; oversized body; timeout; 401/403/429/5xx; missing/invalid digest; wrong digest; credential redaction; cancelled transfer; provider-disabled path before key/network |
 | Share | Valid Gofile result; unsafe host/path; malformed optional MD5/size; mismatched size/MD5; source file replacement attempt; cancellation before/during transfer |
 
 Fixtures should contain no user secrets, private URLs or real server/world data. Use generated files with deterministic contents and fake IDs/paths.
