@@ -235,9 +235,9 @@ Each phase is a separate reviewable change. Stop and reassess when a phase expos
 
 - [x] Inspect README, package/build metadata, CI, primary entry points, registry, instance model, tmux manager, crash recovery, backup manager, importer/exporter, provider module, and Crosshair Rust reference.
 - [x] Record current architecture and high-risk invariants.
-- [ ] Complete a full source inventory and dependency map, including the current fleet backup implementation and every UI operation that invokes it.
+- [x] Inventory the full top-level package and domain subpackages, map the current fleet backup implementation, and identify the health/status path. A complete call-site/dependency graph for every UI operation is still pending.
 - [ ] Collect representative sanitized fixtures for registry, heartbeat, lifecycle status, backup manifest, import manifest, export manifest, and provider responses.
-- [ ] Identify the top three real performance or maintenance pain points before selecting a migration target.
+- [x] Identify benchmark candidates and separate source-confirmed costs from unmeasured hypotheses in `rust-migration-performance-audit.md`.
 
 ### Phase 1 - Rust core skeleton, no production call sites
 
@@ -322,4 +322,4 @@ Crosshair reference files inspected on `Roaring1/Crosshair:rust-port`:
 - `README.md`
 - `src/lib.rs`
 
-The source inventory above is deliberately explicit about what was and was not inspected. The fleet-backup implementation and full module dependency graph remain discovery work, not assumed facts.
+The source inventory above is deliberately explicit about what was and was not inspected. The fleet-backup implementation is now inspected in detail, and the top-level package subdirectories/tests are inventoried. A complete per-call-site dependency graph, all UI-to-worker routes, and sanitized compatibility fixtures remain discovery work, not assumed facts. Performance findings and a benchmark plan are in `docs/development/rust-migration-performance-audit.md`.
