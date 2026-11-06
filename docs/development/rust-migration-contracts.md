@@ -254,6 +254,23 @@ It also checks pack identity/version ordering, downgrades, stable/beta/RC channe
 
 **Rust boundary:** the normalized plan decision could be a later candidate after the disk inventory and version evidence are supplied as an immutable input. Download, extraction, stage, apply, receipt and rollback remain outside the first Rust core.
 
+
+
+### 2.7.1 Pack-update and world-mutation effect/lock contract
+
+The shared operation lock is an OS-level inter-process lock, not a Python-only mutex: `fleet_operation_lock()` opens `~/.local/share/crucible-backups/fleet-operation.lock` with no-follow semantics and takes non-blocking exclusive `flock`. A second process receives `BackupAlreadyRunning` rather than capturing or mutating a partially-swapped tree. The lock serializes scheduled/manual fleet backup with pack updates and destructive world operations.
+
+Current production call-site coverage is incomplete:
+
+- Normal pack-update apply is protected in both GUI and CLI. Each outer lock spans the mandatory complete fleet checkpoint and `apply_update()`. The backup callback calls `run_backup(operation_lock_held=True)` to avoid nested acquisition.
+- GUI and CLI rollback call `rollback_update()` without taking the operation lock; the helper itself does not acquire it. Rollback renames the live server root and restores a prior tree, so a concurrent backup can observe an intermediate/missing root.
+- GUI and CLI previous-install pruning call `prune_previous_installs()` without the lock; the helper itself does not acquire it. A concurrent rollback may be restoring the same previous tree.
+- World swap/reset/wipe workers and full-server restore use the lock. The visible Worlds-tab pre-swap cleanup button does not: it directly calls `BackupManager.prune_pre_swap_dirs()`. A separate worker cleanup branch would checkpoint and check stopped state, but the visible button does not dispatch through that branch.
+
+This contract must be closed before any Rust implementation owns or accelerates these effects. Every effect must have one clear lock owner and explicit ownership convention. Do not acquire the same non-reentrant OS lock again from inside an outer transaction. Add cross-process contention tests for rollback, prune, and pre-swap cleanup and verify that a lock conflict produces no rename, delete, or partial registry/filesystem change.
+
+The live pack-update blocker also needs a stronger process observation: `_update_safety_blocker()` rechecks the tmux session and the configured IPv4 listening port before the backup and again before the live rename, but it does not query the instance's unmanaged Java process association. If tmux is absent, `probe_running()` is false; the port guard catches an ordinary bound server, but it is not proof that no JVM is still using the folder during early startup or shutdown. The same applies to rollback. Require `ProcessScanResult::Complete(no match)` in addition to the current tmux/port checks before a live directory rename. Matching PIDs or an incomplete process scan must block.
+
 ### 2.8 Fleet-backup generation contract
 
 The current fleet backup generation schema is **1**, with fixed two-generation retention. A generation manifest includes at least:
