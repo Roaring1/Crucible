@@ -124,9 +124,19 @@ class InfoTab(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # QScrollArea's viewport and child QWidget otherwise use the platform
+        # palette (white on some KDE/Qt styles), producing a bright rectangle
+        # inside Crucible's graphite Diagnostics page.
+        scroll.setStyleSheet(
+            f"QScrollArea {{ background: {theme.BASE}; border: none; }} "
+            f"QScrollArea > QWidget > QWidget {{ background: {theme.BASE}; }}"
+        )
+        scroll.viewport().setStyleSheet(f"background: {theme.BASE};")
         outer.addWidget(scroll)
 
         container = QWidget()
+        container.setAutoFillBackground(True)
+        container.setStyleSheet(f"background: {theme.BASE};")
         scroll.setWidget(container)
 
         self._layout = QVBoxLayout(container)
