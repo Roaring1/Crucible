@@ -154,7 +154,25 @@ The safety ordering is important:
 
 **Rust boundary:** pure state-transition eligibility/classification is a candidate. Heartbeat persistence, atomic publication, Linux boot-ID reads, tmux queries, and startup orchestration are adapters. Do not move all of `HeartbeatStore` into a Rust library before the failure and durability semantics have fixture coverage.
 
-### 2.4 World-start summary contract
+### 2.4 Watchdog poll snapshot contract
+
+The current watchdog calls `has-session` and `list-panes` separately for each watched instance. A proposed batch adapter may return one row per registered instance:
+
+- exact session observation: `present`, `absent`, or `unknown`;
+- pane observation when present: the current-command string, or `unknown` if the batch could not observe it;
+- batch-level failure detail, including tmux unavailable, timeout, malformed output, or partial observation.
+
+This is an adapter snapshot, not a new source of process truth. Preserve the existing two-consecutive-miss crash rule:
+- unknown session query does not increment the miss count;
+- absent session increments the miss count;
+- present session requires a reliable Java foreground observation;
+- pane unknown does not increment the Java miss count;
+- a wrapper/shell in the current pane is distinct from Java foreground;
+- pending `stop_requested` heartbeat remains disarmed, and an owner-requested Stop is never reinterpreted as a crash or automatic restart.
+
+A batched `list-panes -a -F` design must match the exact per-session/current-window/first-pane behavior of the existing `list-panes -t =session:` command. Do not assume "active pane" is equivalent to the first row the existing code reads. Golden fixtures should cover two or more sessions, multiple windows per session, multiple panes in the current window, absent sessions, a wrapper shell, tmux timeout, pane-query error and malformed output.
+
+### 2.5 World-start summary contract
 
 `WorldStartSummary` is an immutable point-in-time result with fields:
 
@@ -193,7 +211,7 @@ This is a useful domain model, but the current `inspect_world_start_state()` is 
 - a Python/Qt adapter that displays the summary and asks the owner;
 - the existing Python lifecycle path that revalidates status and then starts the server.
 
-### 2.5 Server properties and configuration validation
+### 2.6 Server properties and configuration validation
 
 `properties.py` contains a version-aware schema (`PropSpec`), parsed document model (`PropertiesDoc`), issues (`PropIssue`) and repair results (`RepairResult`).
 
@@ -207,7 +225,7 @@ This domain has important compatibility behavior:
 
 **Potential core slice:** parse a supplied property text buffer into an ordered representation, validate against an explicit Minecraft version, and return structured issues/fixes. Keep file backup, diff, atomic save and owner confirmation in Python until compatibility tests are complete.
 
-### 2.6 Pack-update plan contract
+### 2.7 Pack-update plan contract
 
 `UpdatePlan` contains:
 - current `PackIdentity`
@@ -228,7 +246,7 @@ It also checks pack identity/version ordering, downgrades, stable/beta/RC channe
 
 **Rust boundary:** the normalized plan decision could be a later candidate after the disk inventory and version evidence are supplied as an immutable input. Download, extraction, stage, apply, receipt and rollback remain outside the first Rust core.
 
-### 2.7 Fleet-backup generation contract
+### 2.8 Fleet-backup generation contract
 
 The current fleet backup generation schema is **1**, with fixed two-generation retention. A generation manifest includes at least:
 - status and generation ID
@@ -243,7 +261,7 @@ Each copied file record carries a normalized relative path, size, SHA-256, sourc
 
 This is a critical on-disk compatibility contract. Before any Rust work touches backups, capture full sanitized manifests, old/new generation pairs with hard-link reuse, and failure-state fixtures. The first Rust slice must not write or restore generations.
 
-### 2.8 Export/share/provider contracts
+### 2.9 Export/share/provider contracts
 
 The client-export workflow intentionally separates:
 1. input inventory/fingerprint;
