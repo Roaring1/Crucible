@@ -116,9 +116,21 @@ Worker classes are generally small Qt adapters that call the existing synchronou
 - WorldTab workers perform world-size scans and checkpointed swap/reset/wipe/cleanup.
 - Add/import, mod search/icon/resolve/install, modpack install, server creation/installation, client export, downloads, pack update, player avatar, and share upload each use bounded Qt worker patterns.
 
-The shared `connect_thread_cleanup()` waits until the native QThread has actually stopped before releasing feature state. This exists because dropping a Python QThread wrapper after a timed wait caused a real process-abort class of bug. Any future FFI callback or Rust worker must preserve QObject/thread lifetime guarantees, not merely return the right value.
+The shared `connect_thread_cleanup()` waits until the native QThread has actually stopped before releasing feature state. This exists because dropping a Python QThread wrapper after a timed wait caused a real process-abort class of bug. Any future FFI callback or Rust worker must preserve QObject/thread lifetime guarantees, not merely return the right value. Not every operation uses a permanent worker: `_run_tmux()` creates a short-lived QThread per command; the main health, log-watcher and watchdog workers persist; world-start inspections use tracked short-lived QThreads; Copy IP uses a daemon Python thread. These lifetimes and frequencies should be preserved/benchmarked individually rather than replaced by one generic Rust worker.
 
-**Important distinction:** tabs defer some expensive *data loading* until first view, but `ui/tabs/__init__.py` imports all ten tab modules at module import time, and `instance_panel.py` imports the tab package. Thus tab-data laziness does not mean tab-module import laziness. Measure cold GUI import/startup before considering lazy module loading.
+**Important distinction:** tabs defer some expensive *data loading* until first view, but `ui/tabs/__init__.py` imports all ten tab modules at module import time, and `instance_panel.py` imports the tab package. The InstancePanel then constructs eight tab widget instances immediately in `_build_ui()` and adds them to the QTabWidget; it does not lazily instantiate a widget when the tab is first selected. Thus neither tab-module imports nor widget construction are lazy. A meaningful startup optimization would have to defer both class imports and widget construction while retaining the current page-navigation, object-lifetime, and worker semantics. Measure before taking on that UI refactor.
+
+
+
+## 2.8 Import-order and dependency-cycle observations
+
+A line-level import audit distinguishes the following:
+
+- `download_http.py` imports the provider adapters only inside request construction paths. `curseforge.py` imports the Modrinth adapter at module load, but imports shared `download_http` request helpers only inside its request function. Modrinth also imports download helpers, CurseForge, and `versions.py` inside the functions that need them; `versions.py` imports Modrinth at module load and imports CurseForge only inside provider-specific version functions. This is a deliberately deferred dependency knot, not evidence of a top-level `download_http ↔ curseforge ↔ modrinth ↔ versions` import-time cycle.
+- `serverloader.py` imports Prism only inside the fresh-server workflow; `prism.py` imports pack-update detection inside a detection helper and imports serverloader only when optional server installation is requested. `pack_update.py` imports Prism's archive extraction helper locally inside the apply-update path (with an explicit comment that this avoids a cycle).
+- Package facades intentionally use lazy attributes for selected exports: `crucible.data.BackupManager`, `crucible.process.LogWatcher`, and `crucible.process.Watchdog`.
+
+These local imports reduce module initialization coupling but make first-use latency and import order path-dependent. A Rust migration should not flatten these dependencies into a single giant crate or move provider-specific logic into core types. Capture import-time and first-use profiles for the actual command path before trying to normalize them. Preserve lazy boundaries where they prevent optional Qt/network/provider modules from loading for unrelated CLI operations.
 
 ## 3. Important end-to-end flows
 
@@ -296,7 +308,7 @@ The following list was generated from the recursive tree at the recorded `main` 
 
 ## 11. Current Phase 0 gaps
 
-The source inventory is now complete by file path, and the principal runtime flows have been traced. Remaining discovery before choosing production Rust scope:
+The source inventory is now complete by file path, principal runtime flows and the largest deferred dependency knots have been traced. Remaining discovery before choosing production Rust scope:
 
 1. Finish per-symbol call-site mapping for every candidate module, especially the UI-to-worker edges and all import/export/backup callers.
 2. Build sanitized, representative fixtures for registry, heartbeat, lifecycle observations, world-start summaries, fleet manifests, import receipts, export manifests, catalog records, and provider responses.
