@@ -57,6 +57,20 @@ Top-level imports include the instance manager/model, world-start inspection, cr
 
 The data package exports `ServerInstance` and `InstanceManager` at import time and lazily resolves `BackupManager` through `__getattr__`. Preserve that lazy import behavior if the package is reorganized. The model and registry types are strong candidates for stable cross-language contracts, but they must not be redesigned solely to look more idiomatic in Rust.
 
+
+
+### 2.2.1 The instance model is a mixed domain/filesystem object
+
+`ServerInstance` is not a pure data-transfer object. Its stable core is the registry identity and metadata contract:
+
+- `id`, `path`, `name`, `version`, `pack_source`, Minecraft/loader versions, launch args, tmux session, watchdog preference, created/last-started timestamps, FML prompt choice, and `extra` unknown fields.
+- `to_dict()` and `from_dict()` preserve forward-compatible unknown registry keys through `extra`, normalize invalid FML prompt values to the safe `ask` default, and retain legacy defaults for missing fields.
+- `_derive_session_name()`, memory token parsing/rewriting, loader/version normalization helpers, and TPS command selection are candidates for pure domain functions once fixture behavior is frozen.
+
+The same class also performs filesystem and host queries: validate paths, find launch scripts/logs, count/read mods, inspect world directories, read `server.properties`, inspect EULA, search launcher files, discover Java, and compute world sizes. `set_eula_accepted()` writes a file; `set_memory_mb()` only updates the in-memory Java argument string until the caller persists the model.
+
+This is a key migration boundary: do not port the whole `ServerInstance` class as if it were a clean Rust struct. Separate (a) the versioned registry/domain record, (b) pure parsing/classification helpers, and (c) filesystem/process adapters. The public Python object can continue to be the compatibility facade while these components are gradually extracted.
+
 ### 2.3 Process and host adapters
 
 - `tmux_manager.py`: command execution, exact tmux targets, session/process/readiness probes, start/stop/send/attach, status map.
