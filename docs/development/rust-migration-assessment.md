@@ -69,13 +69,13 @@ The source installer stages an installation under `~/.local/share/crucible`, exp
 - `crucible/data/instance_model.py` defines the server-instance model and its validation/serialization behavior.
 - `crucible/process/tmux_manager.py` centralizes tmux process/session operations.
 - `crucible/process/crash_recovery.py` persists heartbeat state to distinguish a host crash from an intentional stop.
-- `crucible/data/backup_manager.py` retains compatibility for per-instance world archives and safe world swaps; `crucible/data/fleet_backup.py` implements the current fleet-wide immutable generation system, incremental hard-link reuse, verification, retention, and legacy-source migration. The latter is now mapped in the performance audit; it remains a high-risk subsystem, not an early port target.
+- `crucible/data/backup_manager.py` retains compatibility for per-instance world archives and safe world swaps; `crucible/data/fleet_backup.py` implements the current fleet-wide immutable generation system, incremental hard-link reuse, verification, retention, and legacy-source migration. It is mapped in the source and performance audits; it remains a high-risk subsystem, not an early port target.
 - `crucible/mods/modrinth.py` contains Modrinth HTTP/API behavior and typed-ish result records. Network/provider behavior should remain behind adapters.
 - `crucible/exporters/client_export.py` implements a large client-pack export pipeline with content hashing, deterministic input fingerprints, archive construction, and manifest data.
 - `crucible/importers/prism.py` is the Prism/MultiMC and modpack import path.
 - `crucible/ui/tabs/` and related dialogs render domain state and collect owner decisions. They should not become the place where Rust business rules are duplicated.
 
-The top-level package subdirectories and test inventory have now been enumerated, and the fleet-backup implementation, status sampling path, and resource sampling path have been inspected in detail. This is still not a complete per-symbol dependency graph or a trace of every UI-to-worker call path. Those call paths and the sanitized compatibility fixture corpus remain Phase 0 work.
+The full Python file inventory (80 source files) and test/support inventory (62 files) have now been enumerated. The fleet-backup implementation, status/resource sampling, GUI worker structure, importer/exporter boundaries, and principal end-to-end flows have been inspected. A complete per-symbol dependency graph and sanitized compatibility fixture corpus remain Phase 0 work; see `rust-migration-source-audit.md`.
 
 ### 3.3 Persistent state and compatibility surfaces
 
@@ -235,9 +235,9 @@ Each phase is a separate reviewable change. Stop and reassess when a phase expos
 
 - [x] Inspect README, package/build metadata, CI, primary entry points, registry, instance model, tmux manager, crash recovery, backup manager, importer/exporter, provider module, and Crosshair Rust reference.
 - [x] Record current architecture and high-risk invariants.
-- [x] Inventory the full top-level package and domain subpackages, map the current fleet backup implementation, and identify the health/status path. A complete call-site/dependency graph for every UI operation is still pending.
-- [ ] Collect representative sanitized fixtures for registry, heartbeat, lifecycle status, backup manifest, import manifest, export manifest, and provider responses.
-- [x] Identify benchmark candidates and separate source-confirmed costs from unmeasured hypotheses in `rust-migration-performance-audit.md`.
+- [x] Enumerate all 80 Python source files and 62 test/support files; map the main package boundaries, fleet backup, status/resource sampling, principal worker routes and main end-to-end flows. A complete per-symbol dependency graph is still pending.
+- [ ] Collect representative sanitized fixtures for registry, heartbeat, lifecycle status, world-start summaries, backup manifest, import receipts, export manifest, catalog records, and provider responses.
+- [x] Identify benchmark candidates and separate source-confirmed costs from unmeasured hypotheses in `rust-migration-performance-audit.md`, including repeated procfs scans, eager tab-module imports, client-export content passes, and backup I/O.
 
 ### Phase 1 - Rust core skeleton, no production call sites
 
@@ -294,7 +294,7 @@ The discovery phase is complete only when:
 
 ## 10. Verified source references
 
-The following files were inspected on the `main` baseline for this assessment:
+The following files were inspected on the `main` baseline for this assessment (the complete 80-file inventory and runtime flow details are in `rust-migration-source-audit.md`):
 
 - `README.md`
 - `pyproject.toml`
@@ -322,4 +322,4 @@ Crosshair reference files inspected on `Roaring1/Crosshair:rust-port`:
 - `README.md`
 - `src/lib.rs`
 
-The source inventory above is deliberately explicit about what was and was not inspected. The fleet-backup implementation is now inspected in detail, and the top-level package subdirectories/tests are inventoried. A complete per-call-site dependency graph, all UI-to-worker routes, and sanitized compatibility fixtures remain discovery work, not assumed facts. Performance findings and a benchmark plan are in `docs/development/rust-migration-performance-audit.md`.
+The source inventory above is deliberately explicit about what was and was not inspected. The fleet-backup implementation is now inspected in detail, and the top-level package subdirectories/tests are inventoried. A complete per-call-site dependency graph, all UI-to-worker routes, and sanitized compatibility fixtures remain discovery work, not assumed facts. Performance findings and a benchmark plan are in `docs/development/rust-migration-performance-audit.md`. The full module inventory and end-to-end runtime map are in `docs/development/rust-migration-source-audit.md`.
