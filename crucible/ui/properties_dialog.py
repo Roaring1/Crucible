@@ -67,7 +67,7 @@ class PropertiesFixDialog(QDialog):
         outer.addWidget(title)
 
         if not issues:
-            good = QLabel("✓  Everything looks good — no problems found in server.properties.")
+            good = QLabel("No problems found in server.properties.")
             good.setStyleSheet(f"color: {theme.GREEN}; font-size: 13px;")
             good.setWordWrap(True)
             outer.addWidget(good)
@@ -79,7 +79,7 @@ class PropertiesFixDialog(QDialog):
 
         if errors:
             warn = QLabel(
-                f"⚠  {len(errors)} setting(s) will crash the server before it starts "
+                f"Error: {len(errors)} setting(s) will crash the server before it starts "
                 "(this is the cause of “NumberFormatException: For input string”). "
                 "Pick a replacement below and click Apply fixes."
             )
@@ -111,12 +111,12 @@ class PropertiesFixDialog(QDialog):
         issues.sort(key=lambda i: (0 if i.is_error else 1, i.key))
 
         for row, issue in enumerate(issues):
-            dot = QLabel("✗" if issue.is_error else "—")
+            dot = QLabel("ERROR" if issue.is_error else "WARNING")
             dot.setStyleSheet(
                 f"color: {theme.RED if issue.is_error else theme.YELLOW}; "
-                "font-weight: 700; font-size: 14px;"
+                "font-weight: 700; font-size: 10px;"
             )
-            dot.setFixedWidth(16)
+            dot.setFixedWidth(52)
             grid.addWidget(dot, row, 0, Qt.AlignmentFlag.AlignTop)
 
             text = QVBoxLayout()
@@ -161,10 +161,10 @@ class PropertiesFixDialog(QDialog):
         # Preferred suggestion first.
         if issue.kind == "unknown_key":
             if issue.suggestion:
-                choices.append((f"Rename → {issue.suggestion}", ("rename", issue.suggestion)))
+                choices.append((f"Rename to {issue.suggestion}", ("rename", issue.suggestion)))
             for opt in issue.options:
                 if opt != issue.suggestion:
-                    choices.append((f"Rename → {opt}", ("rename", opt)))
+                    choices.append((f"Rename to {opt}", ("rename", opt)))
             choices.append(("Delete this line", ("delete", None)))
         elif issue.kind == "duplicate_key":
             choices.append(("Leave as-is (last value wins)", ("keep", None)))

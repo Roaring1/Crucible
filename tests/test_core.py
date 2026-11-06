@@ -284,11 +284,14 @@ class TmuxCommandTests(unittest.TestCase):
         """tmux exit 1 is its stable API for no server/sessions; stderr text
         varies by version and locale and must not control Start availability."""
         import subprocess
-        with patch.object(
-            self.tm, "_run",
-            return_value=subprocess.CompletedProcess(
-                [], 1, "", "some distro-specific untranslated diagnostic\n"
+        with (
+            patch.object(
+                self.tm, "_run",
+                return_value=subprocess.CompletedProcess(
+                    [], 1, "", "some distro-specific untranslated diagnostic\n"
+                ),
             ),
+            patch.object(self.tm, "_unmanaged_pids", return_value=[]),
         ):
             self.assertEqual(self.tm.list_sessions(), [])
             self.assertEqual(
@@ -304,12 +307,15 @@ class TmuxCommandTests(unittest.TestCase):
         not 'unknown' -- otherwise every instance gets stuck showing
         'Status check unavailable' and the Start button stays disabled."""
         import subprocess
-        with patch.object(
-            self.tm, "_run",
-            return_value=subprocess.CompletedProcess(
-                [], 1, "",
-                "error connecting to /tmp/tmux-1000/default (No such file or directory)\n",
+        with (
+            patch.object(
+                self.tm, "_run",
+                return_value=subprocess.CompletedProcess(
+                    [], 1, "",
+                    "error connecting to /tmp/tmux-1000/default (No such file or directory)\n",
+                ),
             ),
+            patch.object(self.tm, "_unmanaged_pids", return_value=[]),
         ):
             self.assertEqual(self.tm.list_sessions(), [])
             self.assertEqual(
@@ -424,9 +430,12 @@ class TmuxCommandTests(unittest.TestCase):
 
     def test_removal_probe_allows_confirmed_absent_session(self):
         import subprocess
-        with patch.object(
-            self.tm, "_run",
-            return_value=subprocess.CompletedProcess([], 1, "", "can't find session"),
+        with (
+            patch.object(
+                self.tm, "_run",
+                return_value=subprocess.CompletedProcess([], 1, "", "can't find session"),
+            ),
+            patch.object(self.tm, "_unmanaged_pids", return_value=[]),
         ):
             safe, _ = self.tm.safe_to_remove(self.inst)
         self.assertTrue(safe)
@@ -592,6 +601,7 @@ class TmuxCommandTests(unittest.TestCase):
         with (
             patch.object(self.tm, "tmux_available", return_value=True),
             patch.object(self.tm, "list_sessions", return_value=["gtnh-old"]),
+            patch.object(self.tm, "_unmanaged_pids", return_value=[]),
         ):
             result = self.tm.status_map([self.inst, other])
         self.assertEqual(result[self.inst.id], "stopped")

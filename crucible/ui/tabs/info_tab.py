@@ -259,14 +259,14 @@ class InfoTab(QWidget):
             sep.setStyleSheet(f"color: {theme.SURFACE1};")
             self._layout.addWidget(sep)
 
-            warn_title = QLabel("⚠  Validation Issues")
+            warn_title = QLabel("Validation issues")
             warn_title.setStyleSheet(
                 f"color: {theme.YELLOW}; font-size: 12px; font-weight: 600;"
             )
             self._layout.addWidget(warn_title)
 
             for p in problems:
-                w = QLabel(f"  · {p}")
+                w = QLabel(f"- {p}")
                 w.setStyleSheet(f"color: {theme.YELLOW}; font-size: 12px;")
                 w.setWordWrap(True)
                 self._layout.addWidget(w)

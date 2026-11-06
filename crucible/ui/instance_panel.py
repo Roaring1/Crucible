@@ -247,7 +247,7 @@ class InstancePanel(QWidget):
         h_layout.addWidget(self._status_label)
 
         # External IP copy button
-        self._btn_ip = QPushButton("⧉  Copy IP")
+        self._btn_ip = QPushButton("Copy IP")
         self._btn_ip.setFixedHeight(28)
         self._btn_ip.setFixedWidth(90)
         self._btn_ip.setAccessibleName("Copy external server IP address")
@@ -272,8 +272,8 @@ class InstancePanel(QWidget):
 
         # Manual lifecycle is deliberately explicit: Stop, confirm Stopped,
         # then Start. There is no hidden one-click Restart path.
-        self._btn_start = QPushButton("▶  Start")
-        self._btn_stop = QPushButton("■  Stop")
+        self._btn_start = QPushButton("Start")
+        self._btn_stop = QPushButton("Stop")
         self._btn_start.setObjectName("PrimaryButton")
         self._btn_start.setAccessibleName("Start selected server")
         self._btn_stop.setObjectName("DangerButton")
@@ -341,7 +341,7 @@ class InstancePanel(QWidget):
 
         self._more_tabs_button = QToolButton()
         self._more_tabs_button.setObjectName("MoreTabsButton")
-        self._more_tabs_button.setText("More ▾")
+        self._more_tabs_button.setText("More")
         self._more_tabs_button.setAccessibleName("More workspace tabs")
         self._more_tabs_button.setMinimumHeight(44)
         self._more_tabs_button.setMinimumWidth(84)
@@ -469,10 +469,10 @@ class InstancePanel(QWidget):
                 QApplication.clipboard().setText(addr)
             except Exception:
                 pass
-            self._btn_ip.setText("✓  Copied!")
+            self._btn_ip.setText("Copied!")
             self._btn_ip.setToolTip(f"Copied {addr} to clipboard")
         else:
-            self._btn_ip.setText("✗  Failed")
+            self._btn_ip.setText("Copy failed")
             self._btn_ip.setToolTip(
                 "Could not fetch your public IP (no internet?). "
                 "Players on your LAN can still use your local IP."
@@ -487,7 +487,7 @@ class InstancePanel(QWidget):
             and self._instance is not None
             and self._instance.id == instance_id
         ):
-            self._btn_ip.setText("⧉  Copy IP")
+            self._btn_ip.setText("Copy IP")
 
     def _show_empty(self) -> None:
         self._instance = None
@@ -544,7 +544,7 @@ class InstancePanel(QWidget):
         self._tps_timer.stop()
         self._ip_request_generation += 1
         self._btn_ip.setEnabled(True)
-        self._btn_ip.setText("⧉  Copy IP")
+        self._btn_ip.setText("Copy IP")
 
         self._instance = instance
         self._set_identity_icon(instance)
@@ -763,18 +763,18 @@ class InstancePanel(QWidget):
             self._tps_timer.stop()
             self.status_changed.emit(instance_id, "stopped")
             self._console._append_system(
-                "⚠  Server session vanished unexpectedly — possible crash"
+                "Warning: server session vanished unexpectedly - possible crash"
             )
 
     def _on_auto_restarted(self, instance_id: str) -> None:
         if self._instance and self._instance.id == instance_id:
             self._update_status_display("starting")
             self.status_changed.emit(instance_id, "running")
-            self._console._append_system("♻  Auto-restarted after crash")
+            self._console._append_system("Auto-restarted after crash")
 
     def _on_restart_failed(self, instance_id: str, reason: str) -> None:
         if self._instance and self._instance.id == instance_id:
-            self._console._append_system(f"✗  Auto-restart failed: {reason}")
+            self._console._append_system(f"Auto-restart failed: {reason}")
 
     # Log watcher lifecycle
 
@@ -985,7 +985,7 @@ class InstancePanel(QWidget):
         current = self._tabs.currentIndex() if index is None else index
         selected_label = self._more_tab_labels.get(current)
         self._more_tabs_button.setText(
-            f"More: {selected_label} ▾" if selected_label else "More ▾"
+            f"More: {selected_label}" if selected_label else "More"
         )
         for target, action in self._more_tab_actions.items():
             action.setChecked(target == current)
@@ -1242,7 +1242,7 @@ class InstancePanel(QWidget):
             else:
                 QMessageBox.critical(self, "Could not start server", msg)
                 self._btn_start.setEnabled(True)
-            self._btn_start.setText("▶  Start")
+            self._btn_start.setText("Start")
 
         self._run_tmux(lambda: self._tmux.start(inst, fml_query_result=fml_choice), _on_done)
 
@@ -1297,7 +1297,7 @@ class InstancePanel(QWidget):
                 self._update_status_display("stopped")
                 self.status_changed.emit(inst.id, "stopped")
                 self.watchdog_stop_completed_requested.emit(inst.id)
-                self._btn_stop.setText("■  Stop")
+                self._btn_stop.setText("Stop")
                 self._btn_stop.setEnabled(False)
                 return
 
@@ -1314,7 +1314,7 @@ class InstancePanel(QWidget):
                 self.action_feedback_requested.emit(
                     "Could not stop server", msg, True
                 )
-                self._btn_stop.setText("■  Stop")
+                self._btn_stop.setText("Stop")
                 self._btn_stop.setEnabled(
                     self._current_status in ("running", "starting")
                 )
@@ -1341,7 +1341,7 @@ class InstancePanel(QWidget):
                             ),
                         )
                         QMessageBox.critical(self, "Force-kill failed", msg2)
-                    self._btn_stop.setText("■  Stop")
+                    self._btn_stop.setText("Stop")
                     self._btn_stop.setEnabled(
                         self._current_status in ("running", "starting")
                     )
@@ -1356,7 +1356,7 @@ class InstancePanel(QWidget):
                         inst.auto_restart if stop_state.get("java_up") is True else False
                     ),
                 )
-                self._btn_stop.setText("■  Stop")
+                self._btn_stop.setText("Stop")
                 self._btn_stop.setEnabled(
                     self._current_status in ("running", "starting")
                 )

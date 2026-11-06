@@ -53,10 +53,10 @@ _IMPORTANT: dict[str, list[str]] = {
 }
 
 # Keys where an ill-timed edit can corrupt a world or break a running server.
-# Maps key -> short danger note shown as a ⚠ tooltip on the key cell.
+# Maps key -> short danger note shown as a tooltip on the key cell.
 _DANGEROUS_KEYS: dict[str, str] = {
     "level-name": (
-        "⚠ Changing this makes the server create/load a DIFFERENT world folder.\n"
+        "Warning: changing this makes the server create/load a DIFFERENT world folder.\n"
         "Your existing world data is NOT deleted — you'd need to rename the folder\n"
         "on disk to match the new name before restarting.\n"
         "To switch between saved worlds safely, use the World tab's Swap action\n"
@@ -64,11 +64,11 @@ _DANGEROUS_KEYS: dict[str, str] = {
         "can automatically roll back if anything goes wrong."
     ),
     "level-seed": (
-        "⚠ Seed only affects world generation for NEW chunks.\n"
+        "Warning: seed only affects world generation for NEW chunks.\n"
         "Changing it mid-world will cause visible terrain seams at unexplored borders."
     ),
     "online-mode": (
-        "⚠ Switching online-mode changes how player UUIDs are computed.\n"
+        "Warning: switching online-mode changes how player UUIDs are computed.\n"
         "Existing player data files (UUID-named .dat files) will become orphaned.\n"
         "Restart required."
     ),
@@ -172,7 +172,7 @@ class ConfigTab(QWidget):
 
         # Legend
         legend = QLabel(
-            f"<span style='color:{theme.ACCENT}'>■</span> Important properties   "
+            f"<span style='color:{theme.ACCENT}; font-weight:600'>Important properties</span>   "
             f"<span style='color:{theme.GREEN}'>true</span> / "
             f"<span style='color:{theme.RED}'>false</span> highlighted   "
             "Double-click a value to edit"
@@ -202,7 +202,7 @@ class ConfigTab(QWidget):
             key_item = self._table.item(row, 0)
             if not key_item:
                 continue
-            raw_key = key_item.text().lstrip("⚠ ").strip()
+            raw_key = key_item.text().strip()
             if row in self._bool_rows:
                 edited[raw_key] = self._bool_rows[row].currentText()
             else:
@@ -250,7 +250,7 @@ class ConfigTab(QWidget):
         if not props_path.exists():
             self._data = OrderedDict()
             self._table.setRowCount(0)
-            self._warn.setText("⚠  server.properties not found — has the server been started at least once?")
+            self._warn.setText("Warning: server.properties not found - has the server been started at least once?")
             self._warn.show()
             self._status.setText("")
             return
@@ -300,7 +300,7 @@ class ConfigTab(QWidget):
             )
             danger_note = _DANGEROUS_KEYS.get(key)
             if danger_note:
-                key_item.setText(f"⚠ {key}")
+                key_item.setText(key)
                 key_item.setToolTip(danger_note)
                 key_item.setForeground(QColor(theme.YELLOW))
             elif group:
@@ -424,7 +424,7 @@ class ConfigTab(QWidget):
 
     def _set_status_saved(self) -> None:
         self._status.setText(
-            "✓  Saved — restart the server for changes to take effect"
+            "Saved - restart the server for changes to take effect"
         )
         self._status.setStyleSheet(
             f"color: {theme.GREEN}; font-size: 11px; font-weight: 600;"

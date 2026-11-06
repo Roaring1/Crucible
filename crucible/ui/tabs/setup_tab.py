@@ -17,7 +17,18 @@ from __future__ import annotations
 
 import threading
 
-from PyQt6.QtCore import QObject, QEvent, QPoint, Qt, QThread, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    QUrl,
+    pyqtSignal,
+    pyqtSlot,
+)
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
@@ -38,6 +49,7 @@ from ...data.instance_manager import InstanceManager
 from ...data.instance_model import ServerInstance
 from ...process.resource_monitor import system_memory_mb
 from .. import theme
+from ..icons import local_icon
 from ..thread_lifecycle import connect_thread_cleanup
 
 
@@ -240,19 +252,21 @@ class SetupTab(QWidget):
         actions = QHBoxLayout()
         actions.setSpacing(8)
 
-        open_btn = QPushButton("📁  Open server folder")
+        open_btn = QPushButton("Open server folder")
+        open_btn.setIcon(local_icon("folder-open"))
+        open_btn.setIconSize(QSize(16, 16))
         open_btn.setAccessibleName("Open the selected server folder")
         open_btn.clicked.connect(self._open_folder)
         actions.addWidget(open_btn)
 
-        ip_btn = QPushButton("⧉  Copy connection address")
+        ip_btn = QPushButton("Copy connection address")
         ip_btn.setAccessibleName("Copy the selected server connection address")
         ip_btn.setToolTip("Copies your public IP and port so friends can join")
         ip_btn.clicked.connect(self._copy_address)
         self._ip_btn = ip_btn
         actions.addWidget(ip_btn)
 
-        refresh_btn = QPushButton("↻  Re-check")
+        refresh_btn = QPushButton("Re-check")
         refresh_btn.setAccessibleName("Re-check selected server readiness")
         refresh_btn.clicked.connect(self._rebuild)
         actions.addWidget(refresh_btn)
@@ -282,17 +296,18 @@ class SetupTab(QWidget):
         for row, item in enumerate(items):
             ok = item.get("ok")
             if ok is True:
-                icon, color = "✓", theme.GREEN
+                status_text, color = "READY", theme.GREEN
             elif ok is False:
-                icon, color = "✗", theme.RED
+                status_text, color = "ACTION", theme.RED
             else:
-                icon, color = "—", theme.YELLOW
+                status_text, color = "CHECK", theme.YELLOW
 
-            dot = QLabel(icon)
-            dot.setStyleSheet(f"color: {color}; font-size: 15px; font-weight: 700;")
-            dot.setFixedWidth(18)
-            dot.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-            grid.addWidget(dot, row, 0, Qt.AlignmentFlag.AlignTop)
+            status = QLabel(status_text)
+            status.setAccessibleName(f"{status_text.title()} readiness status")
+            status.setStyleSheet(f"color: {color}; font-size: 10px; font-weight: 700;")
+            status.setFixedWidth(54)
+            status.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+            grid.addWidget(status, row, 0, Qt.AlignmentFlag.AlignTop)
 
             text_col = QVBoxLayout()
             text_col.setSpacing(1)
@@ -341,7 +356,7 @@ class SetupTab(QWidget):
         sep.setStyleSheet(f"color: {theme.SURFACE1};")
         self._layout.addWidget(sep)
 
-        head = QLabel("🧠  Server memory (Java heap)")
+        head = QLabel("Server memory (Java heap)")
         head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
         self._layout.addWidget(head)
 
@@ -435,7 +450,7 @@ class SetupTab(QWidget):
 
         if xms_mb is None and xmx_mb is None:
             self._mem_status.setText(
-                "⚠ Could not find -Xms/-Xmx in this server's Java arguments -- "
+                "Warning: could not find -Xms/-Xmx in this server's Java arguments - "
                 "showing defaults. Saving will add them."
             )
             self._mem_status.setStyleSheet(f"color: {theme.YELLOW}; font-size: 11px;")
@@ -543,7 +558,7 @@ class SetupTab(QWidget):
 
         if self._mem_status is not None:
             self._mem_status.setText(
-                f"✓ Saved. Will apply next time this server starts "
+                f"Saved. Will apply next time this server starts "
                 f"(-Xms{xms_mb}M -Xmx{xmx_mb}M)."
             )
             self._mem_status.setStyleSheet(f"color: {theme.GREEN}; font-size: 11px;")
@@ -591,7 +606,7 @@ class SetupTab(QWidget):
         sep.setStyleSheet(f"color: {theme.SURFACE1};")
         self._layout.addWidget(sep)
 
-        head = QLabel("⬇  Download mods from pack")
+        head = QLabel("Download mods from pack")
         head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
         self._layout.addWidget(head)
 
@@ -613,7 +628,7 @@ class SetupTab(QWidget):
     def _add_fml_query_section(self, inst: ServerInstance) -> None:
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
         self._layout.addWidget(sep)
-        head = QLabel("🧩  Legacy Forge startup questions")
+        head = QLabel("Legacy Forge startup questions")
         head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
         self._layout.addWidget(head)
         info = QLabel("Older Forge/FML servers can pause before the world opens and ask for confirm or cancel. Crucible passes your choice to Java on the next GUI start. Continue can accept registry/world changes, so choose Ask every time if unsure.")
@@ -657,7 +672,7 @@ class SetupTab(QWidget):
         sep.setStyleSheet(f"color: {theme.SURFACE1};")
         self._layout.addWidget(sep)
 
-        head = QLabel("⬆  Modpack version")
+        head = QLabel("Modpack version")
         head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
         self._layout.addWidget(head)
 
@@ -965,9 +980,9 @@ class SetupTab(QWidget):
                 QApplication.clipboard().setText(addr)
             except Exception:
                 pass
-            self._ip_btn.setText(f"✓  Copied {addr}")
+            self._ip_btn.setText(f"Copied {addr}")
         else:
-            self._ip_btn.setText("✗  No internet — use local IP")
+            self._ip_btn.setText("No internet - use local IP")
         QTimer.singleShot(
             2500, lambda: self._reset_ip_button(generation, instance_id)
         )
@@ -978,7 +993,7 @@ class SetupTab(QWidget):
             and self._instance is not None
             and self._instance.id == instance_id
         ):
-            self._ip_btn.setText("⧉  Copy connection address")
+            self._ip_btn.setText("Copy connection address")
 
     def _download_mods(self) -> None:
         inst = self._instance
