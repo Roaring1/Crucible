@@ -255,6 +255,10 @@ Start/stop paths use the shared TmuxManager, exact instance/session targets, sta
 
 Do not split this state machine between Python and Rust. If a Rust core is used, it should initially return a pure eligibility/classification result from a caller-supplied snapshot; Python remains the only layer issuing tmux commands and presenting user confirmation.
 
+The per-action tmux polling is another explicit performance boundary. After `tmux new-session`, `TmuxManager.start()` calls `_verify_started()` with a six-second deadline and 250 ms interval. Each iteration checks the exit-marker file and then calls `probe_running()` unless the marker appeared. A healthy start therefore runs roughly 24 `tmux has-session` subprocesses over the six-second grace window before the method returns. Early exit is caught by the marker/session checks; any optimization must retain immediate-failure diagnostics and not report success if the session died.
+
+Graceful `TmuxManager.stop()` defaults to a 90-second timeout and 2-second polling interval. Each iteration calls `probe_running()`; while the tmux session persists, it calls `is_java_foreground()` and can send Ctrl-C to interrupt the GTNH wrapper's automatic-restart countdown. This can reach about 45 session probes plus up to 45 pane probes on the maximum-duration path. It is intentionally action-driven, not an idle poller, and its wrapper countdown behavior must not be removed. Benchmark only with isolated fake tmux responses or a disposable synthetic server, never by stopping the owner's live world.
+
 
 
 ### 3.2.1 Heartbeat and watchdog state are separate from live tmux status
