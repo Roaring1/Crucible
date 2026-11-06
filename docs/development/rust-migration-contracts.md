@@ -433,6 +433,19 @@ Crash parsing and candidate identification are read-only; quarantine and restore
 
 The Rust extraction candidate is limited to a pure CrashDiagnosis parser and JarIdentity/offender matching over immutable log text and supplied metadata. Keep log discovery, ZIP access, locks, filesystem mutation, backup coordination and user confirmation in Python.
 
+### 2.14 Registered-server file-effect boundary across CLI and Setup
+
+The command line and GUI are both supported front ends; neither may be allowed to bypass the shared effect policy.
+
+- The current CLI cmd_download_mods() writes indexed mod JARs without checking whether the server is stopped. ModsTab checks stopped once before opening the dialog; SetupTab's Download Mods action does not check at all. The actual worker only performs per-file temp/rename/hash handling and does not recheck process state or acquire a mod/fleet lock during the batch.
+- cmd_install_server() and SetupTab._install_server() call install_server_loader() on an existing registered server root without an action-time stopped check or fleet-operation lock. Vendor installers can write launcher files/libraries while a registered Java server may be running; a GUI-local worker state only disables Start in that same UI and does not coordinate a second process.
+- cmd_fix_properties --apply and SetupTab's PropertiesFixDialog rewrite server.properties without a common stopped check or fleet lock. PropertiesFixDialog only tries a one-time .bak copy and ignores backup-copy OSError, then publishes through PropertiesDoc.save(). The ordinary Start preflight is a separate path and is not a substitute for explicit repair actions.
+- cmd_accept_eula() and SetupTab._accept_eula() write eula.txt without a stopped check. Define whether this is allowed while running and give it one consistent effect path.
+- WorldTab seed edit performs a stopped check and a configuration guard before prompting, then atomically replaces server.properties, but does not acquire fleet_operation_lock(). This is safer than the unguarded Setup repair, but not serialized with a fleet snapshot.
+- CLI fix-loading quarantine/restore is governed by the separate 2.13 contract. Pack-index download and Modrinth dependency install share the mod-file effects in 2.12.
+
+The desired interface is a shared Python-side effect adapter invoked by both CLI and UI. It should acquire the appropriate OS-level operation lock, take a fresh complete process observation at the point of commit, validate current source/destination state, stage/verify outputs and then publish with explicit no-replace/rollback semantics. The owner confirmation and UI/CLI presentation remain in Python. Rust only supplies pure decisions/data transformations behind this adapter. A GUI's modal dialog, prior status check, or QThread does not constitute a cross-process lease.
+
 ## 3. Recommended first Rust core types and functions
 
 Do not begin by mirroring all Python classes one-for-one. The first Rust crate should model a small number of explicit, versioned values:
@@ -474,6 +487,7 @@ Create sanitized, small fixtures in the repository before writing a production R
 | Client export | Exact JAR hash; unknown/manual JAR; conflicting distribution decision; source mutates after review; scan incomplete; duplicate/unsafe ZIP member; manifest mismatch |
 | Provider/download | Same-host HTTPS redirect; HTTPS cross-host CDN redirect where permitted; HTTP/FTP downgrade redirect blocked; userinfo/unsafe port; oversized body; timeout; 401/403/429/5xx; missing/invalid digest; wrong digest; credential redaction; cancelled transfer; provider-disabled path before key/network |
 | Mod-file effects | Enabled/disabled same-name collision; no-replace rename; direct add/delete; exact duplicate vs different hash; nested/bundled guard; interrupted `mod-change.lock`; concurrent replace; fleet-backup overlap; server starts during dependency/download worker; process scan incomplete at commit; no-hash/short-size download; partial group failure and rollback after each publication |
+| Registered-server effect adapters | CLI and Setup/Mods tabs share the same stopped/process lease; server starts during transfer; fleet backup contention; install-server while live; properties repair while live; EULA write policy; seed edit while backup; publication no-replace and rollback |
 | Archive import | Prism temp-dir location; archive failure cleanup; duplicate normalized member paths; partial target contract; `.mrpack` missing/failed overrides; failed-write preservation of previous bytes; ratio policy differences; server-overrides precedence; target claim race; loader partial outcome; local folder copy with symlinks |
 | Share | Valid Gofile result; unsafe host/path; malformed optional MD5/size; mismatched size/MD5; source file replacement attempt; same-descriptor hash/stream mutation; cancellation before/during/final multipart boundary; source fingerprint stale; catalog changed after build; cache sidecar/archive mode and payload tamper; coverageComplete false; three approvals reset after source change; retry after ambiguous partial remote upload; local history schema/permissions/redaction |
 | CLI | Each of 32 subcommands; short/long options, defaults, hidden shortcut action, TTY and non-TTY Start confirmation, exit codes, stdout/stderr, registry/filesystem/tmux/network effects | Golden argv/output/result corpus for Python/Rust parity and installed-launcher smoke tests |
