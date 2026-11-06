@@ -20,7 +20,10 @@ def test_capture_ui_previews_writes_expected_pngs(tmp_path):
         env=env,
         capture_output=True,
         text=True,
-        timeout=25,
+        # Capturing 24 real Qt states can exceed 25s on a loaded CI runner,
+        # especially under newer Python runtimes. This is a slow QA artifact
+        # check, not a latency-sensitive unit test.
+        timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
