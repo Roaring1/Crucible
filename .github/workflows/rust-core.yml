@@ -32,6 +32,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+          rust-src-dir: rust/crucible-core
       - name: Check formatting
         run: cargo fmt --manifest-path rust/crucible-core/Cargo.toml -- --check
       - name: Run Rust unit tests
