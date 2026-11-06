@@ -144,6 +144,9 @@ def _verify(path: Path, item: DownloadItem) -> bool:
 def _download_one(item: DownloadItem, dest: Path, opener, timeout: int,
                   log: LogCb | None, cancel) -> None:
     """Download a single item to dest.  Raises on unrecoverable failure."""
+    if item.source == "curseforge":
+        from ..mods.curseforge import ensure_online_integration_enabled
+        ensure_online_integration_enabled()
     if item.error:
         raise RuntimeError(item.error)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -257,11 +260,21 @@ def _modrinth_items(index: dict) -> list[DownloadItem]:
     return items
 
 
-def _curseforge_items(manifest: dict, api_key: str) -> tuple[list[DownloadItem], list[str]]:
-    """Resolve only official API URLs; failures stay explicit per-file failures."""
+def _curseforge_items(manifest: dict, api_key: str | None = None) -> tuple[list[DownloadItem], list[str]]:
+    """Resolve only official API URLs; disabled fallback retains no remote lookup."""
     notes: list[str] = []
     items: list[DownloadItem] = []
-    opener = _opener() if api_key else None
+    from ..mods.curseforge import ensure_online_integration_enabled, get_api_key
+    from ..mods.modrinth import ModrinthError
+    disabled_message = ""
+    try:
+        ensure_online_integration_enabled()
+    except ModrinthError as exc:
+        disabled_message = str(exc)
+    if not disabled_message and api_key is None:
+        api_key = get_api_key()
+    api_key = api_key or ""
+    opener = _opener() if api_key and not disabled_message else None
     for entry in manifest.get("files", []) or []:
         if not isinstance(entry, dict):
             continue
@@ -275,7 +288,9 @@ def _curseforge_items(manifest: dict, api_key: str) -> tuple[list[DownloadItem],
         item = DownloadItem(name=f"curseforge-{project_id}-{file_id}.jar",
                             rel_path=f"mods/curseforge-{project_id}-{file_id}.jar",
                             source="curseforge", project_id=project_id, file_id=file_id)
-        if not api_key:
+        if disabled_message:
+            item.error = disabled_message
+        elif not api_key:
             item.error = "CurseForge requires your own approved API key. Download permitted files on the website or import an installed Prism instance."
         else:
             try:
@@ -351,9 +366,9 @@ def build_items(index_path: Path) -> tuple[list[DownloadItem], list[str]]:
         return _modrinth_items(data), notes
 
     if data.get("manifestType") == "minecraftModpack" or index_path.name == "manifest.json":
-        from ..mods.curseforge import get_api_key
-        api_key = get_api_key()
-        items, cf_notes = _curseforge_items(data, api_key)
+        # The manifest itself remains user input and may be parsed locally, but
+        # remote CurseForge resolution is gated inside _curseforge_items.
+        items, cf_notes = _curseforge_items(data)
         return items, cf_notes
 
     # Fallback: try modrinth shape.
@@ -417,7 +432,7 @@ def download_pack_mods(
         log("Pack index contained no downloadable files.")
         return result
 
-    opener = _opener()
+    opener = None
     total = len(items)
     log(f"Found {total} file(s) in {index_path.name}.")
 
@@ -431,6 +446,13 @@ def download_pack_mods(
         if item.source == "modrinth-client":
             result.skipped_client.append(item.name)
             log(f" - {item.name}: client-only, skipped")
+            if progress_cb:
+                progress_cb(i, total)
+            continue
+
+        if item.error:
+            result.failed.append((item.name, item.error))
+            log(f" ✗ {item.name}: {item.error}")
             if progress_cb:
                 progress_cb(i, total)
             continue
@@ -450,6 +472,8 @@ def download_pack_mods(
             continue
 
         try:
+            if opener is None:
+                opener = _opener()
             log(f" ↓ {item.name} …")
             _download_one(item, dest, opener, timeout, log, cancel)
             result.downloaded.append(item.name)
