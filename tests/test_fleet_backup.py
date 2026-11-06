@@ -749,6 +749,41 @@ def test_console_acknowledgement_uses_new_log_bytes_when_tmux_tail_rolls(tmp_pat
     assert tmux.commands == [(instance.id, "save-off")]
 
 
+def test_gtnh_1710_save_commands_are_acknowledged_from_legacy_log_text(tmp_path):
+    instance = make_server(tmp_path / "server")
+    log_path = Path(instance.path) / "logs" / "latest.log"
+    messages = {
+        "save-off": "Turned off world auto-saving",
+        "save-all": "Saved the world",
+        "save-on": "Turned on world auto-saving",
+    }
+
+    class GTNHLogTmux(FakeTmux):
+        def capture_pane_tail(self, instance, max_lines=200, max_chars=8000):
+            # Exercise the log reader rather than relying on a changing pane.
+            return "x" * 16000
+
+        def send_command_result(self, instance, command):
+            self.commands.append((instance.id, command))
+            with log_path.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    f"[19:05:00] [Server thread/INFO]: {messages[command]}\n"
+                )
+            return True, "accepted"
+
+    tmux = GTNHLogTmux({instance.id: "running"})
+    backups = manager(tmp_path, [instance], tmux)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    backups._snapshot_instance(stage, instance, None)
+    assert [command for _id, command in tmux.commands] == [
+        "save-off",
+        "save-all",
+        "save-on",
+    ]
+
+
 def test_running_server_is_flushed_quiesced_and_autosave_restored(tmp_path):
     instance = make_server(tmp_path / "server")
     tmux = FakeTmux({instance.id: "running"})
