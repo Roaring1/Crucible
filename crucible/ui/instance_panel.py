@@ -222,7 +222,9 @@ class InstancePanel(QWidget):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(callback)
-        worker.finished.connect(thread.quit)
+        # QThread objects live in the GUI thread. A queued quit slot would
+        # deadlock if close() waits while the GUI event loop is blocked.
+        worker.finished.connect(thread.quit, Qt.ConnectionType.DirectConnection)
 
         def _cleanup():
             if thread in self._worker_threads:
@@ -1272,7 +1274,9 @@ class InstancePanel(QWidget):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(self._on_world_start_summary_ready)
-        worker.finished.connect(thread.quit)
+        # QThread objects live in the GUI thread. Quit directly from the
+        # worker so shutdown can wait without needing the GUI event loop.
+        worker.finished.connect(thread.quit, Qt.ConnectionType.DirectConnection)
         worker.finished.connect(worker.deleteLater)
 
         def _cleanup(t=thread, w=worker) -> None:
@@ -1734,13 +1738,22 @@ class InstancePanel(QWidget):
         return tmux_busy or world_busy or setup_busy or mods_busy
 
     def has_active_operations(self) -> bool:
-        """True while close/removal could destroy a live worker."""
-        summary_busy = any(t.isRunning() for t in self._world_summary_threads)
-        return self._has_mutating_operations() or summary_busy
+        """True while close/removal could interrupt a mutating operation."""
+        return self._has_mutating_operations()
 
     def shutdown(self) -> None:
-        """Stop worker-owned timers in their own threads, then join threads."""
+        """Stop worker-owned timers and safely join read-only summary scans."""
         self._notes.flush()
+        # World summaries are read-only and should never veto a close event.
+        # Invalidate queued results, then join their workers before the panel is
+        # destroyed so Qt cannot see a live QThread whose owner was collected.
+        self._world_summary_generation += 1
+        self._world_start_pending_instance_id = None
+        for thread in tuple(self._world_summary_threads):
+            if thread.isRunning() and not thread.wait(2_000):
+                thread.wait()
+        self._world_summary_threads.clear()
+        self._world_summary_workers.clear()
         self._tps_timer.stop()
         self._transition_timer.stop()
         self._stop_watcher()
