@@ -362,7 +362,8 @@ Create sanitized, small fixtures in the repository before writing a production R
 | Fleet backup | Complete generation; prior generation; reused file; changed file; legacy archive; checksum mismatch; missing/symlinked path; retention and publish failure |
 | Client export | Exact JAR hash; unknown/manual JAR; conflicting distribution decision; source mutates after review; scan incomplete; duplicate/unsafe ZIP member; manifest mismatch |
 | Provider/download | Same-host HTTPS redirect; HTTPS cross-host CDN redirect where permitted; HTTP/FTP downgrade redirect blocked; userinfo/unsafe port; oversized body; timeout; 401/403/429/5xx; missing/invalid digest; wrong digest; credential redaction; cancelled transfer; provider-disabled path before key/network |
-| Share | Valid Gofile result; unsafe host/path; malformed optional MD5/size; mismatched size/MD5; source file replacement attempt; cancellation before/during transfer |\n| CLI | Each of 32 subcommands; short/long options, defaults, hidden shortcut action, TTY and non-TTY Start confirmation, exit codes, stdout/stderr, registry/filesystem/tmux/network effects | Golden argv/output/result corpus for Python/Rust parity and installed-launcher smoke tests |
+| Share | Valid Gofile result; unsafe host/path; malformed optional MD5/size; mismatched size/MD5; source file replacement attempt; cancellation before/during transfer |
+| CLI | Each of 32 subcommands; short/long options, defaults, hidden shortcut action, TTY and non-TTY Start confirmation, exit codes, stdout/stderr, registry/filesystem/tmux/network effects | Golden argv/output/result corpus for Python/Rust parity and installed-launcher smoke tests |
 
 Fixtures should contain no user secrets, private URLs or real server/world data. Use generated files with deterministic contents and fake IDs/paths.
 
