@@ -124,7 +124,7 @@ Measure `python -X importtime` for CLI commands and `crucible gui` separately, t
 
 ### 2.9 UI threading already addresses important responsiveness hazards
 
-The main window has a persistent health thread. The instance panel uses persistent log-watcher and watchdog workers and avoids some blocking queued transitions when switching servers. Large operations have dedicated worker patterns. This is an area where a rewrite can introduce regressions even if individual Rust functions are faster.
+The main window has a persistent health thread. Its status path batches one `tmux list-sessions` call for all instances. The watchdog is a separate persistent Qt worker with a 10-second timer, and its current `_poll()` loop is *not* batched: for each watched running instance it invokes `TmuxManager.probe_running()` (a `tmux has-session` subprocess) and then `is_java_foreground()` (a separate `tmux list-panes` subprocess). Each command has a 2-second timeout, and the loop processes instances serially. For N healthy watched servers, the source-level upper bound is approximately 2N tmux subprocess calls per poll, plus heartbeat file reads; with slow/time-out commands, a single poll can take multiple seconds per instance. The watchdog module docstring says one `list-sessions` call covers all watched instances, but the implementation no longer matches that statement. This is a stronger scaling candidate than the already-batched main-window status query. The instance panel also uses persistent log-watcher and watchdog workers and avoids some blocking queued transitions when switching servers. Large operations have dedicated worker patterns. This is an area where a rewrite can introduce regressions even if individual Rust functions are faster.
 
 The performance audit should measure event-loop stalls and worker queue latency before changing thread topology. Do not add more threads/processes by default.
 
@@ -149,6 +149,11 @@ These are not automatically wasteful duplicate loops: they prove that the exact 
 ### 3.2 World and archive operations already avoid UI-thread blocking
 
 World-size scans and world-start inspection run through dedicated workers rather than the Qt event loop. Prism archive extraction uses 1 MiB streaming reads, caps member count/expanded size/single-member size/compression ratio, rejects unsafe paths and symbolic links, and creates its temporary extraction tree under the destination parent when supplied. This avoids expanding a multi-GiB modpack into a small tmpfs `/tmp` and helps the final staged tree stay on the destination filesystem. Preserve these choices.
+
+
+### 3.3 Icon retrieval is already demand-driven and bounded
+
+The Add Mod dialog uses one short-lived `_IconWorker` that drains a single queue sequentially. The queue has a hard cap of 48 pending jobs, visible/selected icons can be promoted ahead of off-screen work, obsolete queued jobs are discarded when the search changes, and an in-flight request is allowed to finish unless the dialog is cancelled. Each request uses the Modrinth-only icon adapter (the current UI offers only Modrinth), which is capped at 8 MiB and 8 seconds. This is a good example of resource-aware application design: it prioritizes what the user can see without introducing a large concurrent request burst or resident icon service. Keep it in Python unless an end-to-end profile proves icon decoding or network scheduling is a real bottleneck.
 
 ## 4. Why Rust may or may not improve the hot paths
 
@@ -271,6 +276,8 @@ The minimum supported Python matrix should remain 3.11/3.13 until a separate pro
 - `crucible/process/machine_resources.py` (including its existing one-pass `_instance_processes` matcher)
 - `crucible/process/tmux_manager.py`
 - `crucible/process/watchdog.py` (including the current per-instance tmux polling loop)
+- `crucible/ui/add_mod_dialog.py` (bounded prioritized icon queue)
+- `crucible/mods/icon_fetch.py` (provider-specific icon HTTP)
 - `crucible/ui/main_window.py`
 - `crucible/ui/instance_panel.py`
 - `crucible/diagnostics/loadcheck.py`
