@@ -69,13 +69,13 @@ The source installer stages an installation under `~/.local/share/crucible`, exp
 - `crucible/data/instance_model.py` defines the server-instance model and its validation/serialization behavior.
 - `crucible/process/tmux_manager.py` centralizes tmux process/session operations.
 - `crucible/process/crash_recovery.py` persists heartbeat state to distinguish a host crash from an intentional stop.
-- `crucible/data/backup_manager.py` retains compatibility for legacy per-instance world archives and safe world-swap extraction; its module documentation says new automatic/manual backups use a fleet backup manager. The exact current fleet-backup implementation should be mapped in a later source-inventory pass before any backup code is ported.
+- `crucible/data/backup_manager.py` retains compatibility for per-instance world archives and safe world swaps; `crucible/data/fleet_backup.py` implements the current fleet-wide immutable generation system, incremental hard-link reuse, verification, retention, and legacy-source migration. The latter is now mapped in the performance audit; it remains a high-risk subsystem, not an early port target.
 - `crucible/mods/modrinth.py` contains Modrinth HTTP/API behavior and typed-ish result records. Network/provider behavior should remain behind adapters.
 - `crucible/exporters/client_export.py` implements a large client-pack export pipeline with content hashing, deterministic input fingerprints, archive construction, and manifest data.
 - `crucible/importers/prism.py` is the Prism/MultiMC and modpack import path.
 - `crucible/ui/tabs/` and related dialogs render domain state and collect owner decisions. They should not become the place where Rust business rules are duplicated.
 
-This is a verified representative map, not yet a complete module-by-module dependency graph. Before selecting the first implementation slice, Phase 0 should complete that inventory, including all data, process, importer/exporter, backup, provider, diagnostics, and UI modules.
+The top-level package subdirectories and test inventory have now been enumerated, and the fleet-backup implementation, status sampling path, and resource sampling path have been inspected in detail. This is still not a complete per-symbol dependency graph or a trace of every UI-to-worker call path. Those call paths and the sanitized compatibility fixture corpus remain Phase 0 work.
 
 ### 3.3 Persistent state and compatibility surfaces
 
