@@ -2537,10 +2537,18 @@ class FleetBackupManager:
     def _pane_delta(before: str, after: str) -> str:
         if after.startswith(before):
             return after[len(before) :]
-        limit = min(len(before), len(after), 2000)
+
+        # capture-pane returns a bounded rolling history. New rows can evict
+        # old rows from the head, so compare complete lines rather than a
+        # small character window. The capture is capped at 300 lines by the
+        # caller, making this bounded and cheap even for large modpack output.
+        before_lines = before.splitlines()
+        after_lines = after.splitlines()
+        limit = min(len(before_lines), len(after_lines))
         for overlap in range(limit, 0, -1):
-            if before[-overlap:] == after[:overlap]:
-                return after[overlap:]
+            if before_lines[-overlap:] == after_lines[:overlap]:
+                return "\n".join(after_lines[overlap:])
+
         # A completely replaced/rotated pane tail has no trustworthy
         # append boundary. Scanning it could accept a stale confirmation from
         # an earlier command; fail closed and let the occurrence-count check

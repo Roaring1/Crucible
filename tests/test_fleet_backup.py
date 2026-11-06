@@ -805,6 +805,18 @@ def test_save_failure_attempts_to_restore_autosave_and_commits_nothing(tmp_path)
     assert backups.list_generations() == []
 
 
+def test_pane_delta_handles_rolling_history_beyond_two_thousand_characters():
+    before = "\n".join(f"console row {index:03d} " + ("x" * 30) for index in range(300))
+    after = "\n".join(
+        [*(f"console row {index:03d} " + ("x" * 30) for index in range(1, 300)),
+         "Turned off world auto-saving"]
+    )
+
+    assert FleetBackupManager._pane_delta(before, after) == (
+        "Turned off world auto-saving"
+    )
+
+
 def test_pane_delta_refuses_to_scan_a_replaced_tail_for_stale_confirmation():
     before = "older console output\nAutomatic saving is now disabled"
     after = "replacement pane history\nAutomatic saving is now disabled"
