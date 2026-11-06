@@ -94,7 +94,7 @@ The performance audit should measure event-loop stalls and worker queue latency 
 
 | Priority | Candidate | Evidence | Risk | Next step |
 |---|---|---|---|---|
-| 1 | Batch procfs process discovery for a whole health pass | Same `/proc` enumeration occurs inside per-instance unmanaged-process detection for stopped instances | Medium: false negatives could affect status/removal safety | Benchmark health refresh at 1, 5, 20, and 50 stopped instances with controlled host process counts; preserve action-time revalidation |
+| 1 | Share one per-instance procfs matcher across health and resource reporting | Health uses per-instance scans; machine-resource reporting already has an aggregate one-pass scan that can be refactored to return associations | Medium: false negatives could affect status/removal safety | Benchmark health refresh at 1, 5, 20, and 50 stopped instances with controlled host process counts; preserve action-time revalidation |
 | 2 | Measure backup copy + destination readback | Fresh copies are hashed during streaming copy and then hashed again from the destination | High: removing verification could weaken backup integrity | Benchmark full and incremental backup; compare disk read/write counters and CPU; decide whether a safer cheaper integrity proof exists |
 | 3 | Reduce backup per-file metadata/fsync overhead if dominant | Each file is copied through a temp file, flushed/fsynced, renamed, then re-inventoried and stat-checked | High: durability and race guarantees | Use synthetic trees with many small files and large files; profile syscall counts and time |
 | 4 | Improve startup/import cost | Python package has a large CLI module and PyQt UI; actual import graph/time not yet measured | Low-to-medium | Profile cold launch with import-time instrumentation; do not move code to Rust until imports are shown to dominate |
@@ -156,7 +156,7 @@ Do not port a module for a marginal microbenchmark. A candidate should show a re
 
 Do **not** start with fleet backup or tmux.
 
-The first Rust work should still be a pure, side-effect-free core crate and parity harness. But the first production integration should be selected only after the baseline identifies a real hot path. If procfs scanning is confirmed dominant, first prototype a batch process matcher with a Python reference implementation and fixture-based parity tests. If backup I/O dominates, optimize the Python algorithm and filesystem strategy first; a Rust rewrite may not improve the storage bottleneck.
+The first Rust work should still be a pure, side-effect-free core crate and parity harness. But the first production integration should be selected only after the baseline identifies a real hot path. If procfs scanning is confirmed dominant, first refactor the existing Python aggregate matcher into a shared per-instance association helper and prove fixture parity; only consider Rust if that optimized Python implementation remains a measured bottleneck. If backup I/O dominates, optimize the Python algorithm and filesystem strategy first; a Rust rewrite may not improve the storage bottleneck.
 
 The best performance outcome may be:
 - Rust for one measured CPU-heavy primitive;
@@ -171,7 +171,7 @@ The best performance outcome may be:
 - `crucible/data/backup_manager.py`
 - `crucible/data/backup_scheduler.py`
 - `crucible/process/resource_monitor.py`
-- `crucible/process/machine_resources.py`
+- `crucible/process/machine_resources.py` (including its existing one-pass `_instance_processes` matcher)
 - `crucible/process/tmux_manager.py`
 - `crucible/process/watchdog.py`
 - `crucible/ui/main_window.py`
