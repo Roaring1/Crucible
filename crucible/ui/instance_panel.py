@@ -22,6 +22,7 @@ Only the log event does that.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
 from PyQt6.QtCore import (
     QMetaObject,
@@ -49,6 +50,7 @@ from PyQt6.QtWidgets import (
 
 from ..data.instance_manager import InstanceManager
 from ..data.instance_model import ServerInstance
+from ..data.world_start_summary import WorldStartSummary, inspect_world_start_state
 from ..process.log_watcher import LogWatcher
 from ..process.startup_patterns import RE_SERVER_DONE, stale_starting_should_promote
 from ..process.tmux_manager import TmuxManager
@@ -102,6 +104,52 @@ class _TmuxWorker(QObject):
         self.finished.emit(ok, msg)
 
 
+class _WorldStartSummaryWorker(QObject):
+    """Inspect the selected save without blocking the Qt GUI or touching tmux."""
+
+    finished = pyqtSignal(str, int, object, bool)
+
+    def __init__(
+        self,
+        instance: ServerInstance,
+        generation: int,
+        for_start: bool,
+    ):
+        super().__init__()
+        self._instance = instance
+        self._generation = generation
+        self._for_start = for_start
+
+    def run(self) -> None:
+        try:
+            world_name = self._instance.world_root_path().name
+            previous_world_name = self._instance.extra.get("last_started_world")
+            if not isinstance(previous_world_name, str) or not previous_world_name.strip():
+                previous_world_name = None
+            summary = inspect_world_start_state(
+                self._instance.path_obj,
+                world_name,
+                previous_world_name=previous_world_name,
+            )
+        except Exception as exc:  # noqa: BLE001 - worker boundary must report scan failures.
+            summary = WorldStartSummary(
+                world_name="(unknown)",
+                world_path=self._instance.path_obj,
+                state="unavailable",
+                size_bytes=0,
+                newest_file_mtime=None,
+                region_files=0,
+                player_files=0,
+                error=str(exc),
+            )
+        self.finished.emit(
+            self._instance.id,
+            self._generation,
+            summary,
+            self._for_start,
+        )
+
+
 class InstancePanel(QWidget):
     """
     Displays full details for one selected server instance.
@@ -137,6 +185,10 @@ class InstancePanel(QWidget):
         # during every sidebar selection.
         self._loaded_tabs: set[QWidget] = set()
         self._tps_poll_inflight = False
+        self._world_summary_generation = 0
+        self._world_summary_threads: list[QThread] = []
+        self._world_summary_workers: list[_WorldStartSummaryWorker] = []
+        self._world_start_pending_instance_id: str | None = None
 
         self._build_ui()
         self._feedback_timer = QTimer(self)
@@ -232,8 +284,20 @@ class InstancePanel(QWidget):
         self._ver_label  = QLabel("")
         self._ver_label.setObjectName("HeaderVersion")
         self._ver_label.setWordWrap(True)
+        self._world_summary_label = QLabel("World: select a server")
+        self._world_summary_label.setObjectName("WorldStartSummary")
+        self._world_summary_label.setWordWrap(True)
+        self._world_summary_label.setStyleSheet(
+            f"color: {theme.SUBTEXT}; font-size: 11px;"
+        )
+        self._world_summary_label.setAccessibleName("Selected world start summary")
+        self._world_summary_label.setAccessibleDescription(
+            "Shows the folder selected by server.properties, its approximate "
+            "size, newest world-file timestamp, and whether it already exists."
+        )
         name_col.addWidget(self._name_label)
         name_col.addWidget(self._ver_label)
+        name_col.addWidget(self._world_summary_label)
         h_layout.addLayout(name_col, stretch=1)
 
         # Status label: text remains explicit; color is only a secondary cue.
@@ -529,7 +593,7 @@ class InstancePanel(QWidget):
         """Switch panels safely; return False when the old view must remain."""
         if self._instance is not None and self._instance.id == instance.id:
             return True
-        if self._instance is not None and self.has_active_operations():
+        if self._instance is not None and self._has_mutating_operations():
             QMessageBox.information(
                 self, "Operation in progress",
                 "Wait for the current start, stop, backup, setup, or mod "
@@ -546,6 +610,7 @@ class InstancePanel(QWidget):
         self._btn_ip.setEnabled(True)
         self._btn_ip.setText("Copy IP")
 
+        self._world_start_pending_instance_id = None
         self._instance = instance
         self._set_identity_icon(instance)
         # Changing server selection always lands on the live console workspace.
@@ -567,6 +632,11 @@ class InstancePanel(QWidget):
         status = status_hint if status_hint not in (None, "unknown") else self._tmux.get_status(instance)
         self._update_status_display(status)
         self._loaded_tabs.clear()
+        self._world_summary_label.setText("World: checking selected folder…")
+        self._world_summary_label.setToolTip(
+            "Checking the world folder configured by server.properties."
+        )
+        self._request_world_start_summary(instance, for_start=False)
 
         # Start watchdog once
         self._ensure_watchdog()
@@ -625,7 +695,10 @@ class InstancePanel(QWidget):
         self._stop_watcher()
         self._tps_timer.stop()
         self._ip_request_generation += 1
+        self._world_start_pending_instance_id = None
+        self._world_summary_generation += 1
         self._instance = None
+        self._world_summary_label.setText("World: select a server")
         self._tabs.setEnabled(False)
         self._show_empty()
 
@@ -1159,6 +1232,228 @@ class InstancePanel(QWidget):
             btn.setVisible(enabled)
             btn.setEnabled(enabled)
 
+    # World pre-start inspection
+
+    @staticmethod
+    def _format_world_size(size_bytes: int) -> str:
+        value = float(max(0, size_bytes))
+        for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+            if value < 1024.0 or unit == "TiB":
+                return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+            value /= 1024.0
+        return f"{value:.1f} TiB"
+
+    @staticmethod
+    def _format_world_mtime(timestamp: float | None) -> str:
+        if timestamp is None:
+            return "no saved-file timestamp"
+        try:
+            return datetime.fromtimestamp(timestamp).astimezone().strftime(
+                "%Y-%m-%d %H:%M"
+            )
+        except (OverflowError, OSError, ValueError):
+            return "timestamp unavailable"
+
+    def _request_world_start_summary(
+        self,
+        instance: ServerInstance,
+        *,
+        for_start: bool,
+    ) -> None:
+        """Run a fresh, read-only world scan and ignore stale instance results."""
+        if self._instance is None or self._instance.id != instance.id:
+            return
+        self._world_summary_generation += 1
+        generation = self._world_summary_generation
+
+        thread = QThread()
+        thread.setObjectName("CrucibleWorldStartSummaryThread")
+        worker = _WorldStartSummaryWorker(instance, generation, for_start)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_world_start_summary_ready)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+
+        def _cleanup(t=thread, w=worker) -> None:
+            if t in self._world_summary_threads:
+                self._world_summary_threads.remove(t)
+            if w in self._world_summary_workers:
+                self._world_summary_workers.remove(w)
+
+        connect_thread_cleanup(thread, _cleanup)
+        self._world_summary_threads.append(thread)
+        self._world_summary_workers.append(worker)
+        thread.start()
+
+    def _render_world_start_summary(self, summary: WorldStartSummary) -> None:
+        state_labels = {
+            "existing": "Existing",
+            "new": "New - generated on Start",
+            "incomplete": "Incomplete",
+            "unsafe": "Unsafe selection",
+            "unavailable": "Could not verify",
+        }
+        state = state_labels.get(summary.state, "Unknown")
+        size = self._format_world_size(summary.size_bytes)
+        modified = self._format_world_mtime(summary.newest_file_mtime)
+        text = (
+            f"World: {summary.world_name} - {state} - {size} - "
+            f"modified {modified}"
+        )
+        if summary.selection_changed:
+            text = (
+                f"World selection changed: {summary.previous_world_name} -> "
+                f"{summary.world_name}"
+            )
+            color = theme.RED
+        elif summary.unexpected_empty:
+            text = (
+                f"Check world selection: {summary.world_name} is {state.lower()}; "
+                f"other developed saves exist ({', '.join(summary.other_developed_worlds[:3])})"
+            )
+            if len(summary.other_developed_worlds) > 3:
+                text += f" and {len(summary.other_developed_worlds) - 3} more"
+            color = theme.RED
+        elif summary.state in {"unsafe", "unavailable"}:
+            color = theme.RED
+        else:
+            color = theme.SUBTEXT
+        self._world_summary_label.setText(text)
+        self._world_summary_label.setStyleSheet(
+            f"color: {color}; font-size: 11px; "
+            + ("font-weight: 700;" if color == theme.RED else "")
+        )
+
+        details = [
+            f"World folder: {summary.world_path}",
+            f"State: {state}",
+            f"Approximate size: {size}",
+            f"Newest world-file modification: {modified}",
+            f"Region files: {summary.region_files}",
+            f"Player data files: {summary.player_files}",
+            f"Previously started world: {summary.previous_world_name or 'not recorded'}",
+            (
+                "Other developed worlds: "
+                + (", ".join(summary.other_developed_worlds) or "none detected")
+            ),
+            (
+                "The timestamp is the newest regular world-file modification; "
+                "it is not proof of a clean server shutdown."
+            ),
+        ]
+        if summary.error:
+            details.append(f"Inspection error: {summary.error}")
+        self._world_summary_label.setToolTip("\n".join(details))
+        self._world_summary_label.setAccessibleDescription("\n".join(details))
+
+    def _confirm_world_before_start(self, summary: WorldStartSummary) -> bool:
+        """Require explicit confirmation when selected-world intent is uncertain."""
+        if not summary.requires_confirmation:
+            return summary.state == "existing"
+
+        if summary.selection_changed:
+            explanation = (
+                f"The last recorded start used '{summary.previous_world_name}', "
+                f"but server.properties now selects '{summary.world_name}'.\n\n"
+                "Crucible will start only the newly selected folder. The previously "
+                "used world and other saved worlds will remain untouched."
+            )
+        elif summary.other_developed_worlds:
+            others = ", ".join(summary.other_developed_worlds[:6])
+            if len(summary.other_developed_worlds) > 6:
+                others += f", and {len(summary.other_developed_worlds) - 6} more"
+            previous = summary.previous_world_name or "not recorded yet"
+            explanation = (
+                f"The configured folder '{summary.world_name}' is {summary.state}. "
+                f"The previously started world is {previous}. Other developed "
+                f"world saves are present: {others}.\n\n"
+                "Starting now will open or generate only the configured folder. "
+                "The other world folders will remain untouched."
+            )
+        elif summary.state == "new":
+            explanation = (
+                f"The configured folder '{summary.world_name}' does not exist yet. "
+                "Minecraft will generate it when the server starts. No other "
+                "developed world folder was detected in this server directory."
+            )
+        else:
+            explanation = (
+                f"The configured folder '{summary.world_name}' appears incomplete "
+                "and has no developed region or player data. Starting may continue "
+                "this folder or generate a fresh world."
+            )
+
+        box = QMessageBox(self)
+        box.setIcon(
+            QMessageBox.Icon.Warning
+            if summary.other_developed_worlds or summary.state == "incomplete"
+            or summary.selection_changed
+            else QMessageBox.Icon.Information
+        )
+        box.setWindowTitle("Confirm world before start")
+        box.setText(f"Crucible is configured to start '{summary.world_name}'.")
+        box.setInformativeText(explanation)
+        start_button = box.addButton(
+            "Start selected world", QMessageBox.ButtonRole.AcceptRole
+        )
+        cancel_button = box.addButton(
+            QMessageBox.StandardButton.Cancel
+        )
+        box.setDefaultButton(cancel_button)
+        box.exec()
+        return box.clickedButton() is start_button
+
+    def _on_world_start_summary_ready(
+        self,
+        instance_id: str,
+        generation: int,
+        summary: WorldStartSummary,
+        for_start: bool,
+    ) -> None:
+        if generation != self._world_summary_generation:
+            return
+        if self._instance is None or self._instance.id != instance_id:
+            return
+        self._render_world_start_summary(summary)
+        if not for_start or self._world_start_pending_instance_id != instance_id:
+            return
+        self._world_start_pending_instance_id = None
+
+        if self._current_status != "stopped":
+            self._btn_start.setText("Start")
+            self._btn_start.setEnabled(False)
+            self.show_feedback(
+                "Start was cancelled because the server is no longer confirmed stopped."
+            )
+            return
+        if self._instance.world_root_path().name != summary.world_name:
+            self._btn_start.setText("Start")
+            self._btn_start.setEnabled(True)
+            self.show_feedback(
+                "World selection changed during inspection. Review it again before starting."
+            )
+            self._request_world_start_summary(self._instance, for_start=False)
+            return
+
+        if summary.state in {"unsafe", "unavailable"}:
+            QMessageBox.warning(
+                self,
+                "World selection could not be verified",
+                "Crucible did not start the server because it could not safely "
+                "verify the configured world folder.\n\n"
+                + (summary.error or str(summary.world_path)),
+            )
+            self._btn_start.setText("Start")
+            self._btn_start.setEnabled(self._current_status == "stopped")
+            return
+
+        if not self._confirm_world_before_start(summary):
+            self._btn_start.setText("Start")
+            self._btn_start.setEnabled(self._current_status == "stopped")
+            return
+        self._begin_start_after_world_check(instance_id, summary.world_name)
+
     # Button actions
 
     def _preflight_properties(self, inst) -> None:
@@ -1219,13 +1514,67 @@ class InstancePanel(QWidget):
             )
             return
         if self._mods.has_active_operation() or self._setup.has_active_operation():
-            QMessageBox.information(self, "Operation in progress", "Wait for mod or setup operations to finish before starting this server.")
+            QMessageBox.information(
+                self,
+                "Operation in progress",
+                "Wait for mod or setup operations to finish before starting this server.",
+            )
             return
         if not self._instance:
             return
+        if self._world_start_pending_instance_id is not None:
+            return
+
         inst = self._instance
+        self._world_start_pending_instance_id = inst.id
+        self._btn_start.setEnabled(False)
+        self._btn_start.setText("Checking world…")
+        self._request_world_start_summary(inst, for_start=True)
+
+    def _begin_start_after_world_check(
+        self, instance_id: str, inspected_world_name: str
+    ) -> None:
+        """Continue only after the selected world remains the inspected folder."""
+        inst = self._instance
+        if inst is None or inst.id != instance_id:
+            return
+        if self._current_status != "stopped":
+            self._btn_start.setText("Start")
+            self._btn_start.setEnabled(False)
+            self.show_feedback(
+                "Start was cancelled because the server is no longer confirmed stopped."
+            )
+            return
+        if inst.world_root_path().name != inspected_world_name:
+            self._btn_start.setText("Start")
+            self._btn_start.setEnabled(True)
+            self.show_feedback(
+                "World selection changed during inspection. Review it again before starting."
+            )
+            self._request_world_start_summary(inst, for_start=False)
+            return
         fml_choice = self._choose_fml_query_result(inst)
         if fml_choice is None:
+            self._btn_start.setText("Start")
+            self._btn_start.setEnabled(self._current_status == "stopped")
+            return
+        # The FML prompt may remain open while server.properties is edited
+        # outside Crucible. Recheck the target immediately before dispatching
+        # the tmux start command; never silently start an uninspected folder.
+        if self._current_status != "stopped":
+            self._btn_start.setText("Start")
+            self._btn_start.setEnabled(False)
+            self.show_feedback(
+                "Start was cancelled because the server is no longer confirmed stopped."
+            )
+            return
+        if inst.world_root_path().name != inspected_world_name:
+            self._btn_start.setText("Start")
+            self._btn_start.setEnabled(self._current_status == "stopped")
+            self.show_feedback(
+                "World selection changed before start. Review it again before starting."
+            )
+            self._request_world_start_summary(inst, for_start=False)
             return
         self._btn_start.setEnabled(False)
         self._btn_start.setText("Starting…")
@@ -1233,18 +1582,22 @@ class InstancePanel(QWidget):
 
         def _on_done(ok: bool, msg: str) -> None:
             if ok:
+                inst.extra["last_started_world"] = inspected_world_name
                 self._manager.update_instance(inst)
-                # Session created -- enter "starting" state.
-                # Header will transition to "ONLINE" only when the log
-                # watcher sees "Done (Xs)!" via _on_log_server_started.
+                # Session created - enter "starting" state.
+                # Header transitions to ONLINE only after the log watcher
+                # sees the server's Done line.
                 self._update_status_display("starting")
                 self.status_changed.emit(inst.id, "running")
             else:
                 QMessageBox.critical(self, "Could not start server", msg)
-                self._btn_start.setEnabled(True)
+                self._btn_start.setEnabled(self._current_status == "stopped")
             self._btn_start.setText("Start")
 
-        self._run_tmux(lambda: self._tmux.start(inst, fml_query_result=fml_choice), _on_done)
+        self._run_tmux(
+            lambda: self._tmux.start(inst, fml_query_result=fml_choice),
+            _on_done,
+        )
 
     def _restore_after_failed_stop(
         self,
@@ -1372,13 +1725,18 @@ class InstancePanel(QWidget):
 
     # Cleanup
 
-    def has_active_operations(self) -> bool:
-        """True while closing could destroy a live worker or partial backup."""
+    def _has_mutating_operations(self) -> bool:
+        """True while a server or user-data operation is in progress."""
         tmux_busy = any(t.isRunning() for t in self._worker_threads)
         world_busy = self._world.has_active_operation()
         setup_busy = self._setup.has_active_operation()
         mods_busy = self._mods.has_active_operation()
         return tmux_busy or world_busy or setup_busy or mods_busy
+
+    def has_active_operations(self) -> bool:
+        """True while close/removal could destroy a live worker."""
+        summary_busy = any(t.isRunning() for t in self._world_summary_threads)
+        return self._has_mutating_operations() or summary_busy
 
     def shutdown(self) -> None:
         """Stop worker-owned timers in their own threads, then join threads."""

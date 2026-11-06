@@ -482,7 +482,10 @@ def cmd_start(manager: InstanceManager, tmux: TmuxManager, args) -> None:
     success, msg = tmux.start(inst)
 
     if success:
-        manager.update_instance(inst)  # persist last_started
+        # Retain only the selected folder name, not provider- or world-file data.
+        # The GUI uses this marker to warn if level-name changes between starts.
+        inst.extra["last_started_world"] = inst.world_root_path().name
+        manager.update_instance(inst)  # persist last_started + selected world
         ok(msg)
         info(f"Console: {CYAN}tmux attach -t {inst.tmux_session}{RESET}")
         info(f"Or use:  {CYAN}crucible attach {inst.name}{RESET}")
