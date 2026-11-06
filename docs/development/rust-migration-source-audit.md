@@ -84,6 +84,23 @@ This is a key migration boundary: do not port the whole `ServerInstance` class a
 
 The process package exports `TmuxManager` immediately. The watchdog and log watcher remain lazy exports. Process adapters must continue to represent uncertainty explicitly. Rust should not add a second tmux controller, process watcher, or watchdog while the Python UI is still authoritative.
 
+
+
+### 2.3.1 Process matching semantics and a destructive-removal edge
+
+The two existing PID matchers share a broad shape, but their precise semantics must be captured before a consolidation:
+
+- Both prefer the exact `-Dcrucible.session=<session>` token in the process command line. **That marker branch does not check `/proc/<pid>/comm` first.**
+- The legacy fallback checks that kernel-reported `comm` is exactly `java`, then matches the registered server path in argv or exact process cwd.
+- `machine_resources._instance_processes()` uses sets of session markers and paths and scans `/proc` once for the whole fleet, but it returns only a sorted aggregate PID list, not per-instance associations.
+- `ResourceSampler.find_instance_pids()` scans `/proc` independently for each server and returns that server's PID list.
+
+`TmuxManager.start()` constructs `CRUCIBLE_JAVA_ARGS` containing the session marker inside a `bash -c` command. The resource tests currently prove matching for a synthetic Java command line, and prove that a Dolphin/cat command whose *path* happens to contain `java` is not mistaken for a JVM. They do not establish whether a launcher shell that retains the `bash -c` command text can itself match the marker token. Add a representative wrapper-plus-JVM fixture before changing this matcher. If wrappers do match, the team must decide whether to preserve wrapper attribution deliberately or restrict server-PID/resource attribution to the Java executable; do not silently change current behavior in a Rust rewrite.
+
+**Separate high-priority safety observation - removal when tmux is unavailable:** `TmuxManager.safe_to_remove()` currently returns `(True, ...)` immediately when `tmux_available()` is false, without checking `_unmanaged_pids()`. The GUI's `_on_remove_requested()` calls this preflight before offering both Remove from list and Delete server files. Therefore, a Java server started outside tmux can evade this preflight when the tmux executable is missing, and the subsequent Delete server files flow may rename and recursively remove its live server directory. This is distinct from Rust migration and should receive a separate narrowly scoped safety fix plus regression tests: with tmux unavailable and a matching unmanaged JVM present, both unregister and destructive deletion must be blocked; with a complete process scan and no match, behavior can remain safely available. Also test a process-scan-unavailable state - an incomplete `/proc` observation must not be silently treated as an empty process list for destructive decisions.
+
+The current `_unmanaged_pids()` helper catches every exception and returns `[]`; `_iter_pids()` also returns an empty list when `/proc/self/stat` is not visible. That best-effort behavior may be tolerable for a non-authoritative metrics display, but it is not a sound proof of process absence for destructive preflight. A future API should distinguish `complete scan with no match`, `matching PIDs`, and `incomplete/unavailable scan`. Keep metrics best-effort while requiring complete observations for safety actions.
+
 ### 2.4 Importers and pack-update domain
 
 - `prism.py`: Prism/MultiMC detection, archive probing/extraction, path validation, import receipts, copy/staging.
