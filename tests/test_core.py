@@ -156,11 +156,13 @@ class RegistryTransactionTests(unittest.TestCase):
         original_identity = id(manager.instances[0])
         rows = [row.to_dict() for row in manager.instances]
         rows[0]["last_started"] = "2026-10-28T03:56:31.179802"
+        rows[0]["last_started_world"] = "world_structures"
         manager.registry_file.write_text(json.dumps({"version": 1, "instances": rows}, indent=2))
 
         self.assertTrue(manager.registry_changed_externally())
         self.assertTrue(manager.reconcile_external_last_started())
         self.assertEqual(manager.instances[0].last_started, "2026-10-28T03:56:31.179802")
+        self.assertEqual(manager.instances[0].extra["last_started_world"], "world_structures")
         self.assertEqual(id(manager.instances[0]), original_identity)
         self.assertFalse(manager.registry_changed_externally())
 

@@ -448,17 +448,14 @@ class ServerInstance:
     # World identification, sizing, and swap support (World Backup & Swap).
     # These are read-only filesystem queries -- they never write anything.
 
-    def world_root_path(self) -> Path:
-        """Absolute path to this server's world (level) folder.
+    def world_level_name(self) -> str:
+        """Return the raw level-name selected in server.properties.
 
-        Reads level-name from server.properties (default "world" -- the
-        vanilla/Forge/GTNH default). Does NOT check existence; a server that
-        has never been started won't have generated a world folder yet, so
-        callers must check world_root_path().exists()/.is_dir() themselves.
+        This deliberately preserves path separators and traversal components.
+        Safety-sensitive callers must validate the raw value before reducing
+        it to a basename or using it to access a world folder.
         """
-        p = self.path_obj
-        level_name = "world"
-        props = p / "server.properties"
+        props = self.path_obj / "server.properties"
         if props.exists():
             try:
                 for line in props.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -466,11 +463,20 @@ class ServerInstance:
                     if stripped.startswith("level-name="):
                         candidate = stripped.split("=", 1)[1].strip()
                         if candidate:
-                            level_name = candidate
+                            return candidate
                         break
             except OSError:
                 pass
-        return p / level_name
+        return "world"
+
+    def world_root_path(self) -> Path:
+        """Absolute path to the configured world (level) folder.
+
+        This is a path convenience method, not a safety validator. Callers
+        that act on a configured selection should validate world_level_name()
+        first. Does NOT check existence: an unstarted server may have no folder.
+        """
+        return self.path_obj / self.world_level_name()
 
     def world_dimension_dirs(self) -> list[Path]:
         """List Forge/vanilla-style nested dimension folders (DIM*) found

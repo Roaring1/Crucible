@@ -154,6 +154,11 @@ class InstanceManager:
                 candidate_fields = candidate.to_dict()
                 current_fields.pop("last_started", None)
                 candidate_fields.pop("last_started", None)
+                # The CLI and GUI can both record the world selected at a
+                # successful start. Accept that narrow lifecycle-only change
+                # without weakening the guard for unrelated registry edits.
+                current_fields.pop("last_started_world", None)
+                candidate_fields.pop("last_started_world", None)
                 if current_fields != candidate_fields:
                     return False
 
@@ -163,6 +168,12 @@ class InstanceManager:
 
             for current, candidate in zip(self.instances, candidates):
                 current.last_started = candidate.last_started
+                if "last_started_world" in candidate.extra:
+                    current.extra["last_started_world"] = candidate.extra[
+                        "last_started_world"
+                    ]
+                else:
+                    current.extra.pop("last_started_world", None)
             self._known_registry_signature = signature
             return True
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):

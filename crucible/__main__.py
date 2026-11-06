@@ -32,6 +32,7 @@ import argparse
 import sys
 
 from .data.instance_manager import InstanceManager, validate_session_name
+from .data.world_start_summary import inspect_instance_world_start
 from .process.crash_recovery import HeartbeatStore
 from .process.tmux_manager import TmuxManager
 from .utils import (
@@ -60,6 +61,43 @@ def resolve_instance(manager: InstanceManager, key: str):
         dim("Run 'crucible list' to see registered instances.")
         sys.exit(1)
     return inst
+
+
+def _confirm_cli_world_start(inst) -> str:
+    """Inspect the raw selected world and obtain explicit TTY confirmation."""
+    summary = inspect_instance_world_start(inst)
+    if summary.state in {"unsafe", "unavailable"}:
+        err(
+            "Refusing to start because the configured world could not be safely verified: "
+            + (summary.error or str(summary.world_path))
+        )
+        sys.exit(1)
+    if not summary.requires_confirmation:
+        return summary.world_name
+
+    others = ", ".join(summary.other_developed_worlds[:6]) or "none detected"
+    previous = summary.previous_world_name or "not recorded"
+    info(f"Configured world: {summary.world_name} ({summary.state})")
+    info(f"Last recorded world: {previous}")
+    info(f"Other developed saves: {others}")
+    if not sys.stdin.isatty():
+        err(
+            "This world selection needs explicit confirmation. Open Crucible and "
+            "review the configured world before starting non-interactively."
+        )
+        sys.exit(1)
+    warn(
+        "Starting opens or generates only the configured folder. Other world "
+        "folders are retained and will not be deleted."
+    )
+    try:
+        answer = input("Type START to use this world, or press Enter to cancel: ")
+    except EOFError:
+        answer = ""
+    if answer.strip() != "START":
+        warn("Start cancelled; no server process was launched.")
+        sys.exit(1)
+    return summary.world_name
 
 
 # Command handlers
@@ -383,6 +421,19 @@ def cmd_shortcut_action(
             )
             _shortcut_notification("Start not available", message, error=True)
             sys.exit(1)
+        world_summary = inspect_instance_world_start(instance)
+        if (
+            world_summary.state in {"unsafe", "unavailable"}
+            or world_summary.requires_confirmation
+        ):
+            _shortcut_notification(
+                "World selection needs review",
+                "Open Crucible and review the configured world before using "
+                "this Start shortcut. "
+                + (world_summary.error or f"Selected folder: {world_summary.world_name}"),
+                error=True,
+            )
+            sys.exit(1)
         try:
             _preflight_properties(instance)
         except Exception as exc:  # noqa: BLE001 - report unexpected preflight failures from a terminal-free launcher
@@ -396,6 +447,7 @@ def cmd_shortcut_action(
             instance, fml_query_result=instance.fml_query_result
         )
         if success:
+            instance.extra["last_started_world"] = world_summary.world_name
             try:
                 HeartbeatStore().mark_running(instance.id, instance.tmux_session)
             except OSError as exc:
@@ -478,11 +530,15 @@ def cmd_shortcut_action(
 
 def cmd_start(manager: InstanceManager, tmux: TmuxManager, args) -> None:
     inst = resolve_instance(manager, args.name)
+    selected_world = _confirm_cli_world_start(inst)
     _preflight_properties(inst)
     success, msg = tmux.start(inst)
 
     if success:
-        manager.update_instance(inst)  # persist last_started
+        # Retain only the selected folder name, not provider- or world-file data.
+        # The GUI uses this marker to warn if level-name changes between starts.
+        inst.extra["last_started_world"] = selected_world
+        manager.update_instance(inst)  # persist last_started + selected world
         ok(msg)
         info(f"Console: {CYAN}tmux attach -t {inst.tmux_session}{RESET}")
         info(f"Or use:  {CYAN}crucible attach {inst.name}{RESET}")
@@ -511,6 +567,7 @@ def cmd_stop(manager: InstanceManager, tmux: TmuxManager, args) -> None:
 
 def cmd_restart(manager: InstanceManager, tmux: TmuxManager, args) -> None:
     inst = resolve_instance(manager, args.name)
+    selected_world = _confirm_cli_world_start(inst)
     status = tmux.get_status(inst)
 
     if status == "running":
@@ -529,8 +586,12 @@ def cmd_restart(manager: InstanceManager, tmux: TmuxManager, args) -> None:
         )
         sys.exit(1)
 
+    if inst.world_level_name() != selected_world:
+        err("World selection changed while the server was stopping. Review it and retry.")
+        sys.exit(1)
     success, msg = tmux.start(inst)
     if success:
+        inst.extra["last_started_world"] = selected_world
         manager.update_instance(inst)
         ok(msg)
         info(f"Console: {CYAN}tmux attach -t {inst.tmux_session}{RESET}")

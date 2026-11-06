@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 
 from crucible.data.instance_manager import InstanceManager
 from crucible.data.instance_model import ServerInstance
+from crucible.data.world_start_summary import WorldStartSummary
 from crucible.mods.mod_manager import ModEntry
 from crucible.sharing.history import ShareHistoryStore
 from crucible.ui import theme
@@ -1068,11 +1069,27 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  assert panel._btn_start.isEnabled() and not panel._btn_stop.isEnabled()
 
  panel._update_status_display('stopped')
+ def immediate_world_summary(instance, *, for_start):
+  panel._world_summary_generation += 1
+  summary = WorldStartSummary(
+   world_name=instance.world_root_path().name,
+   world_path=instance.world_root_path(),
+   state='existing',
+   size_bytes=1024,
+   newest_file_mtime=1_800_000_000,
+   region_files=1,
+   player_files=1,
+   previous_world_name=instance.extra.get('last_started_world'),
+  )
+  panel._on_world_start_summary_ready(
+   instance.id, panel._world_summary_generation, summary, for_start
+  )
  with patch.object(panel,'_choose_fml_query_result',return_value='confirm'), \
       patch.object(panel,'_preflight_properties'), \
+      patch.object(panel,'_request_world_start_summary',new=immediate_world_summary), \
       patch.object(panel,'_run_tmux') as stopped_start:
   panel._do_start()
- assert stopped_start.called, 'Start should be dispatched once the server is confirmed stopped'
+ assert stopped_start.called, 'Start should be dispatched only after selected-world inspection'
  panel._update_status_display('stopped')
  panel._btn_start.setText('Start')
  panel._more_tab_actions[5].trigger();app.processEvents()

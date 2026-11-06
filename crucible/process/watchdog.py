@@ -20,6 +20,7 @@ from __future__ import annotations
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 
 from ..data.instance_model import ServerInstance
+from ..data.world_start_summary import inspect_instance_world_start
 from .crash_recovery import (
     CRASHED_HANDLED,
     RUNNING,
@@ -328,6 +329,14 @@ class Watchdog(QObject):
     def _do_restart(self, iid: str) -> None:
         instance = self._instances.get(iid)
         if instance is None:
+            return
+        summary = inspect_instance_world_start(instance)
+        if summary.state in {"unsafe", "unavailable"} or summary.requires_confirmation:
+            reason = (
+                "World selection needs owner review before automatic restart: "
+                + (summary.error or summary.world_name)
+            )
+            self.restart_failed.emit(iid, reason)
             return
         ok, msg = self._tmux.start(instance)
         if ok:
