@@ -91,7 +91,14 @@ A failed list-sessions query returns `unknown`, not `stopped`.
 - `tmux_missing` is an environment state, not proof that Java is absent;
 - GUI `starting`/ `stopping` must not be overwritten by a stale status refresh.
 
-Action-time safety probes remain separate from cached display state. `safe_to_remove()`, Start, Stop and destructive operations revalidate the target immediately before acting. A future Rust decision function may consume the observation snapshot, but Python remains the only layer issuing tmux commands during the coexistence phase.
+Action-time safety probes remain separate from cached display state. Start/Stop and destructive operations are intended to revalidate the target immediately before acting, but the current unmanaged-process observation has two important fail-open edges that must not be baked into the Rust contract:
+
+- `TmuxManager.safe_to_remove()` currently returns safe immediately when the tmux executable is missing, without checking for an unmanaged JVM. The GUI calls this before both unregister and Delete server files, so a manually launched server can evade the preflight in this environment.
+- `_unmanaged_pids()` catches discovery exceptions and returns an empty list; `_iter_pids()` also returns an empty list when `/proc/self/stat` is not visible. An incomplete process scan is therefore indistinguishable from a complete scan with no match. `_force_kill()` treats an empty list after `tmux kill-session` as proof that Java exited and may report success without verifying a surviving JVM.
+
+There is a marker nuance too: the exact `-Dcrucible.session=<session>` argv token is accepted before checking `/proc/<pid>/comm`; only the fallback path/cwd match requires `comm == java`. Since `TmuxManager.start()` embeds the marker inside its `bash -c` command string, add a shell-wrapper fixture before tightening or consolidating this logic.
+
+**Proposed observation contract:** `ProcessScanResult = Complete(matches: Vec<ProcessIdentity>) | Incomplete(reason)`. A complete empty match is valid negative evidence; incomplete/unavailable is not. Safety decisions must block on Incomplete. Metrics may still display best-effort partial values, but they must not feed destructive decisions. A separate, narrowly scoped Python safety fix and tests should precede any Rust port of process matching. Python remains the only layer issuing tmux commands during the coexistence phase.
 
 ### 2.3 Heartbeat/recovery record
 
@@ -108,7 +115,7 @@ A running heartbeat stores:
 - `tmux_session`
 - `updated_at`
 
-Stop/reconcile updates preserve the other existing fields while changing state/timestamp.
+Stop/reconcile updates preserve the other existing fields while changing state/timestamp. The current writer flushes/fsyncs the temporary file and replaces the destination atomically, but does not fsync the parent directory after rename. Treat that as the existing durability level; do not claim full directory-entry crash durability unless the adapter is deliberately strengthened and tested.
 
 The safety ordering is important:
 
@@ -153,7 +160,7 @@ The scan:
 - records size, newest file modification time (excluding `session.lock`), and region/player counts;
 - returns an unavailable/error result on incomplete filesystem inspection instead of silently treating the scan as empty.
 
-Confirmation is required when the selected world is new or incomplete, when the selection changed from `last_started_world`, or when older registry data has no previous-world marker while other developed saves exist.
+Confirmation is required when the selected world is new or incomplete, when the selection changed from `last_started_world`, or when older registry data has no previous-world marker while other developed saves exist. The UI writes `instance.extra["last_started_world"]` through the normal registry update only after `tmux.start()` reports success; older records may therefore lack the key and must retain the legacy-confirmation behavior.
 
 This is a useful domain model, but the current `inspect_world_start_state()` is still a filesystem scanner. A clean Rust split would be:
 - a path/filesystem adapter that safely gathers the inventory;
@@ -259,8 +266,8 @@ Create sanitized, small fixtures in the repository before writing a production R
 | Fixture family | Cases that must be represented |
 |---|---|
 | Registry | Version 1; missing optional keys; unknown `extra` fields; missing session name; invalid FML choice; duplicate ID/path/session; malformed/oversized registry |
-| Status | Running; stopped; unmanaged Java; missing folder; tmux missing; tmux timeout/unknown; transient GUI starting/stopping kept separately |
-| Heartbeat | Each of four states; missing boot ID; changed boot ID; interrupted stop same/different boot; absent, present and unknown tmux results |
+| Status/process scan | Running; stopped; unmanaged Java; missing folder; tmux missing; tmux timeout/unknown; marker-only process; shell wrapper plus Java child; complete empty scan; inaccessible `/proc`; absent `/proc`; transient GUI starting/stopping kept separately; tmux missing plus unmanaged Java |
+| Heartbeat/watchdog | Each of four states; missing boot ID; changed boot ID; interrupted stop same/different boot; absent, present and unknown tmux results; wrapper alive/Java gone; two misses; restart delay; crash-loop cap; stable uptime reset |
 | World summary | Existing developed save; new folder; incomplete folder with `level.dat`; alternate developed save; changed selection; absent prior marker; path traversal; absolute path; symlink root/child; unreadable file |
 | Properties | GTNH 1.7.10 legacy keys; modern 1.20+ keys; removed 1.21.2 keys; duplicate keys; escaped key/value; malformed number/bool/enum; unknown key; comments and ordering |
 | Pack update | Unknown/running/stopped; stable update; downgrade blocker; beta warning; unsupported Java; multiple worlds; unsafe `level-name`; insufficient free space |
