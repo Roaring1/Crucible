@@ -51,7 +51,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python -m pytest -vv -x -p no:cacheprovider 2>&1 | tee "pytest-${{ matrix.python-version }}.log"
+          python -m pytest -q -p no:cacheprovider 2>&1 | tee "pytest-${{ matrix.python-version }}.log"
       - name: Run PyQt interaction smoke
         run: python tests/qt_refinement_smoke.py
       - name: Capture UI review screenshots

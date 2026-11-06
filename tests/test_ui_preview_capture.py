@@ -57,4 +57,4 @@ def test_capture_ui_previews_writes_expected_pngs(tmp_path):
         assert data.startswith(b"\x89PNG\r\n\x1a\n"), filename
         assert len(data) > 1_000, filename
 
-    assert "Captured 20 UI previews" in result.stdout
+    assert "Captured 24 UI previews" in result.stdout
