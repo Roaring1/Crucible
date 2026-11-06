@@ -703,7 +703,7 @@ def test_running_but_not_confirmed_ready_server_is_deferred_before_console_comma
     tmux.readiness[instance.id] = readiness
     backups = manager(tmp_path, [instance], tmux)
 
-    with pytest.raises(FleetBackupError, match="startup-ready line|readiness could not be verified"):
+    with pytest.raises(FleetBackupError, match="not confirmed ready|readiness could not be verified"):
         backups.run_backup()
 
     assert tmux.commands == []

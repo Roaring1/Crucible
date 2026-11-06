@@ -190,36 +190,49 @@ class TmuxManager:
         *,
         max_log_bytes: int = 8 * 1024 * 1024,
     ) -> bool | None:
-        """Return True only after the active JVM has emitted Minecraft's Done line.
+        """Return True after the registered Java PID emits Minecraft's Done line.
 
-        A tmux session and a foreground Java process can exist for minutes
-        before Minecraft is ready. In particular, large modpacks may spend a
-        long time registering mods while the console is already attached.
-        Live operations such as fleet save-off must not treat that as a
-        ready server.
-
-        Read only the bounded tail of the active log selected by
-        ServerInstance.get_log_path(). False means the current log is readable
-        but has no ready marker yet; None means readiness could not be checked.
-        Both outcomes are unsafe for live backup commands.
+        Official server scripts can keep bash as the tmux pane's foreground
+        command while Java runs as its child. Confirm the exact tmux session
+        and instance-tagged Java PID through Crucible's process sampler, then
+        inspect both the active FML log and standard latest.log. A Java process
+        without the ready marker is still starting.
         """
-        java_up = self.is_java_foreground(instance)
-        if java_up is not True:
-            return False if java_up is False else None
+        session_up = self.probe_running(instance)
+        if session_up is not True:
+            return False if session_up is False else None
 
-        try:
-            log_path = instance.get_log_path()
-            if log_path is None or log_path.is_symlink() or not log_path.is_file():
-                return None
-            size = log_path.stat().st_size
-            with log_path.open("rb") as handle:
-                handle.seek(max(0, size - max(1, int(max_log_bytes))))
-                raw = handle.read(max(1, int(max_log_bytes)))
-        except OSError:
+        # GTNH wrappers leave bash in the pane while Java runs as a child;
+        # pane_current_command() alone is not a reliable JVM readiness check.
+        if not self._unmanaged_pids(instance):
             return None
 
-        text = raw.decode("utf-8", errors="replace")
-        return RE_SERVER_DONE.search(text) is not None
+        try:
+            primary = instance.get_log_path()
+            log_paths = [primary] if primary is not None else []
+            standard = Path(instance.path) / "logs" / "latest.log"
+            if standard not in log_paths:
+                log_paths.append(standard)
+        except (AttributeError, OSError, TypeError):
+            return None
+
+        saw_readable_log = False
+        limit = max(1, int(max_log_bytes))
+        for log_path in log_paths:
+            try:
+                if log_path.is_symlink() or not log_path.is_file():
+                    continue
+                size = log_path.stat().st_size
+                with log_path.open("rb") as handle:
+                    handle.seek(max(0, size - limit))
+                    raw = handle.read(limit)
+            except OSError:
+                continue
+            saw_readable_log = True
+            if RE_SERVER_DONE.search(raw.decode("utf-8", errors="replace")):
+                return True
+
+        return False if saw_readable_log else None
 
     @staticmethod
     def _unmanaged_pids(instance: ServerInstance) -> list[int]:

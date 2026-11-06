@@ -6,10 +6,12 @@ never from a live server folder. Changed files are copied, hashed and checked
 for concurrent modification. The result is a content-stable point-in-time tree
 with efficient incremental storage and straightforward offline restoration.
 
-A running Minecraft server is eligible for a live snapshot only after its Java
-pane is confirmed and the active log contains the shared "Done (Xs)!" startup
-marker. A Java process that is still booting is deferred before Crucible sends
-any console command. Ready servers are quiesced with save-off/save-all/save-on.
+A running Minecraft server is eligible for a live snapshot only after its
+registered Java PID is confirmed and an active FML or standard log contains
+the shared "Done (Xs)!" startup marker. This supports GTNH launch scripts that
+keep bash in the tmux pane while Java runs as its child. A Java process that is
+still booting is deferred before Crucible sends any console command. Ready
+servers are quiesced with save-off/save-all/save-on.
 A snapshot is not published unless the console confirms the save and re-enable
 steps. No server is ever started or stopped by this module.
 """
@@ -2248,7 +2250,7 @@ class FleetBackupManager:
             readiness = readiness_probe(instance) if callable(readiness_probe) else None
             if readiness is not True:
                 detail = (
-                    "Minecraft has not emitted its startup-ready line yet."
+                    "Minecraft is not confirmed ready; its tagged Java process or startup marker is absent."
                     if readiness is False
                     else "Minecraft startup readiness could not be verified."
                 )

@@ -272,27 +272,37 @@ class TmuxCommandTests(unittest.TestCase):
         self.inst = ServerInstance(str(self.root), "GTNH", tmux_session="gtnh")
         self.tm = TmuxManager()
 
-    def test_server_readiness_requires_done_marker_in_active_log(self):
+    def test_server_readiness_requires_exact_session_java_and_done_marker(self):
         root = Path(tempfile.mkdtemp())
         inst = ServerInstance(str(root), "Ready", tmux_session="ready-test")
         logs = root / "logs"
         logs.mkdir()
-        active_log = logs / "fml-server-latest.log"
+        fml_log = logs / "fml-server-latest.log"
+        standard_log = logs / "latest.log"
         tm = TmuxManager()
 
-        with patch.object(tm, "is_java_foreground", return_value=True):
-            active_log.write_text("[Server thread/INFO]: Loading mods\n")
+        with (
+            patch.object(tm, "probe_running", return_value=True),
+            patch.object(tm, "_unmanaged_pids", return_value=[12345]),
+        ):
+            fml_log.write_text("[Server thread/INFO]: Loading mods\n")
             self.assertFalse(tm.is_server_ready(inst))
 
-            active_log.write_text(
-                "[Server thread/INFO]: Loading mods\n"
-                "[Server thread/INFO]: Done (91.42s)!\n"
+            # Some older packs write the ready line to latest.log while their
+            # detailed mod log remains in fml-server-latest.log.
+            standard_log.write_text(
+                "[Server thread/INFO]: Done (91.42s)! For help, type help\n"
             )
             self.assertTrue(tm.is_server_ready(inst))
 
-        with patch.object(tm, "is_java_foreground", return_value=False):
+        with patch.object(tm, "probe_running", return_value=False):
             self.assertFalse(tm.is_server_ready(inst))
-        with patch.object(tm, "is_java_foreground", return_value=None):
+        with patch.object(tm, "probe_running", return_value=None):
+            self.assertIsNone(tm.is_server_ready(inst))
+        with (
+            patch.object(tm, "probe_running", return_value=True),
+            patch.object(tm, "_unmanaged_pids", return_value=[]),
+        ):
             self.assertIsNone(tm.is_server_ready(inst))
 
     def test_status_uses_exact_tmux_target(self):
