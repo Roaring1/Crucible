@@ -100,6 +100,31 @@ There is a marker nuance too: the exact `-Dcrucible.session=<session>` argv toke
 
 **Proposed observation contract:** `ProcessScanResult = Complete(matches: Vec<ProcessIdentity>) | Incomplete(reason)`. A complete empty match is valid negative evidence; incomplete/unavailable is not. Safety decisions must block on Incomplete. Metrics may still display best-effort partial values, but they must not feed destructive decisions. A separate, narrowly scoped Python safety fix and tests should precede any Rust port of process matching. Python remains the only layer issuing tmux commands during the coexistence phase.
 
+
+
+#### 2.2.1 Process discovery must represent incomplete observations
+
+The current `ResourceSampler.find_instance_pids()` API returns only a list. `TmuxManager._unmanaged_pids()` catches every exception and returns an empty list, and `_iter_pids()` can also return an empty list when `/proc` is unavailable. Those values currently conflate:
+- complete scan, no matching process;
+- complete scan, one or more matching processes;
+- scan unavailable/incomplete (permission failure, procfs unavailable, enumeration error, or other exception).
+
+For metrics, best-effort absence may be tolerable. It is not a safe answer for destructive operations. A future shared process matcher should return a typed tri-state result for every instance, for example:
+- `Complete { pids: [] }`
+- `Complete { pids: [..] }`
+- `Incomplete { reason }`
+
+Safety policy must then be explicit:
+- **Unregister/delete preflight:** a matching PID blocks; an incomplete scan blocks; only a complete scan with no match can establish absence.
+- **tmux unavailable:** still inspect process state; missing tmux is not proof that no manually-started JVM exists.
+- **Force-kill verification:** after SIGTERM/SIGKILL, an incomplete scan must not be reported as success. Report that process exit could not be verified.
+- **Status/metrics:** may display an unavailable/unknown condition; must not convert incomplete discovery into `stopped`.
+- **Backup/readiness:** retain fail-closed behavior if a matching process cannot be confirmed.
+
+There is a concrete existing risk: `TmuxManager.safe_to_remove()` currently returns safe immediately when tmux is unavailable, before checking for an unmanaged JVM. When tmux is installed but `/proc` scanning throws, the helper can still return an empty list and authorize removal. The GUI calls this preflight before both removing a registry entry and the destructive server-folder deletion path, which stages the folder by renaming it and then recursively deletes it. The process scan semantics need a focused safety fix and dedicated tests before this helper is refactored or ported. This concern is also documented in the source and performance audits.
+
+There is another compatibility trap: both current PID matchers accept an exact `-Dcrucible.session=<session>` command-line token without checking `/proc/<pid>/comm`; only the legacy path/cwd fallback requires `comm == java`. Because Crucible injects the marker into a `bash -c` command, a shell wrapper may also carry the token. Add a wrapper-plus-JVM fixture and decide deliberately whether the marker is intended to attribute the wrapper, Java child, or both. Do not silently tighten or broaden this matcher during migration.
+
 ### 2.3 Heartbeat/recovery record
 
 The default heartbeat directory is `~/.config/crucible/state/heartbeats/`, with one JSON file per instance ID. The state values are:
