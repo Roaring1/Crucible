@@ -13,6 +13,8 @@ The current application is Python 3.11+ with PyQt6. The package is installed thr
 
 **Recommended direction:** keep the current Python/PyQt6 application as the reference product while introducing Rust in small, independently verifiable slices. Begin with a toolkit-independent Rust core containing explicit domain types and pure decisions. Keep Qt, dialogs, settings, and user feedback in Python. Put operating-system and external-process work behind narrow adapters. Do not select a Python/Rust bridge or move a safety-critical operation until its contract, parity tests, packaging path, and rollback behavior are established.
 
+A separate high-priority safety finding must be handled before any process-discovery refactor or Rust extraction: the current removal preflight can treat missing tmux or an incomplete `/proc` scan as proof that no unmanaged server process exists. The GUI uses this preflight before both unregistering and permanently deleting a server folder; the force-kill verifier also trusts an empty best-effort PID result. A live unmanaged JVM could therefore evade the preflight, and a failed process scan could be reported as absence. This is documented with the call path and required regression cases in `rust-migration-source-audit.md`, `rust-migration-performance-audit.md`, and `rust-migration-contracts.md`. It needs a separate narrowly scoped safety fix. It is not changed by this documentation PR.
+
 A full rewrite, a simultaneous UI rewrite, or a change to on-disk formats would multiply risk without proving that Rust improves the actual bottlenecks.
 
 ## 2. Product identity and operating assumptions
@@ -32,7 +34,7 @@ Current product surfaces include:
 Important product invariants visible in the current source and docs:
 
 1. A Crucible window closing is not a Minecraft Stop command. Managed servers live in independent tmux sessions.
-2. Unknown or ambiguous status must not authorize lifecycle or destructive actions.
+2. Unknown or ambiguous status must not authorize lifecycle or destructive actions. A current process-discovery/removal-preflight gap violates this invariant in specific tmux/procfs failure cases and must be fixed before any related port.
 3. Graceful Stop must not silently turn into force-kill.
 4. A Start must use a positively confirmed stopped state and must inspect the selected world before launching.
 5. World replacement/restoration must validate first, protect the old state, verify the result, and retain a rollback route.
@@ -75,7 +77,7 @@ The source installer stages an installation under `~/.local/share/crucible`, exp
 - `crucible/importers/prism.py` is the Prism/MultiMC and modpack import path.
 - `crucible/ui/tabs/` and related dialogs render domain state and collect owner decisions. They should not become the place where Rust business rules are duplicated.
 
-The full Python file inventory (80 source files) and test/support inventory (62 files) have now been enumerated. The fleet-backup implementation, status/resource sampling, GUI worker structure, importer/exporter boundaries, provider trust rules, filesystem mutation owners, and principal end-to-end flows have been inspected. Persisted/runtime contracts and a detailed golden-fixture plan are in `rust-migration-contracts.md`. A complete per-symbol dependency graph and actual sanitized fixture corpus remain Phase 0 work; see `rust-migration-source-audit.md`.
+The full Python file inventory (80 source files) and test/support inventory (62 files) have now been enumerated. The fleet-backup implementation, status/resource sampling, watchdog polling, GUI worker structure, importer/exporter boundaries, provider trust rules, filesystem mutation owners, and principal end-to-end flows have been inspected. Persisted/runtime contracts and a detailed golden-fixture plan are in `rust-migration-contracts.md`. A complete per-symbol dependency graph and actual sanitized fixture corpus remain Phase 0 work; see `rust-migration-source-audit.md`. The destructive-removal process-scan finding is a safety prerequisite, not a Rust migration task.
 
 ### 3.3 Persistent state and compatibility surfaces
 
