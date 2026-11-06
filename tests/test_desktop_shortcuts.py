@@ -119,6 +119,44 @@ def test_remove_only_exact_generated_files_for_instance(
     assert not any(path.exists() for path in made.created)
 
 
+def test_create_refuses_to_overwrite_unrelated_file_with_generated_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shortcuts, "APPLICATIONS_DIR", tmp_path / "apps")
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    instance = _instance()
+    target = desktop / shortcuts.shortcut_filename(instance.id, "start")
+    target.write_text("[Desktop Entry]\\nName=My unrelated launcher\\n", encoding="utf-8")
+
+    with pytest.raises(shortcuts.ShortcutError, match="not this Crucible start shortcut"):
+        shortcuts.create_shortcuts(
+            instance, destination="desktop", desktop_directory=desktop
+        )
+
+    assert "My unrelated launcher" in target.read_text(encoding="utf-8")
+
+
+def test_remove_refuses_unrelated_file_with_generated_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shortcuts, "APPLICATIONS_DIR", tmp_path / "apps")
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    instance = _instance()
+    target = desktop / shortcuts.shortcut_filename(instance.id, "stop")
+    target.write_text("[Desktop Entry]\\nName=My unrelated launcher\\n", encoding="utf-8")
+
+    with pytest.raises(shortcuts.ShortcutError, match="not this Crucible stop shortcut"):
+        shortcuts.remove_shortcuts(
+            instance.id,
+            desktop_directories=(desktop,),
+            include_applications=False,
+        )
+
+    assert "My unrelated launcher" in target.read_text(encoding="utf-8")
+
+
 def test_refuse_symlink_destination_and_symlink_shortcut(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

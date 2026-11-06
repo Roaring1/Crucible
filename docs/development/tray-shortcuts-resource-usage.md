@@ -111,3 +111,33 @@ XDG files so Python and Rust builds can coexist without changing server
 registries, shortcut identity, or server folders. No Rust migration is part of
 this feature; Python remains the reference implementation until its behavior
 is verified on Nobara and in CI.
+
+## Lessons taken from the existing owner projects
+
+These are architecture references, not UI templates or new runtime
+dependencies:
+
+- [Crosshair `rust-port`](https://github.com/Roaring1/Crosshair/tree/rust-port)
+  separates `crosshair_core` from the CLI and optional Slint Settings binary.
+  Its Cargo defaults stay empty and its Settings UI is feature-gated. It also
+  deliberately limits its system tray to Windows rather than claiming a
+  portable Linux/Wayland tray. Crucible should keep its typed status/resource/
+  shortcut model UI-independent and select a tray adapter only after runtime
+  availability is confirmed.
+- [Hearth](https://github.com/Roaring1/Hearth) enforces a toolkit-free core:
+  only its UI package imports GTK. Frozen snapshots, one bounded collector,
+  and a separate slower reporter prevent the UI from repeatedly recomputing
+  expensive diagnostics. Crucible follows the same principle by deriving the
+  tray from MainWindow's existing status result and keeping resource/GPU
+  sampling on-demand rather than running another permanent poller.
+- [Padfire](https://github.com/Roaring1/Padfire) uses user-owned configuration,
+  a local control/status API, and an intentionally small tray menu. Its
+  per-user boundary and stable external commands are useful references for
+  future Crucible integrations; they are not a reason to add a background
+  service or socket to this feature.
+
+The practical Rust-port rule is: keep business rules and lifecycle eligibility
+in a small core crate; keep tmux/procfs/GPU and XDG interactions behind
+replaceable adapters; let Qt/Python or a future native UI render the same
+status model. A tray being unavailable must never change server lifecycle
+behavior or disable explicit CLI control.

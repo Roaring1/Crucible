@@ -17,6 +17,9 @@ from pathlib import Path
 
 from . import __version__
 
+_MAX_EXISTING_ENTRY_BYTES = 64 * 1024
+
+
 APPLICATIONS_DIR = (
     Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
     / "applications"
@@ -131,6 +134,49 @@ def _entry_contents(instance, action: str) -> str:
     )
 
 
+def _is_generated_shortcut(path: Path, instance_id: str, action: str) -> bool:
+    """Verify an existing file is this exact Crucible shortcut.
+
+    Use O_NOFOLLOW plus fstat so an unrelated file, symlink, or special file
+    cannot be silently overwritten or removed merely because its name matches
+    a hashed Crucible shortcut filename.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise ShortcutError(f"Could not safely inspect existing shortcut {path}: {exc}") from exc
+
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ShortcutError(f"Refusing to use a non-regular shortcut target: {path}")
+        if metadata.st_size > _MAX_EXISTING_ENTRY_BYTES:
+            raise ShortcutError(f"Refusing to use an oversized shortcut target: {path}")
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            raw = handle.read(_MAX_EXISTING_ENTRY_BYTES + 1)
+    except OSError as exc:
+        raise ShortcutError(f"Could not read existing shortcut {path}: {exc}") from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+    if len(raw) > _MAX_EXISTING_ENTRY_BYTES:
+        raise ShortcutError(f"Refusing to use an oversized shortcut target: {path}")
+    try:
+        lines = set(raw.decode("utf-8").splitlines())
+    except UnicodeDecodeError:
+        return False
+    return (
+        "[Desktop Entry]" in lines
+        and f"X-Crucible-Instance={_desktop_string(instance_id)}" in lines
+        and f"X-Crucible-Action={action}" in lines
+    )
+
+
 def _atomic_write_desktop(path: Path, content: str) -> None:
     if path.is_symlink():
         raise ShortcutError(f"Refusing to replace a symbolic link: {path}")
@@ -200,6 +246,13 @@ def create_shortcuts(
     for directory in directories:
         for action in actions:
             path = directory / shortcut_filename(instance.id, action)
+            if (path.exists() or path.is_symlink()) and not _is_generated_shortcut(
+                path, instance.id, action
+            ):
+                raise ShortcutError(
+                    f"Refusing to overwrite a file that is not this Crucible "
+                    f"{action} shortcut: {path}"
+                )
             _atomic_write_desktop(path, _entry_contents(instance, action))
             created.append(path)
     return ShortcutResult(created=tuple(created))
@@ -234,6 +287,11 @@ def remove_shortcuts(
                 raise ShortcutError(f"Refusing to remove a symbolic-link or non-regular shortcut: {path}")
             if not stat.S_ISREG(path.lstat().st_mode):
                 raise ShortcutError(f"Refusing to remove a symbolic-link or non-regular shortcut: {path}")
+            if not _is_generated_shortcut(path, instance_id, action):
+                raise ShortcutError(
+                    f"Refusing to remove a file that is not this Crucible "
+                    f"{action} shortcut: {path}"
+                )
             try:
                 path.unlink()
                 removed.append(path)
