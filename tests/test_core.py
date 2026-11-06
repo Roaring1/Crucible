@@ -1,9 +1,14 @@
 import json
+import subprocess
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
+
+from tmux_isolation import isolate_tmux
+
+isolate_tmux()
 
 from crucible.data.instance_manager import (
     InstanceManager,
@@ -507,6 +512,8 @@ class TmuxCommandTests(unittest.TestCase):
         with (
             patch.object(self.tm, "probe_running", side_effect=[True, True, True]),
             patch.object(self.tm, "send_command_result", return_value=(True, "ok")),
+            patch.object(self.tm, "is_java_foreground", return_value=True),
+            patch.object(self.tm, "_run") as run,
             patch.object(self.tm, "_force_kill") as force_kill,
             patch("crucible.process.tmux_manager.time.sleep"),
         ):
@@ -516,6 +523,7 @@ class TmuxCommandTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("not force-killed", message)
         force_kill.assert_not_called()
+        run.assert_not_called()
 
     def test_stop_sends_ctrl_c_to_interrupt_reboot_wrapper_loop(self):
         """GTNH's startserver-java9.sh/.bat wraps java in an outer
@@ -529,7 +537,10 @@ class TmuxCommandTests(unittest.TestCase):
             patch.object(self.tm, "probe_running", side_effect=[True, True, True, False]),
             patch.object(self.tm, "send_command_result", return_value=(True, "ok")),
             patch.object(self.tm, "is_java_foreground", side_effect=[True, False]),
-            patch.object(self.tm, "_run", return_value=__import__("subprocess").CompletedProcess([], 0, "", "")) as run,
+            patch.object(
+                self.tm, "_run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ) as run,
             patch("crucible.process.tmux_manager.time.sleep"),
         ):
             ok, message = self.tm.stop(
@@ -579,6 +590,10 @@ class TmuxCommandTests(unittest.TestCase):
             patch.object(self.tm, "probe_running", return_value=True),
             patch.object(self.tm, "send_command_result", return_value=(True, "ok")),
             patch.object(self.tm, "is_java_foreground", return_value=False),
+            patch.object(
+                self.tm, "_run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ) as run,
             patch.object(self.tm, "_force_kill") as force_kill,
             patch("crucible.process.tmux_manager.time.sleep"),
         ):
@@ -589,6 +604,11 @@ class TmuxCommandTests(unittest.TestCase):
         self.assertIn("reboot-loop countdown was interrupted", message)
         self.assertIn("not force-killed", message)
         force_kill.assert_not_called()
+        ctrl_c_calls = [
+            call for call in run.call_args_list
+            if call.args and call.args[0][:2] == ["tmux", "send-keys"] and "C-c" in call.args[0]
+        ]
+        self.assertEqual(len(ctrl_c_calls), 2)
 
     def test_is_java_foreground_reads_pane_current_command(self):
         import subprocess

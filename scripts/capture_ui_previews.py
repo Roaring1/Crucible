@@ -29,6 +29,13 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+TESTS_ROOT = REPO_ROOT / "tests"
+if str(TESTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TESTS_ROOT))
+
+from tmux_isolation import isolate_tmux
+
+isolate_tmux()
 
 
 def capture_previews(output: Path) -> list[Path]:

@@ -7,6 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from tmux_isolation import isolate_tmux
+
+isolate_tmux()
+
 from PyQt6.QtCore import QMimeData, QPoint, QSettings, Qt, QUrl
 from PyQt6.QtGui import QDragEnterEvent
 from PyQt6.QtTest import QTest
@@ -46,6 +50,14 @@ from crucible.ui.tabs.mods_tab import ModsTab
 from crucible.ui.tabs.players_tab import PlayersTab, _PlayerListWidget, _TeleportDialog
 
 app=QApplication([]);app.setStyleSheet(theme.STYLESHEET)
+
+def wait_for_identity_transition(window, timeout=2.0):
+ deadline=time.monotonic()+timeout
+ while window._identity_transition is not None and time.monotonic()<deadline:
+  app.processEvents()
+  QTest.qWait(10)
+ app.processEvents()
+ assert window._identity_transition is None, "server identity animation did not finish before timeout"
 
 def focusable_in_tab_order(root_widget):
  seen=set();ordered=[];widget=root_widget
@@ -703,8 +715,7 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  assert window._panel._identity_icon.pixmap().isNull(), (
   'the header identity is represented by the travelling icon until arrival'
  )
- QTest.qWait(240);app.processEvents()
- assert window._identity_transition is None
+ wait_for_identity_transition(window)
  second_identity=window._panel._identity_icon.pixmap()
  assert second_identity is not None and not second_identity.isNull()
  second_row=window._sidebar._row_widgets[second_inst.id]
@@ -716,8 +727,7 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  QTest.qWait(30)
  window._sidebar.select_by_id(second_inst.id)
  assert window._identity_transition is not None
- QTest.qWait(240);app.processEvents()
- assert window._identity_transition is None
+ wait_for_identity_transition(window)
  assert window._panel._identity_icon.pixmap().toImage()==(
   window._sidebar._row_widgets[second_inst.id]._icon.pixmap().toImage()
  ), 'rapid server changes must leave the latest selected server artwork in the header'
