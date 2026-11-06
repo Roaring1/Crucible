@@ -52,6 +52,7 @@ There are other possible I/O costs:
 - A flush/fsync for each file can be expensive for trees containing many small files.
 - Full inventory traversal occurs before and after the copy.
 - Final per-file stat verification is another metadata pass.
+- `_seal_generation()` walks the staged tree bottom-up, sets files/directories read-only, and fsyncs every directory so published names are durable.
 - Manifest JSON grows with the number of files and exclusions.
 - Legacy archive validation may read old immutable archive bytes again to verify them before reuse.
 
