@@ -2355,6 +2355,94 @@ class FleetBackupManager:
             ),
         )
 
+    @staticmethod
+    def _console_log_paths(instance: ServerInstance) -> list[Path]:
+        """Return the known active server logs without following symlinks."""
+        paths: list[Path] = []
+        get_log_path = getattr(instance, "get_log_path", None)
+        if callable(get_log_path):
+            try:
+                active = get_log_path()
+            except (OSError, TypeError, ValueError):
+                active = None
+            if active is not None:
+                paths.append(Path(active))
+
+        logs_dir = Path(instance.path).expanduser() / "logs"
+        paths.extend(
+            logs_dir / name
+            for name in ("latest.log", "fml-server-latest.log")
+        )
+        return list(dict.fromkeys(paths))
+
+    @classmethod
+    def _capture_console_log_offsets(
+        cls, instance: ServerInstance
+    ) -> dict[Path, tuple[int, int, int] | None]:
+        """Record file identities and byte offsets before a console command."""
+        offsets: dict[Path, tuple[int, int, int] | None] = {}
+        for path in cls._console_log_paths(instance):
+            try:
+                info = path.lstat()
+            except OSError:
+                offsets[path] = None
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                offsets[path] = None
+                continue
+            offsets[path] = (info.st_dev, info.st_ino, info.st_size)
+        return offsets
+
+    @staticmethod
+    def _read_new_console_log_text(
+        offsets: dict[Path, tuple[int, int, int] | None],
+        command_started_ns: int,
+        *,
+        max_bytes_per_log: int = 1024 * 1024,
+    ) -> str:
+        """Read only log bytes appended after a command was about to be sent.
+
+        A rolling tmux pane can evict old rows as new output arrives. Comparing
+        two fixed-size captures can then lose the append boundary and miss a
+        fresh acknowledgement (or count an old one as the only occurrence).
+        File identity plus the pre-command byte offset gives us a stable,
+        command-scoped source of truth instead.
+        """
+        chunks: list[bytes] = []
+        limit = max(1, int(max_bytes_per_log))
+        for path, previous in offsets.items():
+            try:
+                info = path.lstat()
+            except OSError:
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                continue
+
+            if (
+                previous is not None
+                and (info.st_dev, info.st_ino) == previous[:2]
+                and info.st_size >= previous[2]
+            ):
+                start = previous[2]
+            else:
+                # The log appeared, was replaced, or was truncated after the
+                # command began. Only inspect a new/replaced file whose own
+                # modification timestamp proves it changed during this wait.
+                if info.st_mtime_ns < command_started_ns:
+                    continue
+                start = max(0, info.st_size - limit)
+
+            if info.st_size - start > limit:
+                start = info.st_size - limit
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(start)
+                    chunks.append(handle.read(limit))
+            except OSError:
+                continue
+
+        return b"\n".join(chunks).decode("utf-8", errors="replace")
+
     def _send_console_and_wait(
         self,
         instance: ServerInstance,
@@ -2369,6 +2457,8 @@ class FleetBackupManager:
             )
         except TypeError:
             before = self.tmux.capture_pane_tail(instance)
+        log_offsets = self._capture_console_log_offsets(instance)
+        command_started_ns = time.time_ns()
         ok, detail = self.tmux.send_command_result(instance, command)
         if not ok:
             raise FleetBackupError(
@@ -2399,6 +2489,20 @@ class FleetBackupManager:
                 raise ConsoleCommandUnacknowledged(
                     f"{instance.name}: console output became unavailable after sending {command!r}: {exc}"
                 ) from exc
+            # Prefer the server's own log stream: unlike the bounded tmux
+            # pane, it has an exact pre-command byte offset and cannot confuse
+            # an older save confirmation with this command's response.
+            logged = self._read_new_console_log_text(
+                log_offsets, command_started_ns
+            )
+            match = expected.search(logged)
+            if match:
+                if success_pattern is not None and not success_pattern.search(logged):
+                    raise FleetBackupError(
+                        f"{instance.name}: Minecraft reported a failed save: {match.group(0)}"
+                    )
+                return match.group(0)
+
             added = self._pane_delta(last_text, after)
             match = expected.search(added)
             if match:
