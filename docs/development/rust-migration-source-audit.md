@@ -109,6 +109,36 @@ The process package exports `TmuxManager` immediately. The watchdog and log watc
 
 Keep these steps distinct: inventory, review, archive build, archive verification, user approval, upload, and link/history publication. A fast archive builder must not bypass distribution/privacy gates or make upload implicit.
 
+
+
+### 2.5.1 Network/provider trust boundaries
+
+Crucible does not have one generic HTTP client today. Its network paths have different policies and should not be consolidated without parity tests:
+
+- `download_http.py` builds a TLS-verifying opener, requires HTTPS without embedded URL credentials, rejects API-key query parameters, strips caller-supplied `x-api-key`, and attaches the user's CurseForge key only to an explicit allowlist of official API/CDN hosts. Its redirect handler rejects cross-host CurseForge redirects rather than forwarding credentials.
+- `curseforge.py` retains a provider adapter but hard-disables online integration through `_CURSEFORGE_ONLINE_ENABLED = False`. If re-enabled later, the key must come from the session, environment, or a regular user-owned private key file (mode restricted, no symlink, size-bounded). A Rust port must not silently change this policy.
+- `modrinth.py` bounds JSON responses (16 MiB), icon responses (8 MiB), and mod downloads (2 GiB); uses finite request timeouts; resolves exact loader/Minecraft version compatibility; stages downloads to temporary files; and checks a SHA-1 when supplied before replacing the destination.
+- `importers/downloader.py` handles indexed pack downloads separately, with cancellation checks, size limits, temporary files, retry/backoff for transient failures, and SHA-512/SHA-1 verification when an expected digest is available. Explicit HTTP denial does not trigger futile alternate-URL retries.
+- `importers/serverloader.py` has another installer download path with its own TLS context, finite response/file limits, cancellation and retry behavior, and atomic destination replacement. Do not assume it is behaviorally identical to Modrinth download handling.
+- `sharing/gofile.py` has a distinct upload path: it opens the selected ZIP without following symlinks, checks file identity before hashing, validates the SHA-256 against the reviewed artifact, streams from the same file descriptor, and validates the provider's returned URL and metadata. It does not accept an arbitrary URL from the response as a share link, and its optional API token is not persisted or returned.
+
+Migration consequence: any new Rust network adapter must preserve per-provider TLS/root-store behavior, host allowlists, redirect policy, timeouts, body limits, cancellation, retry semantics, hash algorithms, atomic publication and credential redaction. Replacing several Python paths with one convenient HTTP crate is not automatically a correctness-preserving refactor.
+
+### 2.5.2 Existing filesystem mutation owners
+
+The main file-mutating operations are already spread across domain modules and have different rollback contracts:
+
+- Registry publication: `InstanceManager._write_instances()` writes a complete snapshot, flushes/fsyncs the temporary file and atomically replaces `instances.json`; external modification and parse errors block writes.
+- Mod inventory changes: `ModManager` controls top-level JAR add/enable/disable/delete; `mods/versions.py` stages compatible files and manages replacement records.
+- Server pack update: `importers/pack_update.py` creates a plan first, then stages/downloads/applies the pack while preserving world/config/owner data and retaining rollback/receipt material.
+- Configuration repair: `data/properties.py` validates server properties and saves a backup before repair; `ServerInstance.set_eula_accepted()` writes `eula.txt` atomically.
+- Loading repair: `diagnostics/loadcheck.py` separates crash analysis from opt-in JAR quarantine/restore operations.
+- World operations: `BackupManager` owns legacy world swap/reset/wipe and pre-swap directories; `FleetBackupManager` owns immutable-generation restore and retention cleanup.
+- Import: `prism.py` creates staged target content, import receipts and generated setup files; optional server/mod installation occurs after the core source copy.
+- Export/share: `client_export.py` writes a temporary archive then publishes it after verification; `gofile.py` uploads the reviewed artifact without modifying the server folder.
+
+A Rust migration must not create duplicate writers for any of these data classes. For each operation, define one owner, the source/destination paths, preconditions, staging location, publication operation, backup/receipt, failure recovery, and whether cancellation is safe before/after publication. A Rust helper should initially return plans/results or perform a single isolated primitive, not take ownership of whole workflows.
+
 ### 2.6 Diagnostics
 
 `diagnostics/loadcheck.py` parses logs/crash reports and inspects JAR metadata, maps reported mod IDs back to JARs, and can quarantine/restore selected files. Parsing/diagnosis and filesystem mutation should remain separate operations. The Rust core may eventually help with a pure parser, but a quarantine/restore operation is not a suitable first port.
