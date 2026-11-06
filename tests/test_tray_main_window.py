@@ -39,7 +39,10 @@ def _window():
 
 def test_tray_stop_uses_non_selected_graceful_worker_without_showing_ui() -> None:
     app, window = _window()
-    instance = SimpleNamespace(id="server-b", name="Server B")
+    instance = SimpleNamespace(
+        id="server-b", name="Server B", path="/tmp/server-b", tmux_session="server-b"
+    )
+    window._manager.instances = [instance]
     shown = Mock()
     selected = Mock()
     stop = Mock()
@@ -67,7 +70,10 @@ def test_tray_stop_uses_non_selected_graceful_worker_without_showing_ui() -> Non
 
 def test_tray_start_restores_ui_and_selects_the_requested_server() -> None:
     app, window = _window()
-    instance = SimpleNamespace(id="server-b", name="Server B")
+    instance = SimpleNamespace(
+        id="server-b", name="Server B", path="/tmp/server-b", tmux_session="server-b"
+    )
+    window._manager.instances = [instance]
     shown = Mock()
     selected = Mock()
     start = Mock()
@@ -91,7 +97,10 @@ def test_tray_start_restores_ui_and_selects_the_requested_server() -> None:
 
 def test_tray_lifecycle_refuses_unknown_state_without_dispatch() -> None:
     app, window = _window()
-    instance = SimpleNamespace(id="server-b", name="Server B")
+    instance = SimpleNamespace(
+        id="server-b", name="Server B", path="/tmp/server-b", tmux_session="server-b"
+    )
+    window._manager.instances = [instance]
     message = Mock()
     start = Mock()
     stop = Mock()
@@ -106,6 +115,34 @@ def test_tray_lifecycle_refuses_unknown_state_without_dispatch() -> None:
         window._run_tray_lifecycle(instance, "stop")
 
         assert message.call_count == 2
+        start.assert_not_called()
+        stop.assert_not_called()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_tray_lifecycle_rejects_removed_or_replaced_registry_target() -> None:
+    app, window = _window()
+    stale = SimpleNamespace(
+        id="server-b", name="Server B", path="/tmp/old-server-b", tmux_session="old-session"
+    )
+    current = SimpleNamespace(
+        id="server-b", name="Server B", path="/tmp/new-server-b", tmux_session="new-session"
+    )
+    message = Mock()
+    start = Mock()
+    stop = Mock()
+    window._tray_message = message
+    window._manager.instances = [current]
+    window._panel.has_active_operations = lambda: False
+    window._panel._do_start_for = start
+    window._panel._do_stop_for = stop
+    window._status_map = {stale.id: "running"}
+
+    try:
+        window._run_tray_lifecycle(stale, "stop")
+        assert message.call_count == 1
         start.assert_not_called()
         stop.assert_not_called()
     finally:

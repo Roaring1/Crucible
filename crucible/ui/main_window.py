@@ -334,7 +334,27 @@ class MainWindow(QMainWindow):
             )
 
     def _run_tray_lifecycle(self, instance: ServerInstance, action: str) -> None:
-        """Dispatch tray actions through the shared InstancePanel lifecycle worker."""
+        """Dispatch only current, registered tray targets through the shared worker."""
+        registered = next(
+            (item for item in self._manager.instances if item.id == instance.id),
+            None,
+        )
+        if (
+            registered is None
+            or str(registered.path) != str(instance.path)
+            or str(registered.tmux_session) != str(instance.tmux_session)
+        ):
+            self._tray_message(
+                "Server action unavailable",
+                "This tray entry is stale because the registered server changed. "
+                "Reopen the tray menu and try again.",
+                warning=True,
+            )
+            return
+        # Use the current registry object, never the potentially stale object
+        # captured when Qt built the native menu.
+        instance = registered
+
         expected = "stopped" if action == "start" else "running"
         current = self._status_map.get(instance.id, "unknown")
         if current != expected:
