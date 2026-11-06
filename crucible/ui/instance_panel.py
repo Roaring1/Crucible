@@ -50,7 +50,10 @@ from PyQt6.QtWidgets import (
 
 from ..data.instance_manager import InstanceManager
 from ..data.instance_model import ServerInstance
-from ..data.world_start_summary import WorldStartSummary, inspect_world_start_state
+from ..data.world_start_summary import (
+    WorldStartSummary,
+    inspect_instance_world_start,
+)
 from ..process.log_watcher import LogWatcher
 from ..process.startup_patterns import RE_SERVER_DONE, stale_starting_should_promote
 from ..process.tmux_manager import TmuxManager
@@ -122,15 +125,7 @@ class _WorldStartSummaryWorker(QObject):
 
     def run(self) -> None:
         try:
-            world_name = self._instance.world_root_path().name
-            previous_world_name = self._instance.extra.get("last_started_world")
-            if not isinstance(previous_world_name, str) or not previous_world_name.strip():
-                previous_world_name = None
-            summary = inspect_world_start_state(
-                self._instance.path_obj,
-                world_name,
-                previous_world_name=previous_world_name,
-            )
+            summary = inspect_instance_world_start(self._instance)
         except Exception as exc:  # noqa: BLE001 - worker boundary must report scan failures.
             summary = WorldStartSummary(
                 world_name="(unknown)",
@@ -1431,7 +1426,7 @@ class InstancePanel(QWidget):
                 "Start was cancelled because the server is no longer confirmed stopped."
             )
             return
-        if self._instance.world_root_path().name != summary.world_name:
+        if self._instance.world_level_name() != summary.world_name:
             self._btn_start.setText("Start")
             self._btn_start.setEnabled(True)
             self.show_feedback(
@@ -1549,7 +1544,7 @@ class InstancePanel(QWidget):
                 "Start was cancelled because the server is no longer confirmed stopped."
             )
             return
-        if inst.world_root_path().name != inspected_world_name:
+        if inst.world_level_name() != inspected_world_name:
             self._btn_start.setText("Start")
             self._btn_start.setEnabled(True)
             self.show_feedback(
@@ -1572,7 +1567,7 @@ class InstancePanel(QWidget):
                 "Start was cancelled because the server is no longer confirmed stopped."
             )
             return
-        if inst.world_root_path().name != inspected_world_name:
+        if inst.world_level_name() != inspected_world_name:
             self._btn_start.setText("Start")
             self._btn_start.setEnabled(self._current_status == "stopped")
             self.show_feedback(

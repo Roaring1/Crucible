@@ -270,3 +270,16 @@ def inspect_world_start_state(
             previous_world_name=previous_world_name,
             error=str(exc),
         )
+
+
+def inspect_instance_world_start(instance) -> WorldStartSummary:
+    """Inspect the raw configured world selection for a ServerInstance."""
+    world_name = instance.world_level_name()
+    previous_world_name = getattr(instance, "extra", {}).get("last_started_world")
+    if not isinstance(previous_world_name, str) or not previous_world_name.strip():
+        previous_world_name = None
+    return inspect_world_start_state(
+        instance.path_obj,
+        world_name,
+        previous_world_name=previous_world_name,
+    )

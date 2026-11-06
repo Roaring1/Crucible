@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -73,6 +74,7 @@ def _setup(status="stopped", action="start"):
         name="Test server",
         tmux_session="instance-uuid",
         fml_query_result="ask",
+        extra={},
     )
     manager = FakeManager(instance)
     tmux = FakeTmux(status)
@@ -85,6 +87,14 @@ def test_start_shortcut_only_starts_confirmed_stopped_server(monkeypatch, isolat
     notices = []
     monkeypatch.setattr(cli, "_shortcut_notification", lambda *a, **k: notices.append((a, k)))
     monkeypatch.setattr(cli, "_preflight_properties", lambda _instance: None)
+    monkeypatch.setattr(cli, "inspect_instance_world_start", lambda _instance: SimpleNamespace(
+            state="existing",
+            requires_confirmation=False,
+            error="",
+            world_name="world",
+            other_developed_worlds=(),
+            world_path=Path("/tmp/server/world"),
+        ))
 
     cli.cmd_shortcut_action(manager, tmux, args)
 
@@ -142,12 +152,77 @@ def test_stop_shortcut_refuses_any_non_running_state(monkeypatch, status) -> Non
     assert notices
 
 
+def test_cli_world_start_confirmation_requires_typed_start(monkeypatch):
+    summary = SimpleNamespace(
+        state="new",
+        requires_confirmation=True,
+        error="",
+        world_name="fresh-world",
+        previous_world_name="old-world",
+        other_developed_worlds=("old-world",),
+        world_path=Path("/tmp/server/fresh-world"),
+    )
+    monkeypatch.setattr(cli, "inspect_instance_world_start", lambda _instance: summary)
+    monkeypatch.setattr(cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "START")
+
+    assert cli._confirm_cli_world_start(SimpleNamespace()) == "fresh-world"
+
+
+def test_cli_world_start_confirmation_cancels_noninteractive_start(monkeypatch):
+    summary = SimpleNamespace(
+        state="new",
+        requires_confirmation=True,
+        error="",
+        world_name="fresh-world",
+        previous_world_name=None,
+        other_developed_worlds=(),
+        world_path=Path("/tmp/server/fresh-world"),
+    )
+    monkeypatch.setattr(cli, "inspect_instance_world_start", lambda _instance: summary)
+    monkeypatch.setattr(cli.sys, "stdin", SimpleNamespace(isatty=lambda: False))
+
+    with pytest.raises(SystemExit) as exc:
+        cli._confirm_cli_world_start(SimpleNamespace())
+    assert exc.value.code == 1
+
+
+def test_start_shortcut_refuses_unconfirmed_world_selection(monkeypatch):
+    _instance, manager, tmux, args = _setup()
+    notices = []
+    summary = SimpleNamespace(
+        state="new",
+        requires_confirmation=True,
+        error="",
+        world_name="fresh-world",
+        other_developed_worlds=("developed-world",),
+        world_path=Path("/tmp/server/fresh-world"),
+    )
+    monkeypatch.setattr(cli, "_shortcut_notification", lambda *a, **k: notices.append((a, k)))
+    monkeypatch.setattr(cli, "inspect_instance_world_start", lambda _instance: summary)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_shortcut_action(manager, tmux, args)
+
+    assert exc.value.code == 1
+    assert tmux.start_calls == []
+    assert notices and notices[0][0][0] == "World selection needs review"
+
+
 def test_start_failure_is_reported_and_registry_is_not_updated(monkeypatch, isolate_heartbeat_store) -> None:
     _instance, manager, tmux, args = _setup()
     tmux.result = (False, "server start failed")
     notices = []
     monkeypatch.setattr(cli, "_shortcut_notification", lambda *a, **k: notices.append((a, k)))
     monkeypatch.setattr(cli, "_preflight_properties", lambda _instance: None)
+    monkeypatch.setattr(cli, "inspect_instance_world_start", lambda _instance: SimpleNamespace(
+            state="existing",
+            requires_confirmation=False,
+            error="",
+            world_name="world",
+            other_developed_worlds=(),
+            world_path=Path("/tmp/server/world"),
+        ))
 
     with pytest.raises(SystemExit) as exc:
         cli.cmd_shortcut_action(manager, tmux, args)

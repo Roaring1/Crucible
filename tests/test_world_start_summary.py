@@ -3,7 +3,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from crucible.data.world_start_summary import inspect_world_start_state
+from crucible.data.instance_model import ServerInstance
+from crucible.data.world_start_summary import (
+    inspect_instance_world_start,
+    inspect_world_start_state,
+)
 
 
 def _make_developed_world(server_root: Path, name: str) -> Path:
@@ -140,3 +144,17 @@ def test_last_started_world_marker_survives_missing_previous_folder(tmp_path):
     assert summary.state == "existing"
     assert summary.selection_changed
     assert summary.requires_confirmation
+
+
+def test_instance_preserves_raw_level_name_for_safety_validation(tmp_path):
+    server = tmp_path / "server"
+    server.mkdir()
+    (server / "server.properties").write_text(
+        "level-name=../outside\n", encoding="utf-8"
+    )
+    instance = ServerInstance(str(server), "Unsafe fixture")
+
+    assert instance.world_level_name() == "../outside"
+    summary = inspect_instance_world_start(instance)
+    assert summary.state == "unsafe"
+    assert "single world-folder name" in summary.error

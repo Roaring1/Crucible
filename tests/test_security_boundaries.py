@@ -143,7 +143,19 @@ class WatchdogTests(unittest.TestCase):
             self.watchdog._poll()
         self.assertFalse(self.watchdog._watching[self.instance.id])
         failed = QSignalSpy(self.watchdog.restart_failed)
-        with patch.object(self.watchdog._tmux, "is_running", return_value=True):
+        with (
+            patch.object(self.watchdog._tmux, "is_running", return_value=True),
+            patch.object(
+                watchdog_mod,
+                "inspect_instance_world_start",
+                return_value=SimpleNamespace(
+                    state="existing",
+                    requires_confirmation=False,
+                    error="",
+                    world_name="world",
+                ),
+            ),
+        ):
             self.watchdog._do_restart(self.instance.id)
         self.assertEqual(len(failed), 1)
         self.assertIn("already running", failed[0][1])
@@ -154,6 +166,16 @@ class WatchdogTests(unittest.TestCase):
         with (
             patch.object(watchdog_mod.QTimer, "singleShot"),
             patch.object(self.watchdog._tmux, "start", return_value=(True, "ok")),
+            patch.object(
+                watchdog_mod,
+                "inspect_instance_world_start",
+                return_value=SimpleNamespace(
+                    state="existing",
+                    requires_confirmation=False,
+                    error="",
+                    world_name="world",
+                ),
+            ),
         ):
             self.watchdog.watch(self.instance, auto_restart=True)
             for expected in range(1, watchdog_mod.CRASH_LOOP_LIMIT + 1):
@@ -168,6 +190,24 @@ class WatchdogTests(unittest.TestCase):
                     )
         self.assertEqual(len(failed), 1)
         self.assertIn("Crash loop", failed[0][1])
+
+    def test_watchdog_refuses_auto_restart_when_world_selection_needs_confirmation(self):
+        self.watchdog._instances[self.instance.id] = self.instance
+        failed = QSignalSpy(self.watchdog.restart_failed)
+        summary = SimpleNamespace(
+            state="new",
+            requires_confirmation=True,
+            error="",
+            world_name="fresh-world",
+        )
+        with (
+            patch.object(watchdog_mod, "inspect_instance_world_start", return_value=summary),
+            patch.object(self.watchdog._tmux, "start") as start,
+        ):
+            self.watchdog._do_restart(self.instance.id)
+        self.assertEqual(len(failed), 1)
+        self.assertIn("owner review", failed[0][1])
+        start.assert_not_called()
 
     def test_stable_uptime_resets_only_current_generation(self):
         with patch.object(watchdog_mod.QTimer, "singleShot"):
