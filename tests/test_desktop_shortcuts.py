@@ -127,7 +127,7 @@ def test_create_refuses_to_overwrite_unrelated_file_with_generated_name(
     desktop.mkdir()
     instance = _instance()
     target = desktop / shortcuts.shortcut_filename(instance.id, "start")
-    target.write_text("[Desktop Entry]\\nName=My unrelated launcher\\n", encoding="utf-8")
+    target.write_text("[Desktop Entry]\nName=My unrelated launcher\n", encoding="utf-8")
 
     with pytest.raises(shortcuts.ShortcutError, match="not this Crucible start shortcut"):
         shortcuts.create_shortcuts(
@@ -145,7 +145,7 @@ def test_remove_refuses_unrelated_file_with_generated_name(
     desktop.mkdir()
     instance = _instance()
     target = desktop / shortcuts.shortcut_filename(instance.id, "stop")
-    target.write_text("[Desktop Entry]\\nName=My unrelated launcher\\n", encoding="utf-8")
+    target.write_text("[Desktop Entry]\nName=My unrelated launcher\n", encoding="utf-8")
 
     with pytest.raises(shortcuts.ShortcutError, match="not this Crucible stop shortcut"):
         shortcuts.remove_shortcuts(
