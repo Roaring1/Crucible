@@ -249,14 +249,14 @@ The current validator's exact compatibility behavior is:
 - warnings
 - blockers
 
-`plan_update()` is documented as non-mutating: it does not apply an update. It accepts a tri-state running observation:
+`plan_update()` is documented as non-mutating: it does not apply an update. Its docstring inaccurately says it does not touch the filesystem; the current implementation reads the server root, properties, local archive, world inventory, preserve paths and disk usage/recursive size. It accepts a tri-state running observation:
 - unknown (`None`) blocks;
 - running blocks;
 - only confirmed stopped can proceed to a plan without that blocker.
 
-It also checks pack identity/version ordering, downgrades, stable/beta/RC channels, Java compatibility warnings, world-folder validity, and preserved world/config paths. Although it does not mutate, it currently reads filesystem state and therefore is not entirely pure.
+It also checks pack identity/version ordering, downgrades, stable/beta/RC channels, Java compatibility warnings, world-folder validity, and preserved world/config paths. There is not yet a complete/incomplete inventory result. `_world_names()` can return a partial selected-world list after an `iterdir()` error or skip inaccessible alternate saves; `_dir_size()` can return a partial byte count after traversal/stat failures. These results feed both the preserve list and the free-space estimate, so an incomplete scan can under-preserve owner worlds or under-estimate staging needs. A mandatory fleet checkpoint remains available before mutation, but it does not mean all world saves are carried into the updated live tree.
 
-**Rust boundary:** the normalized plan decision could be a later candidate after the disk inventory and version evidence are supplied as an immutable input. Download, extraction, stage, apply, receipt and rollback remain outside the first Rust core.
+**Proposed input contract:** `WorldPreserveInventory { entries, complete, errors }` and `TreeSizeEstimate { bytes, complete, errors, capped }`. Planning must block on an incomplete required inventory; apply and rollback must compare fresh inventories against the reviewed plan before staging/rename. `WorldPreserveInventory` and `TreeSizeEstimate` should be gathered in Python and passed as immutable snapshots to any Rust classifier. This is a candidate for a later Rust decision function only after Python behavior is hardened and golden fixtures exist. Download, extraction, stage, apply, receipt and rollback remain outside the first Rust core.
 
 
 
@@ -401,7 +401,7 @@ Create sanitized, small fixtures in the repository before writing a production R
 | Heartbeat/watchdog | Each of four states; missing boot ID; changed boot ID; interrupted stop same/different boot; absent, present and unknown tmux results; wrapper alive/Java gone; two misses; restart delay; crash-loop cap; stable uptime reset; 1/5/20/50 server tmux subprocess count and timeout latency |
 | World summary | Existing developed save; new folder; incomplete folder with `level.dat`; alternate developed save; changed selection; absent prior marker; path traversal; absolute path; symlink root/child; unreadable selected file; unreadable alternate save; missing/unreadable/symlinked/broken `server.properties`; exact `level-name=`; whitespace/colon/escaped key spellings; valid default and custom `level-name`; large file-count traversal |
 | Properties | GTNH 1.7.10 legacy keys; modern 1.20+ keys; removed 1.21.2 keys; duplicate keys; escaped colon in level-type; malformed number/bool/enum; unknown key; comments/order/whitespace normalization; colon/whitespace separators and continuations as explicit unsupported/current-parser divergence cases; missing vs unreadable file; conflicting GUI/CLI/world/port/update readers |
-| Pack update | Unknown/running/stopped; stable update; downgrade blocker; beta warning; unsupported Java; multiple worlds; unsafe `level-name`; insufficient free space |
+| Pack update | Unknown/running/stopped; unmanaged JVM; incomplete process scan; stable update; downgrade blocker; beta warning; unsupported Java; multiple worlds; unreadable root/alternate world; incomplete size estimate; inventory changed after plan; unsafe `level-name`; insufficient free space |
 | Fleet backup | Complete generation; prior generation; reused file; changed file; legacy archive; checksum mismatch; missing/symlinked path; retention and publish failure |
 | Client export | Exact JAR hash; unknown/manual JAR; conflicting distribution decision; source mutates after review; scan incomplete; duplicate/unsafe ZIP member; manifest mismatch |
 | Provider/download | Same-host HTTPS redirect; HTTPS cross-host CDN redirect where permitted; HTTP/FTP downgrade redirect blocked; userinfo/unsafe port; oversized body; timeout; 401/403/429/5xx; missing/invalid digest; wrong digest; credential redaction; cancelled transfer; provider-disabled path before key/network |
