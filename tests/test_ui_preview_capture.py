@@ -58,4 +58,3 @@ def test_capture_ui_previews_writes_expected_pngs(tmp_path):
         assert len(data) > 1_000, filename
 
     assert "Captured 20 UI previews" in result.stdout
-

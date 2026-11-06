@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-
-
 - Add an opt-in native Qt system tray. Closing the window hides Crucible only when **Keep Crucible running in the system tray when its window closes** is enabled; explicit Quit exits Crucible without stopping tmux-managed Minecraft servers.
 - Add a compact tray server menu for registered Crucible instances, with current textual status, exact-state Start/Stop actions, Open in Crucible, and Open folder. It reuses the main window's shared health result and existing server artwork.
 - Add on-demand system resource summaries for Crucible plus registered server JVMs, whole-system CPU/RAM, and optional GPU/VRAM. No recurring GPU sampler or telemetry service is started; the menu samples on demand with bounded waits and caches the result briefly.
@@ -12,11 +10,6 @@
 - Show Checking until the immediate startup tmux inventory resolves. Host-reboot crash recovery now reports what happened without starting Minecraft; the owner explicitly chooses when each server starts.
 - Verify shortcut ownership before updating/removing an existing hashed desktop-entry filename, so a coincidentally named user launcher is never overwritten or deleted.
 - Add regression coverage for shortcut file safety, server-state gates, resource aggregation, and tray menu behavior.
-
-
-- Fetch provider icons through an HTTPS-only, provider-host allowlisted path with redirect validation, socket timeouts, byte limits, and no provider credentials. Invalid images and oversized dimensions fail gracefully instead of remaining stuck as an ellipsis.
-- Expand the offline UI preview suite with synthetic first-page, later-page and selected-detail Add Mod screenshots; add controlled worker, URL-security and Qt pagination regressions.
-
 
 - Fix Add Mod icon paging: prioritize the selected/current viewport rows, cap the appendable icon queue at 48 jobs, and avoid cancelling earlier-page fetches. Use deliberate loading/missing/failed placeholders; cap decoded images at 64×64, the pixmap LRU at 256 entries, and icon-state bookkeeping at 1,024 entries. Eviction also replaces result-row QIcons so rows do not retain old pixel data.
 - Fetch provider icons through an HTTPS-only, provider-host allowlisted path with validated redirects, a maximum 8 MiB response, 64 KiB body reads, socket timeouts, and no provider credentials. The body reader checks a monotonic deadline; urllib response-header parsing remains bounded per socket wait rather than by a strict end-to-end wall-clock deadline. Invalid images and oversized dimensions fail gracefully instead of remaining stuck as an ellipsis.
@@ -573,8 +566,6 @@ plays). This is the first build tagged as a RELEASE.
   `install.sh` run) to `~/.local/share/crucible-backups/` (separate directory,
   never touched by the installer). `install.sh` automatically migrates any
   existing backups from the old location on first run.
-
-
 
 ### Fixed / Improved
 - **Install is now genuinely self-contained.** `install.sh` works from anywhere —
