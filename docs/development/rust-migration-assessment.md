@@ -160,7 +160,7 @@ Do not choose the bridge based on fashion. Measure the build, packaging, debuggi
 
 The owner's Crosshair `rust-port` branch is a useful internal reference. Its observed Cargo manifest:
 
-- Uses Rust 2024 edition and declares Rust 1.92.
+- Uses Rust 2024 edition and declares Rust 1.92. That was the branch's observed toolchain/MSRV context when inspected, not today's current stable compiler. The official Rust release feed lists Rust 1.99.1 (2026-10-15) as current stable on this assessment date; validate early experiments on the current stable toolchain, then choose an explicit and separately tested MSRV for the shipped crate. See the toolchain snapshot in `rust-migration-performance-audit.md`.
 - Names its library `crosshair_core`, separate from the CLI binary.
 - Keeps Cargo default features empty.
 - Makes the Slint Settings UI an explicit optional feature.
@@ -222,7 +222,7 @@ Important differences: Crosshair is an overlay/configuration tool with different
 ### 7.5 Build and release
 
 - Keep Python 3.11/3.13 CI green during the coexistence phase.
-- Add pinned Rust toolchain and `cargo fmt --check`, `cargo clippy`, `cargo test --locked`, and reproducible release builds.
+- Add a locked Rust toolchain and `cargo fmt --check`, `cargo clippy`, `cargo test --locked`, and reproducible release builds. Keep the development toolchain and the declared MSRV as separate decisions; do not simply copy Crosshair's Rust 1.92 pin.
 - Test the installed package, not only the source checkout.
 - Ensure release archives contain the correct platform executable and required runtime assets.
 - Verify staged update rollback if any Rust binary is missing, corrupt, incompatible, or fails its self-check.
