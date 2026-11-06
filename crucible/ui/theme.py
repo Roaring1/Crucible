@@ -44,6 +44,7 @@ STATUS_COLORS = {
     "unknown":      YELLOW,
     "starting":     PROGRESS,
     "stopping":     PROGRESS,
+    "checking":     PROGRESS,
 }
 
 LOG_COLORS = {

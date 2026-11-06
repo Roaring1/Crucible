@@ -24,6 +24,7 @@ crucible = [
     "ui/assets/server-icons/*.svg",
     "ui/assets/status-icons/*.svg",
     "ui/assets/menu-icons/*.svg",
+    "ui/assets/tray/*.svg",
 ]
 
 [tool.setuptools.dynamic]

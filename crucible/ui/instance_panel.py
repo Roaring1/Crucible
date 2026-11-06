@@ -113,8 +113,10 @@ class InstancePanel(QWidget):
     """
 
     status_changed = pyqtSignal(str, str)
+    action_feedback_requested = pyqtSignal(str, str, bool)
     watchdog_watch_requested = pyqtSignal(object, bool)
     watchdog_unwatch_requested = pyqtSignal(str)
+    watchdog_stop_completed_requested = pyqtSignal(str)
     watcher_reset_requested = pyqtSignal(object)
     fix_loading_requested = pyqtSignal(object)
     inspect_logs_requested = pyqtSignal(object)
@@ -588,6 +590,14 @@ class InstancePanel(QWidget):
     def current_instance_id(self) -> str | None:
         return self._instance.id if self._instance is not None else None
 
+    def focus_console(self) -> None:
+        """Show the selected server console without reloading the instance."""
+        if self._instance is None:
+            return
+        self._tabs.setCurrentWidget(self._console)
+        self._load_current_tab()
+        self._update_tps_polling()
+
     def show_feedback(self, message: str, duration_ms: int = 4_000) -> None:
         """Show brief action feedback in the selected-server header, not a footer."""
         self._feedback_label.setText(message)
@@ -650,17 +660,86 @@ class InstancePanel(QWidget):
 
     # Sidebar context-menu proxies
 
-    def _do_start_for(self, instance: ServerInstance) -> None:
-        if self._instance is None or self._instance.id != instance.id:
-            if not self.load(instance):
-                return
+    def _do_start_for(
+        self, instance: ServerInstance, status_hint: str | None = None
+    ) -> None:
+        if (self._instance is None or self._instance.id != instance.id) and not self.load(
+            instance, status_hint=status_hint
+        ):
+            return
         self._do_start()
 
-    def _do_stop_for(self, instance: ServerInstance) -> None:
-        if self._instance is None or self._instance.id != instance.id:
-            if not self.load(instance):
+    def _do_stop_for(
+        self,
+        instance: ServerInstance,
+        status_hint: str | None = None,
+        *,
+        graceful_only: bool = False,
+    ) -> None:
+        if graceful_only and self._instance is not None and self._instance.id != instance.id:
+            self._do_stop_unselected(instance, status_hint)
+            return
+        if (self._instance is None or self._instance.id != instance.id) and not self.load(
+            instance, status_hint=status_hint
+        ):
+            return
+        self._do_stop(allow_force=not graceful_only)
+
+    def _do_stop_unselected(
+        self, instance: ServerInstance, status_hint: str | None
+    ) -> None:
+        """Gracefully stop a non-selected server without changing the workspace."""
+        if status_hint not in {"running", "starting"}:
+            self.action_feedback_requested.emit(
+                "Server action unavailable",
+                f"{instance.name} is {status_hint or 'unknown'}. Stop requires a confirmed running session.",
+                True,
+            )
+            return
+
+        self.watchdog_unwatch_requested.emit(instance.id)
+        self.status_changed.emit(instance.id, "stopping")
+        result: dict[str, bool | None] = {}
+
+        def _stop() -> tuple[bool, str]:
+            ok, message = self._tmux.stop(instance, graceful=True, timeout_s=90)
+            running = True if ok else self._tmux.probe_running(instance)
+            result["running"] = running
+            result["java_up"] = (
+                self._tmux.is_java_foreground(instance)
+                if running is True and not ok else None
+            )
+            return ok, message
+
+        def _done(ok: bool, message: str) -> None:
+            observed = result.get("running")
+            if ok or observed is False:
+                self.watchdog_stop_completed_requested.emit(instance.id)
+                self.status_changed.emit(instance.id, "stopped")
+                if not ok:
+                    self.action_feedback_requested.emit(
+                        "Server stopped",
+                        f"{instance.name} is no longer running. {message}",
+                        False,
+                    )
                 return
-        self._do_stop()
+            if observed is True:
+                self.watchdog_watch_requested.emit(
+                    instance,
+                    instance.auto_restart if result.get("java_up") is True else False,
+                )
+                self.status_changed.emit(instance.id, "running")
+            else:
+                # Unknown stays unknown and leaves the stop-requested heartbeat
+                # in place. A later confirmed GUI selection can re-register it.
+                self.status_changed.emit(instance.id, "unknown")
+            self.action_feedback_requested.emit(
+                "Could not stop server",
+                f"{instance.name}: {message}",
+                True,
+            )
+
+        self._run_tmux(_stop, _done)
 
     # Watchdog lifecycle
 
@@ -672,6 +751,9 @@ class InstancePanel(QWidget):
         self._watchdog.moveToThread(self._wd_thread)
         self.watchdog_watch_requested.connect(self._watchdog.watch)
         self.watchdog_unwatch_requested.connect(self._watchdog.unwatch)
+        self.watchdog_stop_completed_requested.connect(
+            self._watchdog.stop_completed
+        )
         self._wd_thread.started.connect(self._watchdog.start)
         self._watchdog.crash_detected.connect(self._on_crash)
         self._watchdog.restarted.connect(self._on_auto_restarted)
@@ -956,6 +1038,7 @@ class InstancePanel(QWidget):
             "missing":      "SERVER FILES MISSING",
             "unmanaged":    "RUNNING OUTSIDE MANAGED TMUX",
             "unknown":      "STATUS TEMPORARILY UNAVAILABLE",
+            "checking":     "CHECKING SERVER STATUS…",
         }.get(status, status.upper())
 
         self._status_label.setText(label_text)
@@ -1168,16 +1251,24 @@ class InstancePanel(QWidget):
 
         self._run_tmux(lambda: self._tmux.start(inst, fml_query_result=fml_choice), _on_done)
 
-    def _restore_after_failed_stop(self, inst: ServerInstance) -> None:
-        """A failed/cancelled stop means the live server must be monitored again."""
+    def _restore_after_failed_stop(
+        self,
+        inst: ServerInstance,
+        *,
+        auto_restart: bool | None = None,
+    ) -> None:
+        """Resume monitoring without auto-restarting a wrapper still shutting down."""
         if self._instance is not inst:
             return
         self._update_status_display("running")
         self.status_changed.emit(inst.id, "running")
         if self._watchdog:
-            self.watchdog_watch_requested.emit(inst, inst.auto_restart)
+            self.watchdog_watch_requested.emit(
+                inst,
+                inst.auto_restart if auto_restart is None else auto_restart,
+            )
 
-    def _do_stop(self) -> None:
+    def _do_stop(self, *, allow_force: bool = True) -> None:
         if (
             not self._instance
             or self._current_status not in ("running", "starting")
@@ -1193,12 +1284,45 @@ class InstancePanel(QWidget):
         self._btn_stop.setEnabled(False)
         self._btn_stop.setText("Stopping…")
 
+        stop_state: dict[str, bool | None] = {}
+
+        def _stop() -> tuple[bool, str]:
+            ok, message = self._tmux.stop(inst, graceful=True, timeout_s=90)
+            if not ok:
+                running = self._tmux.probe_running(inst)
+                stop_state["running"] = running
+                stop_state["java_up"] = (
+                    self._tmux.is_java_foreground(inst)
+                    if running is True else None
+                )
+            return ok, message
+
         def _on_done(ok: bool, msg: str) -> None:
             if ok:
                 self._update_status_display("stopped")
                 self.status_changed.emit(inst.id, "stopped")
+                self.watchdog_stop_completed_requested.emit(inst.id)
                 self._btn_stop.setText("■  Stop")
                 self._btn_stop.setEnabled(False)
+                return
+
+            if not allow_force:
+                self._restore_after_failed_stop(
+                    inst,
+                    auto_restart=(
+                        inst.auto_restart if stop_state.get("java_up") is True else False
+                    ),
+                )
+                self._console._append_system(
+                    f"Graceful Stop did not complete: {msg}"
+                )
+                self.action_feedback_requested.emit(
+                    "Could not stop server", msg, True
+                )
+                self._btn_stop.setText("■  Stop")
+                self._btn_stop.setEnabled(
+                    self._current_status in ("running", "starting")
+                )
                 return
 
             reply = QMessageBox.question(
@@ -1212,8 +1336,15 @@ class InstancePanel(QWidget):
                     if ok2:
                         self._update_status_display("stopped")
                         self.status_changed.emit(inst.id, "stopped")
+                        self.watchdog_stop_completed_requested.emit(inst.id)
                     else:
-                        self._restore_after_failed_stop(inst)
+                        self._restore_after_failed_stop(
+                            inst,
+                            auto_restart=(
+                                inst.auto_restart
+                                if stop_state.get("java_up") is True else False
+                            ),
+                        )
                         QMessageBox.critical(self, "Force-kill failed", msg2)
                     self._btn_stop.setText("■  Stop")
                     self._btn_stop.setEnabled(
@@ -1224,15 +1355,18 @@ class InstancePanel(QWidget):
                     lambda: self._tmux.stop(inst, graceful=False), _on_kill
                 )
             else:
-                self._restore_after_failed_stop(inst)
+                self._restore_after_failed_stop(
+                    inst,
+                    auto_restart=(
+                        inst.auto_restart if stop_state.get("java_up") is True else False
+                    ),
+                )
                 self._btn_stop.setText("■  Stop")
                 self._btn_stop.setEnabled(
                     self._current_status in ("running", "starting")
                 )
 
-        self._run_tmux(
-            lambda: self._tmux.stop(inst, graceful=True, timeout_s=90), _on_done
-        )
+        self._run_tmux(_stop, _on_done)
 
     def _do_attach(self) -> None:
         if not self._instance:

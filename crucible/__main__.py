@@ -32,6 +32,7 @@ import argparse
 import sys
 
 from .data.instance_manager import InstanceManager, validate_session_name
+from .process.crash_recovery import HeartbeatStore
 from .process.tmux_manager import TmuxManager
 from .utils import (
     BOLD,
@@ -295,6 +296,184 @@ def cmd_fix_loading(manager: InstanceManager, args) -> None:
     if res.unresolved:
         warn("Could not find jars for: " + ", ".join(res.unresolved))
         dim("Remove these client-only mods from mods/ manually.")
+
+
+def _shortcut_notification(title: str, message: str, *, error: bool = False) -> None:
+    """Show desktop feedback for a generated launcher without opening a terminal."""
+    import shutil
+    import subprocess
+
+    notify = shutil.which("notify-send")
+    if notify:
+        try:
+            urgency = "--urgency=critical" if error else "--urgency=normal"
+            result = subprocess.run(
+                [
+                    notify,
+                    "--app-name=Crucible",
+                    "--expire-time=5000",
+                    urgency,
+                    title,
+                    message,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            if result.returncode == 0:
+                return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    # KDE's passive popup is a useful fallback without constructing another
+    # QApplication (which can abort when a launcher is invoked headlessly).
+    kdialog = shutil.which("kdialog")
+    if kdialog:
+        try:
+            result = subprocess.run(
+                [kdialog, "--passivepopup", message, "5", "--title", title],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            if result.returncode == 0:
+                return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    # Always leave a durable, user-owned record when no notification service
+    # is present. Desktop shortcuts are Terminal=false, so stderr alone is
+    # not a sufficient feedback path.
+    detail = f"{title}: {message}"
+    try:
+        import datetime
+        from pathlib import Path
+
+        state_dir = Path.home() / ".local" / "state" / "crucible"
+        state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with (state_dir / "shortcut-actions.log").open("a", encoding="utf-8") as handle:
+            handle.write(f"{datetime.datetime.now().isoformat(timespec='seconds')} {detail}\n")
+    except OSError:
+        pass
+    print(detail, file=sys.stderr)
+
+
+def cmd_shortcut_action(
+    manager: InstanceManager, tmux: TmuxManager, args
+) -> None:
+    """Run a generated Start/Stop shortcut through Crucible's safe tmux manager."""
+    instance = manager.get_by_name_or_id(args.instance_id)
+    if instance is None:
+        _shortcut_notification(
+            "Server shortcut unavailable",
+            "This server is no longer registered in Crucible. Recreate its shortcut from the server list.",
+            error=True,
+        )
+        sys.exit(1)
+    action = args.action
+    current = tmux.get_status(instance)
+
+    if action == "start":
+        if current != "stopped":
+            message = (
+                f"{instance.name} is {current.replace('_', ' ')}. "
+                "Crucible will start a server only after Stopped is confirmed."
+            )
+            _shortcut_notification("Start not available", message, error=True)
+            sys.exit(1)
+        try:
+            _preflight_properties(instance)
+        except Exception as exc:  # noqa: BLE001 - report unexpected preflight failures from a terminal-free launcher
+            _shortcut_notification(
+                "Could not prepare server",
+                f"{instance.name}: {exc}",
+                error=True,
+            )
+            sys.exit(1)
+        success, message = tmux.start(
+            instance, fml_query_result=instance.fml_query_result
+        )
+        if success:
+            try:
+                HeartbeatStore().mark_running(instance.id, instance.tmux_session)
+            except OSError as exc:
+                _shortcut_notification(
+                    "Server started; recovery state could not be saved",
+                    f"{instance.name}: {exc}",
+                    error=True,
+                )
+            try:
+                manager.update_instance(instance)
+            except Exception as exc:  # noqa: BLE001 - report registry failures instead of hiding them from a shortcut
+                _shortcut_notification(
+                    "Server started; registry update failed",
+                    f"{instance.name}: {exc}",
+                    error=True,
+                )
+                sys.exit(1)
+            _shortcut_notification("Crucible server starting", instance.name)
+            return
+    else:
+        if current != "running":
+            message = (
+                f"{instance.name} is {current.replace('_', ' ')}. "
+                "Crucible will send Stop only to a confirmed managed session."
+            )
+            _shortcut_notification("Stop not available", message, error=True)
+            sys.exit(1)
+        # Mark intent before sending Stop. An open Crucible watchdog observes
+        # this state and pauses crash recovery before the tmux session exits.
+        heartbeat = HeartbeatStore()
+        try:
+            heartbeat.mark_stop_requested(instance.id)
+        except OSError as exc:
+            _shortcut_notification(
+                "Could not safely stop server",
+                f"{instance.name}: Crucible could not record the stop request ({exc}). No Stop command was sent.",
+                error=True,
+            )
+            sys.exit(1)
+
+        # Shortcuts are deliberately graceful-only. There is no force-kill path.
+        success, message = tmux.stop(instance, graceful=True, timeout_s=90)
+        if success:
+            try:
+                heartbeat.mark_stopped_clean(instance.id)
+            except OSError:
+                # The stop-requested marker remains safe: startup reconciliation
+                # can clear it on the same boot without reporting a crash.
+                pass
+            _shortcut_notification("Crucible server stopped", instance.name)
+            return
+
+        # If Stop failed but the configured session is still positively
+        # running, re-arm the heartbeat. Unknown is not enough to resume a
+        # watchdog or claim that the Stop failed safely.
+        current_after = tmux.get_status(instance)
+        if current_after == "running":
+            # A tmux wrapper may still be alive while Java is absent during
+            # its own shutdown/reboot countdown. Do not re-arm crash auto-
+            # restart from that ambiguous state after a manual Stop request.
+            java_up = tmux.is_java_foreground(instance)
+            if java_up is True:
+                try:
+                    heartbeat.mark_running(instance.id, instance.tmux_session)
+                except OSError:
+                    pass
+        elif current_after == "stopped":
+            try:
+                heartbeat.mark_stopped_clean(instance.id)
+            except OSError:
+                pass
+
+    _shortcut_notification(
+        f"Could not {action} server",
+        f"{instance.name}: {message}",
+        error=True,
+    )
+    sys.exit(1)
 
 
 def cmd_start(manager: InstanceManager, tmux: TmuxManager, args) -> None:
@@ -1569,6 +1748,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_stop.add_argument("--force",   action="store_true", help="Force-kill (no world save)")
     p_stop.add_argument("--timeout", type=int, default=90, metavar="S", help="Graceful timeout in seconds (default: 90)")
 
+    # desktop shortcut action (generated by Crucible; graceful stop only)
+    p_shortcut = sub.add_parser(
+        "shortcut-action",
+        help=argparse.SUPPRESS,
+    )
+    p_shortcut.add_argument("action", choices=("start", "stop"))
+    p_shortcut.add_argument("instance_id", help=argparse.SUPPRESS)
+
     # restart
     p_restart = sub.add_parser("restart", help="Stop then start the server")
     p_restart.add_argument("name", help="Instance name or ID prefix")
@@ -1719,7 +1906,7 @@ def main() -> None:
         sys.exit(0)
 
     # GUI launches without the CLI banner (it has its own window)
-    if args.command != "gui":
+    if args.command not in {"gui", "shortcut-action"}:
         print(banner())
 
     manager = InstanceManager()
@@ -1732,6 +1919,7 @@ def main() -> None:
         "add":      lambda: cmd_add(manager, args),
         "remove":   lambda: cmd_remove(manager, args),
         "start":    lambda: cmd_start(manager, tmux, args),
+        "shortcut-action": lambda: cmd_shortcut_action(manager, tmux, args),
         "fix-properties": lambda: cmd_fix_properties(manager, args),
         "fix-loading": lambda: cmd_fix_loading(manager, args),
         "stop":     lambda: cmd_stop(manager, tmux, args),

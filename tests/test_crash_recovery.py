@@ -1,4 +1,3 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +7,7 @@ from crucible.data.instance_model import ServerInstance
 from crucible.process.crash_recovery import (
     CRASHED_HANDLED,
     RUNNING,
+    STOP_REQUESTED,
     STOPPED_CLEAN,
     HeartbeatStore,
     detect_torn_log,
@@ -40,6 +40,14 @@ class HeartbeatStoreTests(unittest.TestCase):
         self.assertEqual(data["state"], STOPPED_CLEAN)
         self.assertEqual(data["boot_id"], "boot-a")
 
+    def test_mark_stop_requested_preserves_running_boot_and_session(self):
+        self.store.mark_running("inst-1", "MySession", boot_id="boot-a")
+        self.store.mark_stop_requested("inst-1")
+        data = self.store.read("inst-1")
+        self.assertEqual(data["state"], STOP_REQUESTED)
+        self.assertEqual(data["boot_id"], "boot-a")
+        self.assertEqual(data["tmux_session"], "MySession")
+
     def test_mark_crashed_handled(self):
         self.store.mark_running("inst-1", "MySession", boot_id="boot-a")
         self.store.mark_crashed_handled("inst-1")
@@ -68,6 +76,8 @@ class ReconcileTests(unittest.TestCase):
     def _tmux(self, running: bool) -> MagicMock:
         tmux = MagicMock()
         tmux.is_running.return_value = running
+        tmux.probe_running.return_value = running
+        tmux.is_java_foreground.return_value = True
         return tmux
 
     def test_detects_host_crash_when_boot_id_changed_and_session_gone(self):
@@ -113,6 +123,90 @@ class ReconcileTests(unittest.TestCase):
 
         reports = reconcile([instance], self._tmux(running=False), store=self.store)
         self.assertEqual(reports, [])
+
+    def test_interrupted_stop_on_same_boot_is_cleared_without_crash_report(self):
+        instance = _make_instance(self.tmp_root)
+        self.store.mark_running(instance.id, instance.tmux_session, boot_id="boot-same")
+        self.store.mark_stop_requested(instance.id)
+
+        import crucible.process.crash_recovery as cr
+        orig = cr.get_boot_id
+        cr.get_boot_id = lambda: "boot-same"
+        try:
+            reports = reconcile(
+                [instance], self._tmux(running=False), store=self.store
+            )
+        finally:
+            cr.get_boot_id = orig
+
+        self.assertEqual(reports, [])
+        self.assertEqual(self.store.read(instance.id)["state"], STOPPED_CLEAN)
+
+    def test_interrupted_stop_across_host_reboot_is_reported(self):
+        instance = _make_instance(self.tmp_root)
+        self.store.mark_running(instance.id, instance.tmux_session, boot_id="boot-old")
+        self.store.mark_stop_requested(instance.id)
+
+        import crucible.process.crash_recovery as cr
+        orig = cr.get_boot_id
+        cr.get_boot_id = lambda: "boot-new"
+        try:
+            reports = reconcile(
+                [instance], self._tmux(running=False), store=self.store
+            )
+        finally:
+            cr.get_boot_id = orig
+
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(self.store.read(instance.id)["state"], CRASHED_HANDLED)
+
+    def test_uncertain_probe_does_not_report_a_host_crash_or_clear_stop_intent(self):
+        instance = _make_instance(self.tmp_root)
+        self.store.mark_running(instance.id, instance.tmux_session, boot_id="boot-old")
+        self.store.mark_stop_requested(instance.id)
+        tmux = self._tmux(running=False)
+        tmux.probe_running.return_value = None
+
+        reports = reconcile([instance], tmux, store=self.store)
+
+        self.assertEqual(reports, [])
+        self.assertEqual(self.store.read(instance.id)["state"], STOP_REQUESTED)
+
+    def test_interrupted_stop_with_wrapper_alive_but_java_gone_stays_pending(self):
+        instance = _make_instance(self.tmp_root)
+        self.store.mark_running(instance.id, instance.tmux_session, boot_id="boot-old")
+        self.store.mark_stop_requested(instance.id)
+        tmux = self._tmux(running=True)
+        tmux.is_java_foreground.return_value = False
+
+        reports = reconcile([instance], tmux, store=self.store)
+
+        self.assertEqual(reports, [])
+        self.assertEqual(self.store.read(instance.id)["state"], STOP_REQUESTED)
+
+    def test_interrupted_stop_with_uncertain_java_probe_stays_pending(self):
+        instance = _make_instance(self.tmp_root)
+        self.store.mark_running(instance.id, instance.tmux_session, boot_id="boot-old")
+        self.store.mark_stop_requested(instance.id)
+        tmux = self._tmux(running=True)
+        tmux.is_java_foreground.return_value = None
+
+        reports = reconcile([instance], tmux, store=self.store)
+
+        self.assertEqual(reports, [])
+        self.assertEqual(self.store.read(instance.id)["state"], STOP_REQUESTED)
+
+    def test_interrupted_stop_with_live_session_restores_running_heartbeat(self):
+        instance = _make_instance(self.tmp_root)
+        self.store.mark_running(instance.id, instance.tmux_session, boot_id="boot-old")
+        self.store.mark_stop_requested(instance.id)
+
+        reports = reconcile(
+            [instance], self._tmux(running=True), store=self.store
+        )
+
+        self.assertEqual(reports, [])
+        self.assertEqual(self.store.read(instance.id)["state"], RUNNING)
 
     def test_no_report_when_crash_already_witnessed_live(self):
         instance = _make_instance(self.tmp_root)

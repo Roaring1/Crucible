@@ -38,6 +38,7 @@ def test_every_server_status_has_readable_text_and_accessible_label():
         "missing",
         "unmanaged",
         "unknown",
+        "checking",
     }
     assert set(InstanceRowWidget.STATUS_LABELS) == expected
     assert expected <= set(theme.STATUS_COLORS)

@@ -48,13 +48,17 @@ crucible attach "My Server"
 - Restore rejects traversal, links, special files, duplicate destinations, wrong roots, truncation, and insufficient free space.
 - Large logs are bounded and batch-rendered; server switching reuses persistent workers; expensive tabs are lazy-loaded.
 - State uses words/icons as well as color; resource cards include numbers and accessible progress bars.
+- The optional system tray reuses the same five-second server-status result as the main UI. It never owns or stops Minecraft processes.
+- Resource usage is sampled only when **System usage** is opened; GPU queries are on-demand and time-bounded, not continuously polled.
+- Opening Crucible immediately checks registered tmux sessions and shows **Checking** until their state is confirmed. Host-reboot crash recovery is report-only: Minecraft starts only after an explicit owner action.
+- Optional per-server Start and graceful Stop shortcuts are available from the server context menu. Desktop location can be browsed or pasted; Applications entries are per-user and shortcuts use stable instance IDs.
 
 Data locations:
 
 - Registry: `~/.config/crucible/instances.json`
 - Backups: `~/.local/share/crucible-backups/`
 
-See `CHANGELOG.md` and GitHub Release notes for full history.
+See `CHANGELOG.md` and GitHub Release notes for full history. Tray, shortcuts, resource sampling, and the future Rust-port boundary are documented in [the feature design](docs/development/tray-shortcuts-resource-usage.md).
 
 ## Developer diagnostics
 
