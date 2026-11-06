@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,9 +24,13 @@ class FakeTmux:
         self.fail_save_all: set[str] = set()
         self.already_save_off: set[str] = set()
         self.drop_save_off_ack: set[str] = set()
+        self.readiness: dict[str, bool | None] = {}
 
     def get_status(self, instance):
         return self.statuses.get(instance.id, "stopped")
+
+    def is_server_ready(self, instance):
+        return self.readiness.get(instance.id, True)
 
     def send_command_result(self, instance, command):
         self.commands.append((instance.id, command))
@@ -690,6 +695,60 @@ def test_post_rename_fsync_failure_rolls_back_unpublished_generation(
     assert not list(backups.staging_dir.iterdir())
 
 
+@pytest.mark.parametrize("readiness", [False, None])
+def test_running_but_not_confirmed_ready_server_is_deferred_before_console_commands(
+    tmp_path, readiness
+):
+    instance = make_server(tmp_path / "server")
+    tmux = FakeTmux({instance.id: "running"})
+    tmux.readiness[instance.id] = readiness
+    backups = manager(tmp_path, [instance], tmux)
+
+    with pytest.raises(FleetBackupError, match="not confirmed ready|readiness could not be verified"):
+        backups.run_backup()
+
+    assert tmux.commands == []
+    assert backups.list_generations() == []
+
+
+def test_console_acknowledgement_uses_new_log_bytes_when_tmux_tail_rolls(tmp_path):
+    instance = make_server(tmp_path / "server")
+    log_path = Path(instance.path) / "logs" / "latest.log"
+    old_ack = "[18:10:28] [Server thread/INFO]: Turned off world auto-saving\n"
+    log_path.write_text(old_ack, encoding="utf-8")
+
+    class RollingPaneTmux(FakeTmux):
+        def capture_pane_tail(self, instance, max_lines=200, max_chars=8000):
+            # The bounded pane capture is full and remains unchanged, simulating
+            # the rolling-history condition that hid later acknowledgements.
+            return "x" * 16000
+
+        def send_command_result(self, instance, command):
+            self.commands.append((instance.id, command))
+            with log_path.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    "[18:30:17] [Server thread/INFO]: "
+                    "Turned off world auto-saving\n"
+                )
+            return True, "accepted"
+
+    tmux = RollingPaneTmux({instance.id: "running"})
+    backups = manager(tmp_path, [instance], tmux)
+    backups.command_timeout_s = 0.1
+
+    response = backups._send_console_and_wait(
+        instance,
+        "save-off",
+        re.compile(
+            r"(?:automatic saving is now disabled|turned off world auto-saving)",
+            re.IGNORECASE,
+        ),
+    )
+
+    assert "Turned off world auto-saving" in response
+    assert tmux.commands == [(instance.id, "save-off")]
+
+
 def test_running_server_is_flushed_quiesced_and_autosave_restored(tmp_path):
     instance = make_server(tmp_path / "server")
     tmux = FakeTmux({instance.id: "running"})
@@ -744,6 +803,18 @@ def test_save_failure_attempts_to_restore_autosave_and_commits_nothing(tmp_path)
         "save-on",
     ]
     assert backups.list_generations() == []
+
+
+def test_pane_delta_handles_rolling_history_beyond_two_thousand_characters():
+    before = "\n".join(f"console row {index:03d} " + ("x" * 30) for index in range(300))
+    after = "\n".join(
+        [*(f"console row {index:03d} " + ("x" * 30) for index in range(1, 300)),
+         "Turned off world auto-saving"]
+    )
+
+    assert FleetBackupManager._pane_delta(before, after) == (
+        "Turned off world auto-saving"
+    )
 
 
 def test_pane_delta_refuses_to_scan_a_replaced_tail_for_stale_confirmation():

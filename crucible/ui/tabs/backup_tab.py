@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QObject, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -43,6 +43,7 @@ from ...data.instance_manager import InstanceManager
 from ...data.instance_model import ServerInstance
 from ...process.tmux_manager import TmuxManager
 from .. import theme
+from ..icons import local_icon
 from ..thread_lifecycle import connect_thread_cleanup
 
 
@@ -194,6 +195,8 @@ class BackupTab(QWidget):
         heading.addWidget(title)
         heading.addStretch()
         self._open_btn = QPushButton("Open backup folder")
+        self._open_btn.setIcon(local_icon("folder-open"))
+        self._open_btn.setIconSize(QSize(16, 16))
         self._open_btn.setAccessibleName("Open Crucible fleet backup folder")
         # Preserve the last glyph: the styled content area was one pixel
         # narrower than the rendered text at the normal workspace width.
@@ -277,6 +280,8 @@ class BackupTab(QWidget):
 
         action_row = QHBoxLayout()
         self._backup_btn = QPushButton("Back up all servers now")
+        self._backup_btn.setIcon(local_icon("archive"))
+        self._backup_btn.setIconSize(QSize(16, 16))
         self._backup_btn.setAccessibleName("Back up all registered servers now")
         self._backup_btn.setObjectName("PrimaryButton")
         self._backup_btn.setMinimumHeight(38)

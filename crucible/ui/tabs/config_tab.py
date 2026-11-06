@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 
 from ...data.instance_model import ServerInstance
 from .. import theme
+from ..icons import local_icon
 
 # Keys we want to sort first and highlight -- grouped for readability
 _IMPORTANT: dict[str, list[str]] = {
@@ -52,10 +53,10 @@ _IMPORTANT: dict[str, list[str]] = {
 }
 
 # Keys where an ill-timed edit can corrupt a world or break a running server.
-# Maps key -> short danger note shown as a ⚠ tooltip on the key cell.
+# Maps key -> short danger note shown as a tooltip on the key cell.
 _DANGEROUS_KEYS: dict[str, str] = {
     "level-name": (
-        "⚠ Changing this makes the server create/load a DIFFERENT world folder.\n"
+        "Warning: changing this makes the server create/load a DIFFERENT world folder.\n"
         "Your existing world data is NOT deleted — you'd need to rename the folder\n"
         "on disk to match the new name before restarting.\n"
         "To switch between saved worlds safely, use the World tab's Swap action\n"
@@ -63,11 +64,11 @@ _DANGEROUS_KEYS: dict[str, str] = {
         "can automatically roll back if anything goes wrong."
     ),
     "level-seed": (
-        "⚠ Seed only affects world generation for NEW chunks.\n"
+        "Warning: seed only affects world generation for NEW chunks.\n"
         "Changing it mid-world will cause visible terrain seams at unexplored borders."
     ),
     "online-mode": (
-        "⚠ Switching online-mode changes how player UUIDs are computed.\n"
+        "Warning: switching online-mode changes how player UUIDs are computed.\n"
         "Existing player data files (UUID-named .dat files) will become orphaned.\n"
         "Restart required."
     ),
@@ -97,7 +98,7 @@ class ConfigTab(QWidget):
         self._instance:   ServerInstance | None = None
         self._props_path: Path | None           = None
         self._data: OrderedDict[str, str]       = OrderedDict()
-        self._bool_rows: dict[int, "QComboBox"] = {}  # row → combo for boolean values
+        self._bool_rows: dict[int, QComboBox] = {}  # row → combo for boolean values
 
         self._build_ui()
 
@@ -123,8 +124,9 @@ class ConfigTab(QWidget):
         self._save_btn.clicked.connect(self._save)
         toolbar.addWidget(self._save_btn)
 
-        reload_btn = QPushButton("↻")
-        reload_btn.setFixedWidth(36)
+        reload_btn = QPushButton("Reload")
+        reload_btn.setIcon(local_icon("refresh-cw"))
+        reload_btn.setIconSize(QSize(16, 16))
         reload_btn.setToolTip("Reload from disk (discards unsaved edits)")
         reload_btn.setAccessibleName("Reload server properties")
         reload_btn.clicked.connect(self._reload_requested)
@@ -170,7 +172,7 @@ class ConfigTab(QWidget):
 
         # Legend
         legend = QLabel(
-            f"<span style='color:{theme.ACCENT}'>■</span> Important properties   "
+            f"<span style='color:{theme.ACCENT}; font-weight:600'>Important properties</span>   "
             f"<span style='color:{theme.GREEN}'>true</span> / "
             f"<span style='color:{theme.RED}'>false</span> highlighted   "
             "Double-click a value to edit"
@@ -200,7 +202,7 @@ class ConfigTab(QWidget):
             key_item = self._table.item(row, 0)
             if not key_item:
                 continue
-            raw_key = key_item.text().lstrip("⚠ ").strip()
+            raw_key = key_item.text().strip()
             if row in self._bool_rows:
                 edited[raw_key] = self._bool_rows[row].currentText()
             else:
@@ -230,9 +232,7 @@ class ConfigTab(QWidget):
         clicked = box.clickedButton()
         if clicked is save_btn:
             return self._save()
-        if clicked is discard_btn:
-            return True
-        return False
+        return clicked is discard_btn
 
     def _reload_requested(self) -> None:
         if self.confirm_discard_or_save():
@@ -250,7 +250,7 @@ class ConfigTab(QWidget):
         if not props_path.exists():
             self._data = OrderedDict()
             self._table.setRowCount(0)
-            self._warn.setText("⚠  server.properties not found — has the server been started at least once?")
+            self._warn.setText("Warning: server.properties not found - has the server been started at least once?")
             self._warn.show()
             self._status.setText("")
             return
@@ -300,7 +300,7 @@ class ConfigTab(QWidget):
             )
             danger_note = _DANGEROUS_KEYS.get(key)
             if danger_note:
-                key_item.setText(f"⚠ {key}")
+                key_item.setText(key)
                 key_item.setToolTip(danger_note)
                 key_item.setForeground(QColor(theme.YELLOW))
             elif group:
@@ -424,7 +424,7 @@ class ConfigTab(QWidget):
 
     def _set_status_saved(self) -> None:
         self._status.setText(
-            "✓  Saved — restart the server for changes to take effect"
+            "Saved - restart the server for changes to take effect"
         )
         self._status.setStyleSheet(
             f"color: {theme.GREEN}; font-size: 11px; font-weight: 600;"

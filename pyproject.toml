@@ -20,6 +20,8 @@ include = ["crucible*"]
 [tool.setuptools.package-data]
 crucible = [
     "assets/*.png",
+    "assets/icons/*.svg",
+    "assets/icons/LICENSES/*.txt",
     "data/*.json",
     "ui/assets/server-icons/*.svg",
     "ui/assets/status-icons/*.svg",

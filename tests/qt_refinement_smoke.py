@@ -1063,13 +1063,13 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
   panel._do_start()
  assert stopped_start.called, 'Start should be dispatched once the server is confirmed stopped'
  panel._update_status_display('stopped')
- panel._btn_start.setText('▶  Start')
+ panel._btn_start.setText('Start')
  panel._more_tab_actions[5].trigger();app.processEvents()
  assert tabs.currentWidget() is panel._config
  assert panel._more_tabs_button.text().startswith('More: Config')
  assert panel._more_tab_actions[5].isChecked()
  tabs.setCurrentWidget(panel._setup);app.processEvents()
- assert panel._more_tabs_button.text()=='More ▾'
+ assert panel._more_tabs_button.text()=='More'
  tabs.setCurrentWidget(panel._info);app.processEvents()
  assert panel._info._inspect_logs_btn.isEnabled()
  assert panel._info._fix_loading_btn.isEnabled()

@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -360,7 +361,14 @@ class ModpackDialog(QDialog):
     def _open_page(self):
         hit = self._selected_hit()
         if hit is not None:
-            QDesktopServices.openUrl(QUrl(hit.page_url()))
+            url = hit.page_url()
+            if not url:
+                QMessageBox.information(
+                    self, "Project page unavailable",
+                    "The provider did not return a valid project URL. No guessed URL was opened.",
+                )
+                return
+            QDesktopServices.openUrl(QUrl(url))
 
     # --- install ---
     def _choose_install_target(self, hit) -> str:

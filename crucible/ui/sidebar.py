@@ -511,7 +511,7 @@ class Sidebar(QWidget):
         layout.addWidget(self._appearance_btn)
 
         # Add button
-        self._add_btn = QPushButton("＋  Add server")
+        self._add_btn = QPushButton("Add server")
         self._add_btn.setObjectName("SidebarAddButton")
         self._add_btn.setAccessibleName("Add server")
         self._add_btn.setMinimumHeight(36)

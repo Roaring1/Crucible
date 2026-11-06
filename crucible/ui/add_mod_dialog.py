@@ -523,7 +523,7 @@ class AddModDialog(QDialog):
         self._search_btn.setEnabled(True)
         self._loading_more = False
         self._install_btn.setEnabled(False)
-        self._status.setText("⚠ " + msg)
+        self._status.setText("Error: " + msg)
 
     # --- selection / detail ---
     def _on_sel(self, row):
@@ -537,21 +537,21 @@ class AddModDialog(QDialog):
 
         self._d_title.setText(hit.title)
         self._d_author.setText(f"by {hit.author}" if hit.author else "")
-        stats = f"⬇ {modrinth.humanize_count(hit.downloads)} downloads"
+        stats = f"{modrinth.humanize_count(hit.downloads)} downloads"
         if hit.follows:
-            stats += f"   ♥ {modrinth.humanize_count(hit.follows)} followers"
+            stats += f"   {modrinth.humanize_count(hit.follows)} followers"
         if hit.categories:
             stats += "\n" + "  ".join(f"#{c}" for c in hit.categories[:6])
         self._d_stats.setText(stats)
 
         if hit.is_client_only:
             self._d_compat.setText(
-                "⚠ Client-only mod — this usually has no effect on a "
+                "Client-only mod: this usually has no effect on a "
                 "dedicated server.")
             self._d_compat.setStyleSheet(
                 f"color:{theme.YELLOW}; font-size:12px; font-weight:600;")
         elif hit.server_label():
-            self._d_compat.setText("✓ " + hit.server_label())
+            self._d_compat.setText("Server support: " + hit.server_label())
             self._d_compat.setStyleSheet(
                 f"color:{theme.GREEN}; font-size:12px; font-weight:600;")
         else:
@@ -605,12 +605,19 @@ class AddModDialog(QDialog):
     def _on_resolve_failed(self, pid, msg):
         if pid == self._sel_pid:
             self._install_btn.setEnabled(False)
-            self._d_deps.setText("⚠ " + msg)
+            self._d_deps.setText("Error: " + msg)
 
     def _open_page(self):
         row = self._results.currentRow()
         if 0 <= row < len(self._view):
-            QDesktopServices.openUrl(QUrl(self._view[row].page_url()))
+            url = self._view[row].page_url()
+            if not url:
+                QMessageBox.information(
+                    self, "Project page unavailable",
+                    "The provider did not return a valid project URL. No guessed URL was opened.",
+                )
+                return
+            QDesktopServices.openUrl(QUrl(url))
 
     # --- install ---
     def _do_install(self):
@@ -648,7 +655,7 @@ class AddModDialog(QDialog):
 
     def _on_installed(self, res):
         self._install_btn.setEnabled(True)
-        self._status.setText("✓ " + res.summary())
+        self._status.setText("Installed: " + res.summary())
         if res.failed:
             QMessageBox.warning(
                 self, "Add a mod",

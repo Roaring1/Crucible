@@ -229,7 +229,7 @@ class ClientExportDialog(QDialog):
         QApplication.restoreOverrideCursor()
         if res.ok:
             remember_status = self._remember_client_source_after_success()
-            self._status.setText("✓ " + res.summary())
+            self._status.setText("Export complete: " + res.summary())
             details = "Done!\n\n" + res.summary() + f"\n\nSaved to:\n{res.path}\n"
             if res.archive_sha256:
                 details += f"\nArchive SHA-256:\n{res.archive_sha256}\n"
@@ -240,7 +240,7 @@ class ClientExportDialog(QDialog):
                 details += "\n\n" + remember_status
             QMessageBox.information(self, "Client instance", details)
         else:
-            self._status.setText("⚠ " + res.summary())
+            self._status.setText("Export warning: " + res.summary())
             QMessageBox.warning(self, "Client instance", res.summary())
     def _thread_finished(self):
         self._thread = None

@@ -246,13 +246,13 @@ class ConsoleTab(QWidget):
         self._find_status.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 11px;")
         fb_layout.addWidget(self._find_status)
         for label, accessible_name, slot in (
-            ("▲", "Find previous match", lambda: self._find(forward=False)),
-            ("▼", "Find next match", lambda: self._find(forward=True)),
-            ("✕", "Close find bar", self._hide_find_bar),
+            ("Previous", "Find previous match", lambda: self._find(forward=False)),
+            ("Next", "Find next match", lambda: self._find(forward=True)),
+            ("Close", "Close find bar", self._hide_find_bar),
         ):
             b = QPushButton(label)
             b.setAccessibleName(accessible_name)
-            b.setFixedWidth(30)
+            b.setMinimumWidth(56)
             b.clicked.connect(slot)
             fb_layout.addWidget(b)
         self._find_bar.setVisible(False)
@@ -304,7 +304,7 @@ class ConsoleTab(QWidget):
         cr_layout.setContentsMargins(8, 6, 8, 6)
         cr_layout.setSpacing(6)
 
-        prompt = QLabel("›")
+        prompt = QLabel(">")
         prompt.setStyleSheet(
             f"color: {theme.ACCENT}; font-size: 16px; font-family: monospace;"
         )
@@ -313,7 +313,7 @@ class ConsoleTab(QWidget):
         self._cmd_input = _CommandLineEdit(self)
         self._cmd_input.setAccessibleName("Send a command to the selected server")
         self._cmd_input.setObjectName("CommandInput")
-        self._cmd_input.setPlaceholderText("Send command…  (Tab to complete · ↑↓ history)")
+        self._cmd_input.setPlaceholderText("Send command… (Tab completes; Up/Down browse history)")
         self._cmd_input.returnPressed.connect(self._send_command)
         self._cmd_input.textEdited.connect(self._show_suggestions)
         self._cmd_input.cursorPositionChanged.connect(lambda *_: self._show_suggestions())
@@ -468,8 +468,8 @@ class ConsoleTab(QWidget):
         watcher.log_rotated.connect(self._on_log_rotated)
         watcher.log_missing.connect(self._on_log_missing)
 
-        self._append_system(f"── Attached to {instance.name} ──")
-        self._set_state("○ Waiting for log file…", theme.SURFACE2)
+        self._append_system(f"Attached to {instance.name}")
+        self._set_state("Waiting for log file…", theme.SURFACE2)
 
     def detach(self) -> None:
         """Disconnect the current watcher."""
@@ -589,7 +589,7 @@ class ConsoleTab(QWidget):
 
     @pyqtSlot()
     def _on_log_missing(self) -> None:
-        self._set_state("○ No log file yet — server offline or still starting", theme.SURFACE2)
+        self._set_state("No log file yet - server offline or still starting", theme.SURFACE2)
 
     # Internal helpers
 
@@ -709,7 +709,7 @@ class ConsoleTab(QWidget):
         self._suggestions.hide()
 
     def _history_key(self, key) -> None:
-        """↑/↓ history navigation, invoked by the command line edit."""
+        """Up/Down history navigation, invoked by the command line edit."""
         self._reset_completion()
         if key == Qt.Key.Key_Up:
             if self._history:

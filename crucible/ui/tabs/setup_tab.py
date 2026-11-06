@@ -17,7 +17,18 @@ from __future__ import annotations
 
 import threading
 
-from PyQt6.QtCore import QObject, Qt, QThread, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    QUrl,
+    pyqtSignal,
+    pyqtSlot,
+)
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
@@ -38,6 +49,7 @@ from ...data.instance_manager import InstanceManager
 from ...data.instance_model import ServerInstance
 from ...process.resource_monitor import system_memory_mb
 from .. import theme
+from ..icons import local_icon
 from ..thread_lifecycle import connect_thread_cleanup
 
 
@@ -96,6 +108,9 @@ class SetupTab(QWidget):
         self._xmx_unit: QComboBox | None = None
         self._mem_status: QLabel | None = None
         self._fml_combo: QComboBox | None = None
+        self._scroll_area: QScrollArea | None = None
+        self._scroll_content: QWidget | None = None
+        self._setup_layout_generation = 0
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -103,11 +118,13 @@ class SetupTab(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
 
         scroll = QScrollArea()
+        self._scroll_area = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         outer.addWidget(scroll)
 
         container = QWidget()
+        self._scroll_content = container
         scroll.setWidget(container)
         self._layout = QVBoxLayout(container)
         self._layout.setContentsMargins(20, 16, 20, 16)
@@ -150,7 +167,67 @@ class SetupTab(QWidget):
             elif item.layout():
                 self._clear_layout(item.layout())
 
+    def _install_focus_visibility_filters(self) -> None:
+        """Ensure keyboard focus never remains clipped by the Setup viewport."""
+        content = self._scroll_content
+        if content is None:
+            return
+        for widget in content.findChildren(QWidget):
+            if widget.focusPolicy() & Qt.FocusPolicy.TabFocus:
+                widget.installEventFilter(self)
+
+    def _ensure_focus_widget_visible(self, widget: QWidget, generation: int) -> None:
+        content = self._scroll_content
+        area = self._scroll_area
+        try:
+            if (
+                generation != self._setup_layout_generation
+                or area is None
+                or content is None
+                or not content.isAncestorOf(widget)
+                or not widget.isVisible()
+                or widget.height() <= 0
+            ):
+                return
+
+            # Compute the target in scroll-content coordinates. Qt's
+            # ensureWidgetVisible can leave a focus target a few pixels beyond
+            # the viewport edge on some platforms, so adjust the scrollbar
+            # directly and leave a small readable margin.
+            top = widget.mapTo(content, QPoint(0, 0)).y()
+            bottom = top + widget.height()
+            bar = area.verticalScrollBar()
+            offset = bar.value()
+            view_height = area.viewport().height()
+            margin = min(6, max(0, (view_height - widget.height()) // 2))
+            if top < offset + margin:
+                bar.setValue(max(bar.minimum(), top - margin))
+            elif bottom > offset + view_height - margin:
+                bar.setValue(min(bar.maximum(), bottom - view_height + margin))
+        except RuntimeError:
+            # A quick refresh can delete the old focused widget before the
+            # deferred callback runs; stale callbacks must be harmless.
+            return
+
+    def eventFilter(self, watched, event) -> bool:
+        if (
+            event.type() == QEvent.Type.FocusIn
+            and isinstance(watched, QWidget)
+            and self._scroll_content is not None
+            and self._scroll_content.isAncestorOf(watched)
+        ):
+            # Run after Qt finishes its native focus traversal; otherwise its
+            # own scroll update can leave the just-focused spin box clipped.
+            generation = self._setup_layout_generation
+            QTimer.singleShot(
+                0,
+                lambda target=watched, expected=generation:
+                    self._ensure_focus_widget_visible(target, expected),
+            )
+        return super().eventFilter(watched, event)
+
     def _rebuild(self) -> None:
+        self._setup_layout_generation += 1
         self._clear()
         inst = self._instance
         if inst is None:
@@ -175,19 +252,21 @@ class SetupTab(QWidget):
         actions = QHBoxLayout()
         actions.setSpacing(8)
 
-        open_btn = QPushButton("📁  Open server folder")
+        open_btn = QPushButton("Open server folder")
+        open_btn.setIcon(local_icon("folder-open"))
+        open_btn.setIconSize(QSize(16, 16))
         open_btn.setAccessibleName("Open the selected server folder")
         open_btn.clicked.connect(self._open_folder)
         actions.addWidget(open_btn)
 
-        ip_btn = QPushButton("⧉  Copy connection address")
+        ip_btn = QPushButton("Copy connection address")
         ip_btn.setAccessibleName("Copy the selected server connection address")
         ip_btn.setToolTip("Copies your public IP and port so friends can join")
         ip_btn.clicked.connect(self._copy_address)
         self._ip_btn = ip_btn
         actions.addWidget(ip_btn)
 
-        refresh_btn = QPushButton("↻  Re-check")
+        refresh_btn = QPushButton("Re-check")
         refresh_btn.setAccessibleName("Re-check selected server readiness")
         refresh_btn.clicked.connect(self._rebuild)
         actions.addWidget(refresh_btn)
@@ -217,17 +296,18 @@ class SetupTab(QWidget):
         for row, item in enumerate(items):
             ok = item.get("ok")
             if ok is True:
-                icon, color = "✓", theme.GREEN
+                status_text, color = "READY", theme.GREEN
             elif ok is False:
-                icon, color = "✗", theme.RED
+                status_text, color = "ACTION", theme.RED
             else:
-                icon, color = "—", theme.YELLOW
+                status_text, color = "CHECK", theme.YELLOW
 
-            dot = QLabel(icon)
-            dot.setStyleSheet(f"color: {color}; font-size: 15px; font-weight: 700;")
-            dot.setFixedWidth(18)
-            dot.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-            grid.addWidget(dot, row, 0, Qt.AlignmentFlag.AlignTop)
+            status = QLabel(status_text)
+            status.setAccessibleName(f"{status_text.title()} readiness status")
+            status.setStyleSheet(f"color: {color}; font-size: 10px; font-weight: 700;")
+            status.setFixedWidth(54)
+            status.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+            grid.addWidget(status, row, 0, Qt.AlignmentFlag.AlignTop)
 
             text_col = QVBoxLayout()
             text_col.setSpacing(1)
@@ -261,6 +341,7 @@ class SetupTab(QWidget):
         self._maybe_add_update_section()
 
         self._layout.addStretch()
+        self._install_focus_visibility_filters()
 
     def _add_memory_section(self, inst: ServerInstance) -> None:
         """In-app editor for the server's -Xms/-Xmx JVM memory flags.
@@ -275,7 +356,7 @@ class SetupTab(QWidget):
         sep.setStyleSheet(f"color: {theme.SURFACE1};")
         self._layout.addWidget(sep)
 
-        head = QLabel("🧠  Server memory (Java heap)")
+        head = QLabel("Server memory (Java heap)")
         head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
         self._layout.addWidget(head)
 
@@ -325,12 +406,21 @@ class SetupTab(QWidget):
         row.addWidget(self._xmx_spin)
         row.addWidget(self._xmx_unit)
 
+        row.addStretch()
+        self._layout.addLayout(row)
+
+        # Keep the save action on its own trailing row. Combining this wide
+        # button with all four Xms/Xmx controls forced the entire scroll
+        # content to a 684px minimum width at a 640px window. A separate row
+        # lets the controls above keep their normal font/size while the
+        # scroll content follows a narrow viewport.
+        save_row = QHBoxLayout()
+        save_row.addStretch()
         save_btn = QPushButton("Save memory settings")
         save_btn.setAccessibleName("Save selected server Java memory settings")
         save_btn.clicked.connect(self._save_memory)
-        row.addWidget(save_btn)
-        row.addStretch()
-        self._layout.addLayout(row)
+        save_row.addWidget(save_btn)
+        self._layout.addLayout(save_row)
 
         # Suggested amount -- a plain heuristic based on this machine's total
         # RAM, so non-technical owners don't have to guess a value out of thin
@@ -360,7 +450,7 @@ class SetupTab(QWidget):
 
         if xms_mb is None and xmx_mb is None:
             self._mem_status.setText(
-                "⚠ Could not find -Xms/-Xmx in this server's Java arguments -- "
+                "Warning: could not find -Xms/-Xmx in this server's Java arguments - "
                 "showing defaults. Saving will add them."
             )
             self._mem_status.setStyleSheet(f"color: {theme.YELLOW}; font-size: 11px;")
@@ -468,7 +558,7 @@ class SetupTab(QWidget):
 
         if self._mem_status is not None:
             self._mem_status.setText(
-                f"✓ Saved. Will apply next time this server starts "
+                f"Saved. Will apply next time this server starts "
                 f"(-Xms{xms_mb}M -Xmx{xmx_mb}M)."
             )
             self._mem_status.setStyleSheet(f"color: {theme.GREEN}; font-size: 11px;")
@@ -516,7 +606,7 @@ class SetupTab(QWidget):
         sep.setStyleSheet(f"color: {theme.SURFACE1};")
         self._layout.addWidget(sep)
 
-        head = QLabel("⬇  Download mods from pack")
+        head = QLabel("Download mods from pack")
         head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
         self._layout.addWidget(head)
 
@@ -538,7 +628,7 @@ class SetupTab(QWidget):
     def _add_fml_query_section(self, inst: ServerInstance) -> None:
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
         self._layout.addWidget(sep)
-        head = QLabel("🧩  Legacy Forge startup questions")
+        head = QLabel("Legacy Forge startup questions")
         head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
         self._layout.addWidget(head)
         info = QLabel("Older Forge/FML servers can pause before the world opens and ask for confirm or cancel. Crucible passes your choice to Java on the next GUI start. Continue can accept registry/world changes, so choose Ask every time if unsure.")
@@ -582,7 +672,7 @@ class SetupTab(QWidget):
         sep.setStyleSheet(f"color: {theme.SURFACE1};")
         self._layout.addWidget(sep)
 
-        head = QLabel("⬆  Modpack version")
+        head = QLabel("Modpack version")
         head.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px; font-weight: 600;")
         self._layout.addWidget(head)
 
@@ -890,9 +980,9 @@ class SetupTab(QWidget):
                 QApplication.clipboard().setText(addr)
             except Exception:
                 pass
-            self._ip_btn.setText(f"✓  Copied {addr}")
+            self._ip_btn.setText(f"Copied {addr}")
         else:
-            self._ip_btn.setText("✗  No internet — use local IP")
+            self._ip_btn.setText("No internet - use local IP")
         QTimer.singleShot(
             2500, lambda: self._reset_ip_button(generation, instance_id)
         )
@@ -903,7 +993,7 @@ class SetupTab(QWidget):
             and self._instance is not None
             and self._instance.id == instance_id
         ):
-            self._ip_btn.setText("⧉  Copy connection address")
+            self._ip_btn.setText("Copy connection address")
 
     def _download_mods(self) -> None:
         inst = self._instance

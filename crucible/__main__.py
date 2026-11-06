@@ -1855,8 +1855,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Capture every registered server; retain exactly two complete fleet generations",
         description=(
             "Create one complete fleet backup generation. Stopped servers are copied directly; "
-            "running servers are flushed and temporarily placed in save-off mode. "
-            "Crucible never starts a server for backup."
+            "running servers are backed up only after Minecraft's startup-ready marker is seen, "
+            "then flushed and temporarily placed in save-off mode. A server still booting defers "
+            "the generation before any console command is sent. Crucible never starts or stops a "
+            "server for backup."
         ),
     )
     backup_modes = p_backup.add_mutually_exclusive_group()

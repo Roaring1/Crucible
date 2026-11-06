@@ -31,6 +31,7 @@ from typing import Literal
 
 from ..data.instance_model import ServerInstance
 from . import netfix
+from .startup_patterns import RE_SERVER_DONE
 
 
 def _listening_ipv4_addresses(
@@ -182,6 +183,56 @@ class TmuxManager:
         if command is None:
             return None
         return command.strip().lower() == "java"
+
+    def is_server_ready(
+        self,
+        instance: ServerInstance,
+        *,
+        max_log_bytes: int = 8 * 1024 * 1024,
+    ) -> bool | None:
+        """Return True after the registered Java PID emits Minecraft's Done line.
+
+        Official server scripts can keep bash as the tmux pane's foreground
+        command while Java runs as its child. Confirm the exact tmux session
+        and instance-tagged Java PID through Crucible's process sampler, then
+        inspect both the active FML log and standard latest.log. A Java process
+        without the ready marker is still starting.
+        """
+        session_up = self.probe_running(instance)
+        if session_up is not True:
+            return False if session_up is False else None
+
+        # GTNH wrappers leave bash in the pane while Java runs as a child;
+        # pane_current_command() alone is not a reliable JVM readiness check.
+        if not self._unmanaged_pids(instance):
+            return None
+
+        try:
+            primary = instance.get_log_path()
+            log_paths = [primary] if primary is not None else []
+            standard = Path(instance.path) / "logs" / "latest.log"
+            if standard not in log_paths:
+                log_paths.append(standard)
+        except (AttributeError, OSError, TypeError):
+            return None
+
+        saw_readable_log = False
+        limit = max(1, int(max_log_bytes))
+        for log_path in log_paths:
+            try:
+                if log_path.is_symlink() or not log_path.is_file():
+                    continue
+                size = log_path.stat().st_size
+                with log_path.open("rb") as handle:
+                    handle.seek(max(0, size - limit))
+                    raw = handle.read(limit)
+            except OSError:
+                continue
+            saw_readable_log = True
+            if RE_SERVER_DONE.search(raw.decode("utf-8", errors="replace")):
+                return True
+
+        return False if saw_readable_log else None
 
     @staticmethod
     def _unmanaged_pids(instance: ServerInstance) -> list[int]:
