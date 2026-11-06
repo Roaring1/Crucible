@@ -305,6 +305,25 @@ Official references for the supported runtime matrix: [Python 3.11 urllib.reques
 
 **Do not conflate provider adapters.** Gofile upload uses `http.client.HTTPSConnection`, not urllib redirects; icon fetching has its own deliberately strict host policy; indexed JAR download uses `download_http`; serverloader and pack update have separate retry/redirect/size behavior. A Rust implementation may eventually share low-level TLS, bounded-body and redirect primitives, but its policy must be supplied per operation as explicit data. Keep provider approval, URL provenance, retry safety, cancellation semantics, and exact artifact checksum validation in the higher-level workflow.
 
+### 2.10 CLI command and behavior contract
+
+The current `argparse` interface registers 32 subcommands:
+
+`gui`, `list`, `check-updates`, `update`, `rollback`, `prune-previous`, `probe-pack`, `add`, `remove`, `start`, `fix-properties`, `fix-loading`, `stop`, hidden `shortcut-action`, `restart`, `status`, `attach`, `send`, `scan`, `scan-prism`, `import-prism`, `create-server`, `install-modpack`, `list-mc-versions`, `install-server`, `download-mods`, `accept-eula`, `doctor`, `validate`, `backup-fleet`, `info`, and `edit`.
+
+Behavioral contracts that must survive any future CLI migration:
+- `argparse --help` is handled before registry loading. With no subcommand, Crucible prints banner/help and exits successfully.
+- Normal commands print the banner except `gui` and the hidden `shortcut-action`.
+- After parsing a valid command, `main()` loads `InstanceManager` and creates `TmuxManager` before dispatch, even for commands like `probe-pack` or `list-mc-versions`. Qt is only imported by the GUI handler.
+- Start uses the same world-start inspection as the GUI. New/incomplete/changed/uncertain selection requires a TTY and exact typed `START`; non-interactive invocation cannot skip this gate.
+- Stop is graceful by default. `--force` is explicit and means no world save; `--timeout` is configurable. Restart has its own graceful timeout.
+- Update supports dry-run, target release/source, prerelease/downgrade policy, Java variant, rollback retention and explicit confirmation skip. Rollback can preserve the current world.
+- Fleet backup supports mutually exclusive list, deep verify, install timer and remove timer modes; default action creates a full fleet generation.
+- Hidden `shortcut-action` accepts only `start`/`stop` plus a stable instance ID and has separate graceful-only stop semantics.
+- Handlers currently call `sys.exit(1)` and `sys.exit(2)` in distinct failure paths, print user-facing text directly, and often return `None` on success. These conventions are not centralized.
+
+This interface must be tested as a CLI, not just by calling internal handler functions. Build a golden argv corpus that captures parsed options/defaults, stdout, stderr, exit code, TTY vs non-TTY behavior, environment/working-directory assumptions, and whether the invocation reads or mutates the registry, server files, tmux, network, or backup state. Do not replace the CLI until its command-by-command parity and installed launcher behavior are proven.
+
 ## 3. Recommended first Rust core types and functions
 
 Do not begin by mirroring all Python classes one-for-one. The first Rust crate should model a small number of explicit, versioned values:
@@ -343,7 +362,7 @@ Create sanitized, small fixtures in the repository before writing a production R
 | Fleet backup | Complete generation; prior generation; reused file; changed file; legacy archive; checksum mismatch; missing/symlinked path; retention and publish failure |
 | Client export | Exact JAR hash; unknown/manual JAR; conflicting distribution decision; source mutates after review; scan incomplete; duplicate/unsafe ZIP member; manifest mismatch |
 | Provider/download | Same-host HTTPS redirect; HTTPS cross-host CDN redirect where permitted; HTTP/FTP downgrade redirect blocked; userinfo/unsafe port; oversized body; timeout; 401/403/429/5xx; missing/invalid digest; wrong digest; credential redaction; cancelled transfer; provider-disabled path before key/network |
-| Share | Valid Gofile result; unsafe host/path; malformed optional MD5/size; mismatched size/MD5; source file replacement attempt; cancellation before/during transfer |
+| Share | Valid Gofile result; unsafe host/path; malformed optional MD5/size; mismatched size/MD5; source file replacement attempt; cancellation before/during transfer |\n| CLI | Each of 32 subcommands; short/long options, defaults, hidden shortcut action, TTY and non-TTY Start confirmation, exit codes, stdout/stderr, registry/filesystem/tmux/network effects | Golden argv/output/result corpus for Python/Rust parity and installed-launcher smoke tests |
 
 Fixtures should contain no user secrets, private URLs or real server/world data. Use generated files with deterministic contents and fake IDs/paths.
 
