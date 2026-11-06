@@ -855,7 +855,7 @@ class AddModDialog(QDialog):
             painter.drawLine(26, 28, 31, 23)
             painter.drawLine(31, 23, 35, 31)
             if kind == "failed":
-                painter.setPen(QPen(QColor(theme.ORANGE), 2))
+                painter.setPen(QPen(QColor(theme.RED), 2))
                 painter.drawLine(29, 8, 38, 17)
                 painter.drawLine(38, 8, 29, 17)
         painter.end()
