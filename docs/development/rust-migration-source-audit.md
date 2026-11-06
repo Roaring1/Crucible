@@ -306,7 +306,7 @@ Import paths detect source type and build a plan, extract archives into staging 
 
 The extraction path intentionally uses the destination parent as the temp directory so a multi-GiB pack is not expanded under a small tmpfs `/tmp` and a second cross-device copy can be avoided. This is a performance feature worth preserving.
 
-### 3.6 CLI invocation and compatibility flow
+### 3.5 CLI invocation and compatibility flow
 
 The CLI entry is `crucible.__main__:main`. Its observed order is:
 
@@ -320,7 +320,7 @@ Start is a special behavior contract: `_confirm_cli_world_start()` rejects unsaf
 
 A Rust CLI replacement should not be the first Rust integration slice. Before even prototyping it, capture golden invocations for every command family, all aliases/options and their defaults, stdout/stderr, exit status, whether the command touches the registry, filesystem/network/processes, TTY behavior, and environment/working-directory assumptions. The current CLI is a public compatibility surface and also a useful Python reference path while the GUI remains Python.
 
-### 3.5 Client export and share
+### 3.6 Client export and share
 
 The client export pipeline may read the same JAR/config inputs multiple times for different guarantees: metadata inspection, source fingerprinting, distribution SHA-256 review, archive creation, sealed-member hashing/privacy inspection, archive SHA-256 and final source/catalog revalidation. This is expensive by design in places because the exported bytes must match the bytes reviewed and the input set must remain stable.
 
@@ -434,7 +434,7 @@ The existing Python tests already form a useful reference for several safety con
 | Client export/share | `test_client_export.py` and `test_client_export_review.py` cover archive membership, source hash changes, exact SHA decisions, privacy checks, symlinks, duplicate mods and prohibited JARs | Golden sealed-manifest fixtures and a source-mutation parity corpus; do not benchmark by dropping review passes |
 | Fleet backup/world swap | `test_fleet_backup.py` and `test_world_backup_swap.py` cover incremental reuse, immutable generations, fsync/publication failures, unknown/running refusal, symlinks, archive safety, rollback and restore | Golden schema-1 manifests and fault-injection fixtures before any backup core is moved |
 | Destructive removal/process discovery | Existing tests block a known unmanaged PID and a tmux timeout, but do not cover tmux missing, `/proc` enumeration failure, incomplete scans, or force-kill verification when procfs is unavailable | Add tests proving tmux missing still triggers a complete process check, incomplete procfs blocks unregister/delete, and force-kill never reports success without verified process absence |
-| General security boundaries | `test_security_boundaries.py` covers registry shapes, last-key-wins properties, bounded crash logs/JAR metadata, uncertain probes, path escapes and ZIP limits | Reuse identical malicious/oversized fixture files against both languages |
+| Installer/release | `test_release_scripts.py` covers safe staging/rollback markers, interpreter selection, symlink-resolving launcher, exact verified assets, package data and UI loading contract | Test a prebuilt Rust artifact in the final installed path, supported ABI/platform matrix, failed-import rollback and source-package shadowing |\n| General security boundaries | `test_security_boundaries.py` covers registry shapes, last-key-wins properties, bounded crash logs/JAR metadata, uncertain probes, path escapes and ZIP limits | Reuse identical malicious/oversized fixture files against both languages |
 
 Some representative test files contain dozens of focused cases (for example, 83 tests in `test_pack_update.py`, 57 in `test_core.py`, and 29 + 21 in the client-export/archive-review suites). The suite is not merely smoke testing; it includes behavioral and failure-path coverage.
 
