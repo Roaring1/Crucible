@@ -41,7 +41,14 @@ Important CLI families observed:
 - Safety/maintenance: property repair, loading diagnostics, backup-fleet run/list/verify, pack update, rollback, previous-install pruning.
 - GUI launch: imported only after the selected command dispatches to GUI mode.
 
-Top-level imports include the instance manager/model, world-start inspection, crash heartbeat, tmux manager, and common CLI formatting. Several heavier import/installer/diagnostics modules are imported inside the relevant handler. This is a useful separation to preserve: a normal CLI command should not import all Qt widgets or initialize a GUI.
+Top-level imports include the instance manager/model, world-start inspection, crash heartbeat, tmux manager, and common CLI formatting. Several heavier import/installer/diagnostics modules are imported inside the relevant handler. The Qt GUI imports PyQt and the UI package only in `cmd_gui`; CLI commands do not initialize Qt. However, after argparse has selected a valid command, `main()` always constructs and loads `InstanceManager` and constructs `TmuxManager` before dispatch, including for standalone archive probes and version-list requests. `--help` exits in argparse before that work; no-argument invocation prints the banner/help and exits successfully before loading the registry. This is a measurable CLI startup/import boundary, not currently a benchmark result.
+
+The actual `argparse` tree currently registers 32 subcommands (the leading file docstring is only a short, older subset). The command names are:
+
+`gui`, `list`, `check-updates`, `update`, `rollback`, `prune-previous`, `probe-pack`, `add`, `remove`, `start`, `fix-properties`, `fix-loading`, `stop`, `shortcut-action` (hidden), `restart`, `status`, `attach`, `send`, `scan`, `scan-prism`, `import-prism`, `create-server`, `install-modpack`, `list-mc-versions`, `install-server`, `download-mods`, `accept-eula`, `doctor`, `validate`, `backup-fleet`, `info`, and `edit`.
+
+Notable option contracts include explicit `stop --force` for no-save process termination, graceful `stop --timeout` and `restart --timeout`, `update --dry-run`/prerelease/downgrade/source/variant/preserve-previous choices, `rollback --keep-current-world`, `import-prism --overwrite`/EULA/download/install flags, and mutually exclusive fleet backup `--list`, deep `--verify`, `--install-timer`, and `--remove-timer` modes. `shortcut-action` accepts only start/stop and an instance ID; it is hidden from normal help and deliberately has graceful-stop-only behavior in its dispatcher.
+
 
 ### 2.2 Data and domain model
 
@@ -276,6 +283,20 @@ Incremental behavior is already significant: unchanged content can be hard-linke
 Import paths detect source type and build a plan, extract archives into staging on the destination filesystem when possible, reject unsafe paths/links/oversized entries, copy server-safe content, add metadata/receipt, optionally download indexed mods and install server software, and surface warnings. GTNH pack updates first create a reviewable plan, then separately stage/download/apply, preserve world/config/mod inputs, verify, and keep rollback.
 
 The extraction path intentionally uses the destination parent as the temp directory so a multi-GiB pack is not expanded under a small tmpfs `/tmp` and a second cross-device copy can be avoided. This is a performance feature worth preserving.
+
+### 3.6 CLI invocation and compatibility flow
+
+The CLI entry is `crucible.__main__:main`. Its observed order is:
+
+1. Build the `argparse` parser and parse argv. Argparse handles `--help` before Crucible loads the registry or initializes any UI.
+2. With no subcommand, print the banner and root help, then exit with code 0.
+3. For normal commands, print the banner. `gui` and hidden `shortcut-action` suppress it.
+4. Construct `InstanceManager`, call `load()`, construct `TmuxManager`, then dispatch by exact command string.
+5. Each handler owns its output and uses `sys.exit(1)` or `sys.exit(2)` for failure classes in different paths; successful handlers often return `None`. The exit-code convention is not currently centralized in a typed result.
+
+Start is a special behavior contract: `_confirm_cli_world_start()` rejects unsafe/unavailable summaries, requires a TTY for confirmation, and requires the owner to type the exact word `START`. Non-interactive invocations cannot bypass confirmation. The dispatcher does not duplicate the GUI, but it still calls the same shared TmuxManager/domain routines.
+
+A Rust CLI replacement should not be the first Rust integration slice. Before even prototyping it, capture golden invocations for every command family, all aliases/options and their defaults, stdout/stderr, exit status, whether the command touches the registry, filesystem/network/processes, TTY behavior, and environment/working-directory assumptions. The current CLI is a public compatibility surface and also a useful Python reference path while the GUI remains Python.
 
 ### 3.5 Client export and share
 
