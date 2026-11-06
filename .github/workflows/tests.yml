@@ -27,9 +27,6 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
       PYTHONDONTWRITEBYTECODE: "1"
-      # Isolate every test-related step, including standalone Qt/UI smoke
-      # scripts that run outside pytest and therefore do not load conftest.py.
-      TMUX_TMPDIR: ${{ runner.temp }}/crucible-test-tmux
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -39,7 +36,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Prepare isolated tmux socket directory
-        run: mkdir -p "$TMUX_TMPDIR" && chmod 700 "$TMUX_TMPDIR"
+        env:
+          TMUX_TMPDIR: ${{ runner.temp }}/crucible-test-tmux
+        run: |
+          mkdir -p "$TMUX_TMPDIR"
+          chmod 700 "$TMUX_TMPDIR"
+          echo "TMUX_TMPDIR=$TMUX_TMPDIR" >> "$GITHUB_ENV"
       - name: Install Qt runtime libraries
         run: sudo apt-get update && sudo apt-get install --yes libegl1
       - name: Install package and test runner
