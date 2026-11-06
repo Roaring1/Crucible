@@ -6,14 +6,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 from crucible.data.instance_manager import (
-    InstanceManager, validate_delete_target, validate_session_name,
+    InstanceManager,
+    validate_delete_target,
+    validate_session_name,
 )
 from crucible.data.instance_model import ServerInstance
-from crucible.importers.downloader import DownloadItem, _safe_destination, _download_one
+from crucible.importers.downloader import DownloadItem, _download_one, _safe_destination
 from crucible.importers.prism import _extract_archive
-from crucible.process.tmux_manager import TmuxManager
 from crucible.process.command_intent import lifecycle_intent
 from crucible.process.startup_patterns import RE_SERVER_DONE
+from crucible.process.tmux_manager import TmuxManager
 
 
 class IdentityTests(unittest.TestCase):
@@ -254,7 +256,6 @@ class StartupDetectionConsistencyTests(unittest.TestCase):
         be aliases of startup_patterns.RE_SERVER_DONE (checked via source
         text, since importing those PyQt6-backed modules isn't reliable in a
         headless test environment)."""
-        import re as _re
         from pathlib import Path as _Path
         repo_root = _Path(__file__).resolve().parent.parent
         log_watcher_src = (repo_root / "crucible" / "process" / "log_watcher.py").read_text()
@@ -270,6 +271,29 @@ class TmuxCommandTests(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp())
         self.inst = ServerInstance(str(self.root), "GTNH", tmux_session="gtnh")
         self.tm = TmuxManager()
+
+    def test_server_readiness_requires_done_marker_in_active_log(self):
+        root = Path(tempfile.mkdtemp())
+        inst = ServerInstance(str(root), "Ready", tmux_session="ready-test")
+        logs = root / "logs"
+        logs.mkdir()
+        active_log = logs / "fml-server-latest.log"
+        tm = TmuxManager()
+
+        with patch.object(tm, "is_java_foreground", return_value=True):
+            active_log.write_text("[Server thread/INFO]: Loading mods\n")
+            self.assertFalse(tm.is_server_ready(inst))
+
+            active_log.write_text(
+                "[Server thread/INFO]: Loading mods\n"
+                "[Server thread/INFO]: Done (91.42s)!\n"
+            )
+            self.assertTrue(tm.is_server_ready(inst))
+
+        with patch.object(tm, "is_java_foreground", return_value=False):
+            self.assertFalse(tm.is_server_ready(inst))
+        with patch.object(tm, "is_java_foreground", return_value=None):
+            self.assertIsNone(tm.is_server_ready(inst))
 
     def test_status_uses_exact_tmux_target(self):
         import subprocess
@@ -364,6 +388,7 @@ class TmuxCommandTests(unittest.TestCase):
 
     @unittest.skipUnless(__import__("shutil").which("tmux"), "tmux not installed")
     def test_real_tmux_session_accepts_literal_console_command(self):
+        import os
         import subprocess
         import time
         import uuid
@@ -371,23 +396,35 @@ class TmuxCommandTests(unittest.TestCase):
         name = "crucible-test-" + uuid.uuid4().hex[:12]
         out = self.root / "console-input.txt"
         instance = ServerInstance(str(self.root), "Live", tmux_session=name)
+        # Never share the production user's tmux socket. Even this explicitly
+        # real integration test owns a private socket directory and can only
+        # create/kill sessions inside that isolated tmux server.
+        socket_dir = self.root / "tmux-socket"
+        socket_dir.mkdir(mode=0o700)
+        isolated_env = os.environ.copy()
+        isolated_env.pop("TMUX", None)
+        isolated_env.pop("TMUX_PANE", None)
+        isolated_env["TMUX_TMPDIR"] = str(socket_dir)
         try:
-            subprocess.run(
-                ["tmux", "new-session", "-d", "-s", name,
-                 f"cat > {out}"], check=True,
-            )
-            ok, detail = self.tm.send_command_result(instance, "whitelist add Roaring4")
-            self.assertTrue(ok, detail)
-            for _ in range(30):
-                if out.exists() and "whitelist add Roaring4" in out.read_text():
-                    break
-                time.sleep(0.05)
-            self.assertEqual(out.read_text().strip(), "whitelist add Roaring4")
+            with patch.dict(os.environ, isolated_env, clear=True):
+                subprocess.run(
+                    ["tmux", "new-session", "-d", "-s", name,
+                     f"cat > {out}"], check=True,
+                )
+                ok, detail = self.tm.send_command_result(instance, "whitelist add Roaring4")
+                self.assertTrue(ok, detail)
+                for _ in range(30):
+                    if out.exists() and "whitelist add Roaring4" in out.read_text():
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(out.read_text().strip(), "whitelist add Roaring4")
         finally:
-            subprocess.run(
-                ["tmux", "kill-session", "-t", "=" + name],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
+            with patch.dict(os.environ, isolated_env, clear=True):
+                subprocess.run(
+                    ["tmux", "kill-session", "-t", "=" + name],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    check=False,
+                )
 
     def test_session_query_timeout_is_unknown_not_offline(self):
         with patch.object(self.tm, "list_sessions", return_value=None):
@@ -441,7 +478,6 @@ class TmuxCommandTests(unittest.TestCase):
         self.assertTrue(safe)
 
     def test_missing_directory_is_reported_when_no_session_exists(self):
-        import subprocess
         missing = ServerInstance(str(self.root / "gone"), "Gone", tmux_session="gone")
         with (
             patch.object(self.tm, "tmux_available", return_value=True),

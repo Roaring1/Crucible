@@ -23,9 +23,13 @@ class FakeTmux:
         self.fail_save_all: set[str] = set()
         self.already_save_off: set[str] = set()
         self.drop_save_off_ack: set[str] = set()
+        self.readiness: dict[str, bool | None] = {}
 
     def get_status(self, instance):
         return self.statuses.get(instance.id, "stopped")
+
+    def is_server_ready(self, instance):
+        return self.readiness.get(instance.id, True)
 
     def send_command_result(self, instance, command):
         self.commands.append((instance.id, command))
@@ -688,6 +692,22 @@ def test_post_rename_fsync_failure_rolls_back_unpublished_generation(
     ] == [second.generation_id, first.generation_id]
     assert backups.generation_issues() == []
     assert not list(backups.staging_dir.iterdir())
+
+
+@pytest.mark.parametrize("readiness", [False, None])
+def test_running_but_not_confirmed_ready_server_is_deferred_before_console_commands(
+    tmp_path, readiness
+):
+    instance = make_server(tmp_path / "server")
+    tmux = FakeTmux({instance.id: "running"})
+    tmux.readiness[instance.id] = readiness
+    backups = manager(tmp_path, [instance], tmux)
+
+    with pytest.raises(FleetBackupError, match="startup-ready line|readiness could not be verified"):
+        backups.run_backup()
+
+    assert tmux.commands == []
+    assert backups.list_generations() == []
 
 
 def test_running_server_is_flushed_quiesced_and_autosave_restored(tmp_path):

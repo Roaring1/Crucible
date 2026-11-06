@@ -31,6 +31,7 @@ from typing import Literal
 
 from ..data.instance_model import ServerInstance
 from . import netfix
+from .startup_patterns import RE_SERVER_DONE
 
 
 def _listening_ipv4_addresses(
@@ -182,6 +183,43 @@ class TmuxManager:
         if command is None:
             return None
         return command.strip().lower() == "java"
+
+    def is_server_ready(
+        self,
+        instance: ServerInstance,
+        *,
+        max_log_bytes: int = 8 * 1024 * 1024,
+    ) -> bool | None:
+        """Return True only after the active JVM has emitted Minecraft's Done line.
+
+        A tmux session and a foreground Java process can exist for minutes
+        before Minecraft is ready. In particular, large modpacks may spend a
+        long time registering mods while the console is already attached.
+        Live operations such as fleet save-off must not treat that as a
+        ready server.
+
+        Read only the bounded tail of the active log selected by
+        ServerInstance.get_log_path(). False means the current log is readable
+        but has no ready marker yet; None means readiness could not be checked.
+        Both outcomes are unsafe for live backup commands.
+        """
+        java_up = self.is_java_foreground(instance)
+        if java_up is not True:
+            return False if java_up is False else None
+
+        try:
+            log_path = instance.get_log_path()
+            if log_path is None or log_path.is_symlink() or not log_path.is_file():
+                return None
+            size = log_path.stat().st_size
+            with log_path.open("rb") as handle:
+                handle.seek(max(0, size - max(1, int(max_log_bytes))))
+                raw = handle.read(max(1, int(max_log_bytes)))
+        except OSError:
+            return None
+
+        text = raw.decode("utf-8", errors="replace")
+        return RE_SERVER_DONE.search(text) is not None
 
     @staticmethod
     def _unmanaged_pids(instance: ServerInstance) -> list[int]:

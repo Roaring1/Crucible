@@ -6,9 +6,12 @@ never from a live server folder. Changed files are copied, hashed and checked
 for concurrent modification. The result is a content-stable point-in-time tree
 with efficient incremental storage and straightforward offline restoration.
 
-Running Minecraft servers are quiesced with save-off/save-all/save-on. A
-snapshot is not published unless the console confirms the save and re-enable
-steps. No server is ever started by this module.
+A running Minecraft server is eligible for a live snapshot only after its Java
+pane is confirmed and the active log contains the shared "Done (Xs)!" startup
+marker. A Java process that is still booting is deferred before Crucible sends
+any console command. Ready servers are quiesced with save-off/save-all/save-on.
+A snapshot is not published unless the console confirms the save and re-enable
+steps. No server is ever started or stopped by this module.
 """
 
 from __future__ import annotations
@@ -2241,6 +2244,18 @@ class FleetBackupManager:
             )
 
         if status == "running":
+            readiness_probe = getattr(self.tmux, "is_server_ready", None)
+            readiness = readiness_probe(instance) if callable(readiness_probe) else None
+            if readiness is not True:
+                detail = (
+                    "Minecraft has not emitted its startup-ready line yet."
+                    if readiness is False
+                    else "Minecraft startup readiness could not be verified."
+                )
+                raise FleetBackupError(
+                    f"{instance.name}: {detail} This backup cycle was deferred; "
+                    "no save-off or save-all command was sent."
+                )
             was_saving_disabled = self._quiesce_running_server(instance)
             save_off_confirmed = True
 
