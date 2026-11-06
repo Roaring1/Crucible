@@ -165,7 +165,55 @@ The best performance outcome may be:
 - zero additional idle services or background polling;
 - unchanged server/world safety and exact rollback behavior.
 
-## 7. Source files inspected for this audit
+
+## 7. Integration overhead, panic containment, and release profiles
+
+### 7.1 PyO3 can avoid process IPC, but it is not free
+
+A PyO3 extension executes in Crucible's process and avoids starting a helper executable for each call. That is attractive for a measured CPU-heavy function with a stable, small input/output contract. It also means a native bug, process abort, memory error, or unsafe lifetime mistake can take down the entire Qt application.
+
+For a PyO3 prototype:
+
+- Pass owned, bounded Rust inputs and return immutable typed results; do not retain borrowed Python/Qt objects after the call.
+- Keep Python and Qt interaction on the Python side. Do not call Qt widgets from Rust.
+- For multi-millisecond Rust-only computation or file scanning, use PyO3's detach mechanism so the Python interpreter can run other threads while the Rust-only closure operates. The detached closure must not access Python objects; copy the needed values into Rust-owned data first.
+- Return expected failures as typed `Result` values mapped to Python exceptions. Do not use panic for expected bad input, inaccessible paths, unavailable tmux, or ordinary I/O errors.
+- Benchmark the full Python-to-Rust call including conversion/copying, not only the Rust inner loop. For tiny predicates the boundary can cost more than the work.
+
+PyO3's current guide explicitly recommends detaching for Rust-only work that lasts multiple milliseconds and cautions that Python reference-management behavior matters at the boundary. Its current support includes modern CPython versions, but Crucible still needs to test its own minimum/current matrix (3.11 and 3.13) rather than inherit a newer Python requirement.
+
+### 7.2 Do not copy Crosshair's `panic = "abort"` into an in-process Crucible extension
+
+The Crosshair `rust-port` Cargo profile currently specifies `panic = "abort"`. That profile belongs to its standalone executable architecture. Rust documents that with aborting panics, a panic terminates the process and cannot be recovered by `catch_unwind`. In an in-process PyO3 extension, that means an unexpected panic can terminate the whole Crucible GUI and every other server-management view in that process.
+
+Provisional rule:
+- **In-process PyO3 library:** keep an unwinding panic strategy in the extension build, prevent panics from crossing the Python/C ABI, catch/translate only where recovery is sound, and make normal operations return typed errors. Do not choose `panic = "abort"`.
+- **Out-of-process Rust worker:** process isolation contains a worker crash, but the Python parent must detect EOF/nonzero exit, discard the incomplete response, report the component unavailable, and fall back only for a pure/idempotent operation. Never replay a potentially side-effecting request merely because the worker response was lost.
+- **C ABI:** treat ABI unwinding rules as a hard safety boundary. Never allow an ordinary Rust panic to unwind through a non-unwind foreign ABI. A child-process protocol may be simpler and safer than inventing a custom FFI contract.
+
+This is especially important because Crucible's user value is long-lived manager stability: a Rust speedup that can abort the GUI is not an acceptable improvement.
+
+### 7.3 Choose release optimization settings for throughput, not borrowed defaults
+
+Crosshair uses `opt-level = "s"` to favor binary size. Cargo's standard release profile defaults to `opt-level = 3`, `codegen-units = 16`, LTO off, no symbol stripping, and `panic = "unwind"`. Rust documents that a single codegen unit may improve runtime code at the cost of slower compilation; LTO can increase optimization at the cost of link time; and strip settings remove symbols useful for debugging.
+
+For Crucible:
+- Start performance comparisons with the default optimized release profile.
+- Benchmark `opt-level = 3` against size-oriented options only if binary size is a real constraint.
+- Benchmark ThinLTO and `codegen-units = 1` independently; do not assume their combination is worth longer build times.
+- Keep a symbolized benchmark/profile build even if release artifacts are later stripped.
+- Treat panic strategy as a safety/containment decision, not an optimization toggle.
+- Measure clean build time, incremental build time, link time, binary/wheel size, first import/load time, and operation latency as separate product costs.
+
+### 7.4 Maturin and stable ABI affect how the extension reaches users
+
+Maturin can build PyO3 native extensions into platform-tagged wheels. The stable CPython ABI can reduce the number of Python-version-specific wheel builds, but it restricts the Python C-API surface, and Linux wheel portability requires a deliberate manylinux/musllinux or native Linux policy.
+
+Crucible's current install path does not use Maturin or install a native wheel. It builds a user venv, copies source, compiles Python files, smoke-tests `crucible --help`, then atomically publishes the install. If PyO3 is chosen, the migration must deliberately add a prebuilt compatible artifact to the release/install staging flow, hash/verify it, test import from the final path, and restore the old install if the native artifact is missing or incompatible. Do not make owners install Rust or compile native code during routine application updates.
+
+The minimum supported Python matrix should remain 3.11/3.13 until a separate product decision changes it. A build that works only under the developer's host interpreter is insufficient.
+
+## 8. Source files inspected for this audit
 
 - `crucible/data/fleet_backup.py`
 - `crucible/data/backup_manager.py`
@@ -183,12 +231,18 @@ The best performance outcome may be:
 Relevant existing regression coverage includes incremental hard-link reuse, retention and failed-publish preservation, fsync failure rollback, running-server readiness and save acknowledgement, unknown-state refusal, lock coordination, symlink rejection, deep verification, and restore safety. These are behavioral contracts, not optional test details.
 
 
-## 8. External measurement and runtime references
+## 9. External measurement and runtime references
 
 - Python `-X importtime` reports cumulative and self import timings and is available in Python 3.11/3.13: https://docs.python.org/3/using/cmdline.html
 - Python's `cProfile` documentation explains call counts, direct/cumulative time, and why profiling data is not a substitute for timing: https://docs.python.org/3.14/library/profile.html
 - Python `timeit` provides repeated timing for isolated expressions/functions: https://docs.python.org/3/library/timeit.html
 - Rust's library benchmarking guidance says to optimize real-world hot paths rather than syscall-dominated operations: https://std-dev-guide.rust-lang.org/development/perf-benchmarking.html
+- Cargo release profile defaults and build/runtime trade-offs: https://doc.rust-lang.org/cargo/reference/profiles.html
+- Rust FFI unwinding and abort behavior: https://doc.rust-lang.org/nomicon/ffi.html
+- PyO3 performance guidance for detaching Rust-only work: https://pyo3.rs/main/performance.html
+- PyO3's supported interpreter families and minimum versions: https://pyo3.rs/main/doc/pyo3/
+- Maturin's PyO3 bindings and stable-ABI wheel behavior: https://www.maturin.rs/bindings
+- Maturin's Linux wheel portability guidance: https://www.maturin.rs/distribution
 - Microsoft's Rust performance guidance recommends profiling hot paths, benchmarks and CPU/allocation observations: https://microsoft.github.io/rust-guidelines/guidelines/performance/
 - Rust codegen options document the trade-offs between optimization levels, codegen units, LTO, compile time and binary size: https://doc.rust-lang.org/rustc/codegen-options/
 - PyO3's guide documents how Rust-only work can detach from the Python interpreter while it runs: https://pyo3.rs/main/
