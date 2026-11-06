@@ -961,6 +961,40 @@ def test_legacy_world_archives_are_included_and_restored_separately(tmp_path):
     assert index[0]["slot_name"] == "Before update"
 
 
+def test_world_recovery_history_includes_and_exports_migrated_legacy_zip(tmp_path):
+    instance = make_server(tmp_path / "server")
+    backups = manager(tmp_path, [instance])
+    archive = _write_legacy_world_archive(
+        _legacy_backup_dir(tmp_path, instance.id) / "World_backup.zip",
+        world_name="ArchivedWorld",
+    )
+    archive.with_name(archive.name + ".json").write_text(
+        json.dumps({"slot_name": "Before update"}),
+        encoding="utf-8",
+    )
+    generation = backups.run_backup()
+
+    points = backups.list_world_recovery_points(instance.id)
+    archived = points["ArchivedWorld"][0]
+    assert archived.generation_id == generation.generation_id
+    assert archived.legacy_archive_filename == "World_backup.zip"
+    assert archived.active is False
+
+    restored_archive = backups.export_world_archive(
+        generation.generation_id,
+        instance.id,
+        "ArchivedWorld",
+        tmp_path / "restore" / "selected-world.zip",
+        deep_verify=True,
+        legacy_archive_filename=archived.legacy_archive_filename,
+    )
+    with zipfile.ZipFile(restored_archive["path"]) as zipped:
+        names = set(zipped.namelist())
+    assert "ArchivedWorld/level.dat" in names
+    assert all(name.startswith("ArchivedWorld/") for name in names)
+    assert restored_archive["sha256"]
+
+
 def test_legacy_archive_source_is_removed_only_after_two_generations_match(tmp_path):
     instance = make_server(tmp_path / "server")
     backups = manager(tmp_path, [instance])
@@ -1218,3 +1252,178 @@ def test_backup_fleet_cli_parser_exposes_run_list_and_deep_verify_modes():
 
     with pytest.raises(SystemExit):
         parser.parse_args(["backup-fleet", "--list", "--verify"])
+
+
+def test_world_inventory_does_not_present_temporary_pre_swap_copies_as_named_worlds(
+    tmp_path,
+):
+    instance = make_server(tmp_path / "server")
+    rollback = Path(instance.path) / "main_world.pre-swap-20261105_123456_000001"
+    rollback.mkdir()
+    (rollback / "level.dat").write_bytes(b"temporary prior world")
+
+    backups = manager(tmp_path, [instance])
+    generation = backups.run_backup()
+    verification = backups.verify_generation(generation.path, deep=True)
+
+    assert verification["ok"], verification["errors"]
+    server_record = verification["manifest"]["instances"][0]
+    assert "main_world.pre-swap-20261105_123456_000001" not in {
+        world["name"] for world in server_record["world_saves"]
+    }
+    assert (
+        generation.path
+        / "servers"
+        / backupsafe(instance.id)
+        / "files"
+        / "main_world.pre-swap-20261105_123456_000001"
+        / "level.dat"
+    ).is_file()
+
+
+def test_world_recovery_points_are_listed_for_each_retained_generation(tmp_path):
+    instance = make_server(tmp_path / "server")
+    backups = manager(tmp_path, [instance])
+    first = backups.run_backup()
+    second = backups.run_backup()
+
+    points = backups.list_world_recovery_points(instance.id)
+
+    assert list(points) == ["main_world"]
+    assert [
+        point.generation_id for point in points["main_world"]
+    ] == [second.generation_id, first.generation_id]
+    assert all(point.active for point in points["main_world"])
+    assert all(point.world_name == "main_world" for point in points["main_world"])
+    assert all(point.size_bytes > 0 for point in points["main_world"])
+
+
+def test_export_world_archive_contains_only_the_selected_verified_world(tmp_path):
+    instance = make_server(tmp_path / "server")
+    backups = manager(tmp_path, [instance])
+    generation = backups.run_backup()
+    destination = tmp_path / "recovery" / "main-world.zip"
+
+    exported = backups.export_world_archive(
+        generation.generation_id,
+        instance.id,
+        "main_world",
+        destination,
+        deep_verify=True,
+    )
+
+    assert exported["path"] == destination
+    assert exported["world_name"] == "main_world"
+    assert exported["generation_id"] == generation.generation_id
+    assert exported["size_bytes"] == destination.stat().st_size
+    assert len(exported["sha256"]) == 64
+    with zipfile.ZipFile(destination) as archive:
+        names = set(archive.namelist())
+    assert "main_world/level.dat" in names
+    assert "main_world/region/r.0.0.mca" in names
+    assert all(name.startswith("main_world/") for name in names)
+    assert "server.properties" not in names
+    assert "mods/example.jar" not in names
+
+
+def test_export_world_archive_refuses_unsafe_or_missing_worlds(tmp_path):
+    instance = make_server(tmp_path / "server")
+    backups = manager(tmp_path, [instance])
+    generation = backups.run_backup()
+
+    with pytest.raises(FleetBackupError, match="Unsafe world name"):
+        backups.export_world_archive(
+            generation.generation_id,
+            instance.id,
+            "../main_world",
+            tmp_path / "unsafe.zip",
+        )
+    with pytest.raises(FleetBackupError, match="does not contain world"):
+        backups.export_world_archive(
+            generation.generation_id,
+            instance.id,
+            "not-a-world",
+            tmp_path / "missing.zip",
+        )
+    assert not (tmp_path / "unsafe.zip").exists()
+    assert not (tmp_path / "missing.zip").exists()
+
+
+def test_migrated_saved_world_archive_appears_once_in_world_history_and_can_be_exported(tmp_path):
+    instance = make_server(tmp_path / "server")
+    backups = manager(tmp_path, [instance])
+    archive = _write_legacy_world_archive(
+        _legacy_backup_dir(tmp_path, instance.id) / "archived-world.zip",
+        world_name="ArchivedWorld",
+    )
+
+    first = backups.run_backup()
+    assert archive.exists()
+    second = backups.run_backup()
+    assert not archive.exists()
+
+    points = backups.list_world_recovery_points(instance.id)
+    archived_points = points["ArchivedWorld"]
+    assert len(archived_points) == 1
+    point = archived_points[0]
+    assert point.legacy_archive_filename == "archived-world.zip"
+    assert point.generation_id == second.generation_id
+    assert point.world_name == "ArchivedWorld"
+    assert not point.active
+
+    exported_path = tmp_path / "restore" / "archived-world.zip"
+    exported = backups.export_world_archive(
+        point.generation_id,
+        instance.id,
+        point.world_name,
+        exported_path,
+        legacy_archive_filename=point.legacy_archive_filename,
+        deep_verify=True,
+    )
+    assert exported["path"] == exported_path
+    assert exported["world_name"] == "ArchivedWorld"
+    with zipfile.ZipFile(exported_path) as restored_archive:
+        assert "ArchivedWorld/level.dat" in restored_archive.namelist()
+        assert restored_archive.read("ArchivedWorld/level.dat") == b"synthetic archived world metadata"
+
+    # The original archive is preserved by the two retained generations,
+    # then represented only once in the user-facing world history.
+    assert backups.verify_generation(first.path, deep=True)["ok"]
+    assert backups.verify_generation(second.path, deep=True)["ok"]
+
+
+def test_export_world_archive_includes_companion_dimension_folders(tmp_path):
+    instance = make_server(tmp_path / "server")
+    server = Path(instance.path)
+    for suffix in ("_nether", "_the_end"):
+        companion = server / f"main_world{suffix}"
+        companion.mkdir()
+        (companion / "level.dat").write_bytes(b"companion level metadata")
+        (companion / "region").mkdir()
+        (companion / "region" / "r.0.0.mca").write_bytes(b"companion region")
+    backups = manager(tmp_path, [instance])
+    generation = backups.run_backup()
+
+    exported = backups.export_world_archive(
+        generation.generation_id,
+        instance.id,
+        "main_world",
+        tmp_path / "world-with-dimensions.zip",
+    )
+    with zipfile.ZipFile(exported["path"]) as archive:
+        names = set(archive.namelist())
+    assert "main_world/level.dat" in names
+    assert "main_world_nether/level.dat" in names
+    assert "main_world_the_end/level.dat" in names
+
+
+def test_legacy_world_archive_root_requires_its_own_level_dat(tmp_path):
+    from crucible.data.fleet_backup import FleetBackupError, FleetBackupManager
+
+    archive_path = tmp_path / "wrong-root.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("actual-world/region/r.0.0.mca", b"region")
+        archive.writestr("actual-world_nether/level.dat", b"companion metadata")
+
+    with pytest.raises(FleetBackupError, match="level.dat at its world root"):
+        FleetBackupManager._legacy_archive_world_name(archive_path)

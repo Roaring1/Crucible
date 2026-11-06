@@ -45,22 +45,21 @@ class WorldStatsThreadGuardTests(unittest.TestCase):
             "if self._stats_thread is not None and self._stats_thread.isRunning():",
             self.src,
         )
-        self.assertIn("self._stats_pending = (world_root, pre_swap_dirs)", self.src)
+        self.assertIn("self._stats_pending = world_root", self.src)
 
     def test_finished_handler_resumes_the_queued_refresh(self) -> None:
         self.assertIn("if self._stats_pending is not None:", self.src)
         self.assertIn(
-            "world_root, pre_swap_dirs = self._stats_pending",
+            "world_root = self._stats_pending",
             self.src,
         )
 
-    def test_missing_active_world_disables_the_save_current_world_action(self) -> None:
+    def test_active_world_is_part_of_the_unified_world_recovery_list(self) -> None:
         self.assertIn("has_active_world = world_root.is_dir()", self.src)
-        self.assertIn("self._backup_btn.setEnabled(has_active_world)", self.src)
-        self.assertIn(
-            "There is no generated active world folder to save yet.",
-            self.src,
-        )
+        self.assertIn('"kind": "active"', self.src)
+        self.assertIn('self._table.setAccessibleName("Worlds and recovery points")', self.src)
+        self.assertIn("_world_recovery_points.get(world_root.name, [])", self.src)
+        self.assertIn("def _show_world_history(self, world_name: str)", self.src)
 
     def test_empty_world_slot_confirmation_does_not_claim_a_backup_was_taken(self) -> None:
         self.assertIn("if current_root.is_dir():", self.src)

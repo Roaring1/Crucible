@@ -23,7 +23,6 @@ from PyQt6.QtWidgets import (
  QTabWidget,
 )
 
-from crucible.data.fleet_backup import GenerationSummary
 from crucible.data.instance_manager import InstanceManager
 from crucible.data.instance_model import ServerInstance
 from crucible.mods.mod_manager import ModEntry
@@ -42,7 +41,6 @@ from crucible.ui.properties_dialog import PropertiesFixDialog
 from crucible.ui.share_history_dialog import ShareHistoryDialog
 from crucible.ui.share_players_dialog import SharePlayersDialog
 from crucible.ui.sidebar import Sidebar
-from crucible.ui.tabs.backup_tab import BackupTab
 from crucible.ui.tabs.console_tab import ConsoleTab
 from crucible.ui.tabs.mods_tab import ModsTab
 from crucible.ui.tabs.players_tab import PlayersTab, _PlayerListWidget, _TeleportDialog
@@ -204,58 +202,6 @@ second_server=root/'second-server';second_server.mkdir()
 second_inst=m.add_instance(
  str(second_server),'Second server',minecraft_version='1.21.1',loader='neoforge'
 )
-
-# The fleet backup workspace exposes restore as a clearly scoped action and
-# names its non-overwrite boundary. Preview with synthetic generation data;
-# never execute the restore worker or touch a real backup generation here.
-preview_generation=GenerationSummary(
- '20261103T000000000000Z-preview00',
- root/'preview-fleet'/'generations'/'preview00',
- '2026-11-03T00:00:00Z',
- 1,4,4096,4096,
- server_names=('Before',),
- world_saves=('Before: world [active]',),
-)
-preview_backup_data={
- 'generations':[preview_generation],
- 'issues':[],
- 'state':{'last_status':'success','last_completed_at_utc':'2026-11-03T00:00:00Z','registered_servers':1},
- 'scheduler':{'active':'false','enabled':'false','next':'','detail':'synthetic preview'},
-}
-with patch.object(
- BackupTab,'_run_job',
- lambda tab,mode: tab._render_inventory(preview_backup_data),
-):
- backup_ui=BackupTab(m)
- backup_ui.load(inst)
-assert not backup_ui._restore_btn.isHidden()
-assert backup_ui._restore_btn.isEnabled()
-assert backup_ui._restore_btn.accessibleName()=='Restore selected server snapshot to a new folder'
-assert backup_ui._open_btn.accessibleName()=='Open Crucible fleet backup folder'
-assert backup_ui._timer_btn.accessibleName()=='Enable ten-minute automatic fleet backups'
-assert backup_ui._timer_remove_btn.accessibleName()=='Disable automatic fleet backup schedule'
-assert backup_ui._backup_btn.accessibleName()=='Back up all registered servers now'
-assert backup_ui._verify_btn.accessibleName()=='Deep verify both retained fleet generations'
-assert backup_ui._table.accessibleName()=='Retained complete fleet backup generations'
-assert 'live registered server is never overwritten' in backup_ui._restore_btn.toolTip().lower()
-active_timer_preview={**preview_backup_data,'scheduler':{
- 'active':'true','enabled':'true','next':'14:10','detail':'timer active'
-}}
-backup_ui._render_inventory(active_timer_preview)
-assert backup_ui._timer_btn.text()=='Refresh timer status'
-assert backup_ui._timer_btn.accessibleName()=='Refresh automatic fleet backup timer status'
-assert backup_ui._timer_remove_btn.isEnabled()
-blocked_timer_preview={**preview_backup_data,
- 'legacy_backup_blockers':[{'path':'/legacy/orphan','reason':'unassigned server identity'}]
-}
-backup_ui._render_inventory(blocked_timer_preview)
-assert not backup_ui._timer_btn.isEnabled()
-assert backup_ui._timer_btn.accessibleName()==(
- 'Automatic backups unavailable until legacy sources are migrated'
-)
-backup_ui._render_inventory(preview_backup_data)
-assert backup_ui._timer_btn.accessibleName()=='Enable ten-minute automatic fleet backups'
-backup_ui.close();backup_ui.deleteLater();QTest.qWait(10)
 
 # An old registry entry can outlive its deleted folder; import target naming
 # must avoid that reserved path as well as existing folders on disk.
@@ -954,39 +900,27 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  assert world._seed_btn.accessibleName()=='Change the active world seed for newly generated chunks'
  assert world._reset_btn.accessibleName()=='Reset the active world after a verified fleet checkpoint'
  assert world._wipe_btn.accessibleName()=='Permanently wipe the active world after a verified fleet checkpoint'
- assert world._table.accessibleName()=='Saved world archives'
+ assert world._table.accessibleName()=='Worlds and recovery points', repr(world._table.accessibleName())
+ assert world._table.columnCount()==6
  assert world._table.accessibleDescription()
+ assert world._recovery_state.accessibleName()=='Automatic backup status'
+ assert world._recovery_last.accessibleName()=='Last completed backup'
+ assert world._backup_all_btn.accessibleName()=='Back up all registered servers now'
+ assert world._verify_backups_btn.accessibleName()=='Verify retained automatic backups'
+ assert world._restore_server_btn.accessibleName()==(
+  'Restore a complete server backup to a new folder'
+ )
+ assert world._schedule_btn.accessibleName()=='Pause automatic backups'
+ assert world._open_folder_btn.accessibleName()=='Open Crucible backup storage folder'
  assert world._cleanup_btn.accessibleName()==(
   'Create and verify a fleet snapshot before cleaning old world copies'
  )
  assert world._dims_toggle_btn.accessibleName()=='Show all world dimensions'
+ diagnostics=panel._info
  world._dims_expanded=True;world._set_dims_text([SimpleNamespace(name=f'DIM{i}') for i in range(8)])
  assert world._dims_toggle_btn.accessibleName()=='Show fewer world dimensions'
  world._dims_expanded=False;world._set_dims_text([SimpleNamespace(name=f'DIM{i}') for i in range(8)])
  assert world._dims_toggle_btn.accessibleName()=='Show all world dimensions'
-
- backup=panel._backup
- assert backup._open_btn.accessibleName()=='Open Crucible fleet backup folder'
- assert backup._scheduler_label.accessibleName()=='Automatic fleet backup schedule status'
- assert backup._timer_btn.accessibleName()=='Enable ten-minute automatic fleet backups'
- assert backup._timer_remove_btn.accessibleName()=='Disable automatic fleet backup schedule'
- assert backup._backup_btn.accessibleName()=='Back up all registered servers now'
- assert backup._verify_btn.accessibleName()=='Deep verify both retained fleet generations'
- assert backup._progress.accessibleName()=='Fleet backup or verification progress'
- assert backup._progress_label.accessibleName()=='Fleet backup operation status'
- assert any(
-  label.accessibleName()=='Fleet backup coverage and exclusions'
-  for label in backup.findChildren(QLabel)
- )
- assert backup._last_result.accessibleName()=='Latest fleet backup result'
- assert backup._last_completed.accessibleName()=='Latest fleet backup completion time'
- assert backup._server_count.accessibleName()=='Registered server count in latest backup'
- assert backup._migration_status.accessibleName()=='Legacy world archive migration status'
- assert backup._other_legacy_sources.accessibleName()=='Other legacy backup source migration status'
- assert backup._table.accessibleName()=='Retained complete fleet backup generations'
- assert backup._restore_btn.accessibleName()=='Restore selected server snapshot to a new folder'
-
- diagnostics=panel._info
  assert diagnostics._inspect_logs_btn.accessibleName()=='Inspect server logs and crash reports'
  assert diagnostics._fix_loading_btn.accessibleName()=='Check for safe server loading repairs'
 
@@ -1077,10 +1011,10 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  panel._btn_ip.setFocus();app.processEvents();QTest.keyClick(panel._btn_ip,Qt.Key.Key_Tab)
  assert app.focusWidget() is panel._btn_stop, 'Tab from Copy IP should reach Stop when running'
  visible=[tabs.tabText(i) for i in range(tabs.count()) if bar.isTabVisible(i)]
- assert visible==['Console','Mods','World','Backups','Setup','Diagnostics'], visible
+ assert visible==['Console','Mods','Worlds','Setup','Diagnostics'], visible
  assert tabs.currentWidget() is panel._console
  assert panel._btn_start.height() >= 44 and panel._btn_stop.height() >= 44
- assert all(not bar.isTabVisible(i) for i in (6,7,8))
+ assert all(not bar.isTabVisible(i) for i in (5,6,7))
 
  # Stop must wait for a confirmed result; cancelling a failed graceful stop
  # restores the running state, while an in-progress/uncertain transition
@@ -1130,10 +1064,10 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  assert stopped_start.called, 'Start should be dispatched once the server is confirmed stopped'
  panel._update_status_display('stopped')
  panel._btn_start.setText('▶  Start')
- panel._more_tab_actions[6].trigger();app.processEvents()
+ panel._more_tab_actions[5].trigger();app.processEvents()
  assert tabs.currentWidget() is panel._config
  assert panel._more_tabs_button.text().startswith('More: Config')
- assert panel._more_tab_actions[6].isChecked()
+ assert panel._more_tab_actions[5].isChecked()
  tabs.setCurrentWidget(panel._setup);app.processEvents()
  assert panel._more_tabs_button.text()=='More ▾'
  tabs.setCurrentWidget(panel._info);app.processEvents()
