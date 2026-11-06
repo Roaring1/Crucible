@@ -5,4 +5,4 @@
 
 mod pack_version;
 
-pub use pack_version::{channel_of, parse_pack_version, Channel, PackVersion};
+pub use pack_version::{Channel, PackVersion, channel_of, parse_pack_version};
