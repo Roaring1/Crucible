@@ -1,9 +1,9 @@
 # Crucible Rust Migration: Context and Architecture Assessment
 
-**Status:** Phase 0 - discovery and migration planning only  
+**Status:** Phase 0 audit documented; Phase 1 non-production Rust parity pilot added, awaiting CI validation  
 **Date:** 2026-11-06  
 **Repository baseline:** `main`, observed at `0eb89f2517fc3c4ba9417c2bc97e6c63b5f80b8c` during this assessment  
-**Scope:** Document the existing product, runtime boundaries, compatibility obligations, migration risks, and a deliberately incremental path. This document does not begin the port.
+**Scope:** Document the existing product, runtime boundaries, compatibility obligations, migration risks, and a deliberately incremental path. A first isolated Rust parity pilot now exists; it is not connected to production Crucible behavior.
 
 ## 1. Executive summary
 
@@ -243,12 +243,20 @@ Each phase is a separate reviewable change. Stop and reassess when a phase expos
 
 ### Phase 1 - Rust core skeleton, no production call sites
 
-- Add a small workspace/crate under a clearly named location such as `rust/crates/crucible-core`.
-- Add typed domain enums and structs with explicit serde rules and documented compatibility.
-- Add pure functions for lifecycle eligibility and world-start review classification.
-- Add table-driven tests for known, unknown, missing, and contradictory states.
-- Add CI for formatting, linting, and tests.
+- [x] Add a small dependency-free crate at `rust/crucible-core`.
+- [x] Add the first pure primitive: GTNH pack-version parsing, channel classification, and ordering.
+- [x] Add one shared TSV fixture corpus consumed by Rust unit tests and a Python pytest reference test.
+- [x] Add a dedicated GitHub Actions job for stable Rust formatting, tests, and Clippy. The job must pass before this pilot is considered validated.
+- [x] Keep the crate independent of Qt, tmux, filesystem mutation, and network access; no Python production call site invokes it.
+- [ ] Resolve/document the Unicode-decimal compatibility edge before this parser can be considered drop-in parity.
+- [ ] Add representative domain enums/structs only after their serialized compatibility contracts and golden fixtures are ready.
 - Do not access the user's filesystem, invoke tmux, or integrate with the GUI in this phase.
+
+#### First Rust parity pilot: GTNH version ordering
+
+The pilot lives in `rust/crucible-core/src/pack_version.rs`. It mirrors the existing ASCII GTNH version syntax and sort key used by `crucible/importers/pack_update.py`: major, minor, patch (default zero), channel rank (alpha 0, beta 1, RC 2, stable 3), and prerelease number (default zero). Decimal components are normalized and compared as strings so the Rust code does not introduce fixed-width integer overflow. The shared vectors live in `rust/crucible-core/fixtures/pack-version-cases.tsv`; Rust tests and `tests/test_rust_pack_version_fixtures.py` consume the same file.
+
+This is a contract/toolchain pilot, not a hot-path optimization. Python remains authoritative because Python's regex accepts Unicode decimal digits while the initial Rust parser deliberately accepts ASCII digits only. No runtime behavior, pack choice, update, or installed application uses the Rust code. The Rust CI result and Python test result must be inspected before proceeding to a second slice.
 
 ### Phase 2 - parity harness
 
