@@ -28,6 +28,14 @@ difference from the Python reference: CPython 3.11+ normally caps decimal
 and may be disabled. These pilots make no performance claim; future work
 should benchmark real workflows before prioritizing optimization.
 
+A small dependency-free microbenchmark compares these exact fixture inputs in Rust and the unchanged Python reference. It is useful for parser-only context, not an application speedup claim. Run it on an otherwise idle machine with the same release build and Python environment:
+
+```sh
+python scripts/benchmark_pack_parsers.py
+```
+
+The harness runs 15 timed rounds after warm-up and reports per-input p50/p95 nanoseconds for version parsing, channel classification, and server-pack name identification. The Rust side uses `cargo bench` (release profile); the Python side uses `perf_counter_ns`. Record the CPU model, OS, Rust compiler, Python version/build, and power profile with any results. Run at least three complete invocations and compare medians; do not compare CI runners to the owner's desktop or extrapolate these microbenchmarks to ZIP, filesystem, tmux, Qt, or server performance.
+
 Run from the repository root:
 
 ```sh
