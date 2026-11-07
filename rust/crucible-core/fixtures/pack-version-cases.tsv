@@ -28,3 +28,18 @@ nightly-2026-09-07	-	unknown
 2.8.4-rc1.2	-	unknown
 2.8.4-beta-x	-	unknown
 2.8.4-	-	unknown
+2.8.4-alpha_1	2.8.4|0|1	alpha
+2.8.4.alpha.1	2.8.4|0|1	alpha
+2.8.4---beta___0005	2.8.4|1|5	beta
+2.8.4beta	2.8.4|1|0	beta
+2.8.4.alpha	2.8.4|0|0	alpha
+2.8.4alpha.	2.8.4|0|0	alpha
+2.8.4_rc.3	2.8.4|2|3	rc
+2.8alpha	2.8.0|0|0	alpha
+2.8rc-1	2.8.0|2|1	rc
+v2.8-rc	2.8.0|2|0	rc
+2.8.4 . rc  2	2.8.4|2|2	rc
+2.8.4-alpha__	2.8.4|0|0	alpha
+2.8.4--	-	unknown
+2.8.4---	-	unknown
+2.8.4+beta1	-	unknown
