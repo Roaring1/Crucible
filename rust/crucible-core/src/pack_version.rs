@@ -337,6 +337,16 @@ mod tests {
     }
 
     #[test]
+    fn decimal_components_longer_than_cpython_default_limit_are_supported() {
+        // The Rust core compares decimal strings and has no fixed-width integer
+        // or CPython decimal int-conversion limit.
+        let digits = "9".repeat(4_301);
+        let raw = format!("{digits}.1.0");
+        let parsed = parse_pack_version(&raw).unwrap();
+        assert_eq!(parsed.major.0.len(), 4_301);
+    }
+
+    #[test]
     fn known_python_parity_differences_remain_explicit() {
         // Python's \d and int() accept Unicode decimal digits. Rust's
         // dependency-free pilot currently accepts ASCII digits only.
