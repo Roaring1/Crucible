@@ -8,11 +8,13 @@ The first primitive is the GTNH release-version parser/comparator. Its shared
 fixture file is consumed by Rust unit tests and a Python pytest test:
 `fixtures/pack-version-cases.tsv`.
 
-The Rust parser deliberately accepts ASCII decimal digits only. Python's
-existing regular expression accepts Unicode decimal digits as well. That
-difference is recorded rather than hidden: Python remains authoritative, and
-the Rust parser must not become a production decision source until this
-compatibility edge is resolved or a Python fallback is designed.
+The Rust parser deliberately accepts ASCII decimal digits only and uses Rust's
+`str::trim()`. Python's existing expression accepts Unicode decimal digits via
+`\\d` and `str.strip()` also removes U+001C..U+001F controls that Rust's
+`trim()` does not remove. Both differences are explicit in Rust-only tests and
+a Python-only regression test. Python remains authoritative; do not use the
+Rust parser as a production decision source until both edges are resolved or
+a verified Python fallback is designed.
 
 Decimal components are stored as canonical strings and compared by length
 then lexicographically. This preserves arbitrary-length ordering without a
