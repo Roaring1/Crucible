@@ -299,7 +299,10 @@ class SystemTrayController(QObject):
             f"{usage.managed_cpu_pct:.1f}%"
             if usage.managed_cpu_pct is not None else "Unavailable"
         )
-        managed_ram = self._fmt_memory(usage.managed_memory_mb)
+        managed_ram = (
+            self._fmt_memory(usage.managed_memory_mb)
+            if usage.managed_memory_mb is not None else "Unavailable"
+        )
         self._usage_managed.setText(f"Crucible + servers: CPU {managed_cpu} · RAM {managed_ram}")
 
         system_cpu = (

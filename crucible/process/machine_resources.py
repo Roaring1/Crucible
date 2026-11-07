@@ -14,23 +14,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .resource_monitor import (
-    ResourceSampler,
-    _iter_pids,
-    _proc_cwd,
-    _read_cmd,
-    _read_comm,
-    machine_cpu_percent,
-    system_memory_mb,
-)
-
-SESSION_MARKER = "-Dcrucible.session="
+from .resource_monitor import ResourceSampler, machine_cpu_percent, system_memory_mb
 
 
 @dataclass(frozen=True)
 class MachineUsage:
     managed_cpu_pct: float | None
-    managed_memory_mb: float
+    managed_memory_mb: float | None
     system_cpu_pct: float | None
     system_memory_used_mb: float
     system_memory_total_mb: float
@@ -54,41 +44,18 @@ def _system_cpu_ticks() -> tuple[int, int] | None:
         return None
 
 
-def _instance_processes(instances) -> list[int]:
-    """Find JVMs for all registered instances in one /proc pass.
+def _instance_processes(instances) -> list[int] | None:
+    """Return all managed JVM PIDs from one complete fleet inventory.
 
-    Exact Crucible session markers are preferred. Older instances fall back
-    to the actual java executable plus their registered folder/cwd. Unrelated
-    tmux sessions and other Java applications are not counted.
+    None means procfs could not be inspected completely; never report that as
+    an empty managed-process set.
     """
-    markers: set[str] = set()
-    paths: set[str] = set()
-    for instance in instances:
-        session = str(getattr(instance, "tmux_session", "") or "")
-        path = str(getattr(instance, "path", "") or "")
-        if session:
-            markers.add(SESSION_MARKER + session)
-        if path:
-            paths.add(path)
-
-    found: set[int] = set()
-    if not markers and not paths:
-        return []
-
-    for pid in _iter_pids():
-        command = _read_cmd(pid)
-        if not command:
-            continue
-        tokens = set(command.split())
-        if markers.intersection(tokens):
-            found.add(pid)
-            continue
-        if _read_comm(pid).casefold() != "java":
-            continue
-        cwd = _proc_cwd(pid)
-        if any(path in command or cwd == path for path in paths):
-            found.add(pid)
-    return sorted(found)
+    inventory = ResourceSampler().find_instances_pids(
+        instances, owner_uid=os.getuid()
+    )
+    if inventory is None:
+        return None
+    return sorted({pid for pids in inventory.values() for pid in pids})
 
 
 def _gpu_usage(timeout_s: float = 1.5) -> tuple[float | None, float | None, float | None]:
@@ -139,7 +106,8 @@ def sample_machine_usage(instances, gui_pid: int | None = None) -> MachineUsage:
     """
     gui_pid = os.getpid() if gui_pid is None else int(gui_pid)
     server_pids = _instance_processes(instances)
-    managed_pids = sorted(set(server_pids + [gui_pid]))
+    inventory_complete = server_pids is not None
+    managed_pids = sorted(set((server_pids or []) + [gui_pid]))
     sampler = ResourceSampler()
 
     system_before = _system_cpu_ticks()
@@ -149,7 +117,9 @@ def sample_machine_usage(instances, gui_pid: int | None = None) -> MachineUsage:
     system_after = _system_cpu_ticks()
 
     managed_cpu_core = sum(item.cpu_pct for item in process_stats.values())
-    managed_cpu = machine_cpu_percent(managed_cpu_core)
+    managed_cpu = (
+        machine_cpu_percent(managed_cpu_core) if inventory_complete else None
+    )
 
     system_cpu: float | None = None
     if system_before is not None and system_after is not None:
@@ -161,7 +131,10 @@ def sample_machine_usage(instances, gui_pid: int | None = None) -> MachineUsage:
                 min(100.0, (total_delta - idle_delta) / total_delta * 100.0),
             )
 
-    managed_memory = sum(item.rss_mb for item in process_stats.values())
+    managed_memory = (
+        sum(item.rss_mb for item in process_stats.values())
+        if inventory_complete else None
+    )
     system_used, system_total = system_memory_mb()
     gpu_pct, gpu_used, gpu_total = _gpu_usage()
 

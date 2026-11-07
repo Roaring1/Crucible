@@ -117,12 +117,25 @@ class SystemTab(QWidget):
 
     def _refresh(self) -> None:
         inst = self._instance
-        server_pids = self._sampler.find_instance_pids(inst) if inst else []
+        inventory = (
+            self._sampler.find_instances_pids([inst], owner_uid=os.getuid())
+            if inst else {}
+        )
+        server_pids = (
+            inventory.get(inst.id, []) if inventory is not None and inst else
+            ([] if inventory is not None else None)
+        )
         gui_pid = self._sampler.gui_pid()
-        stats = self._sampler.sample_pids(server_pids + [gui_pid])
+        stats = self._sampler.sample_pids((server_pids or []) + [gui_pid])
         used, total = system_memory_mb()
 
-        if server_pids:
+        if server_pids is None:
+            self._server_card["cpu"].setText("Unavailable")
+            self._server_card["mem"].setText("Unavailable")
+            self._server_card["pid"].setText("Process scan unavailable")
+            self._server_card["cpu_bar"].setValue(0)
+            self._server_card["mem_bar"].setValue(0)
+        elif server_pids:
             s_cpu = sum(stats[p].cpu_pct for p in server_pids if p in stats)
             s_mem = sum(stats[p].rss_mb for p in server_pids if p in stats)
             self._server_card["cpu"].setText(f"{machine_cpu_percent(s_cpu):.1f}%")

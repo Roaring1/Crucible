@@ -60,5 +60,180 @@ class FindInstancePidsTests(unittest.TestCase):
             self.assertEqual(self.sampler.find_instance_pids(self.inst), [])
 
 
+class FindInstancesPidsTests(unittest.TestCase):
+    def setUp(self):
+        self.sampler = ResourceSampler()
+        self.inst = ServerInstance(
+            "/srv/a", "A", tmux_session="gt-new-horizons-a"
+        )
+
+    def test_one_proc_scan_associates_multiple_instances(self):
+        instances = [
+            ServerInstance("/srv/a", "A", tmux_session="server-a"),
+            ServerInstance("/srv/b", "B", tmux_session="server-b"),
+        ]
+        commands = {
+            10: "java -Dcrucible.session=server-a -Xmx4G",
+            20: "java -Dcrucible.session=server-b -Xmx6G",
+            30: "java -jar server.jar",
+            40: "java -jar /srv/a/server.jar",
+            50: "dolphin /srv/a",
+        }
+        with (
+            patch("crucible.process.resource_monitor._iter_pids", return_value=list(commands)) as scan,
+            patch("crucible.process.resource_monitor._read_cmd", side_effect=lambda pid: commands[pid]),
+            patch(
+                "crucible.process.resource_monitor._read_comm",
+                side_effect=lambda pid: "java" if pid in {10, 20, 30, 40} else "dolphin",
+            ),
+            patch(
+                "crucible.process.resource_monitor._proc_cwd",
+                side_effect=lambda pid: "/srv/b" if pid == 30 else "",
+            ),
+        ):
+            inventory = self.sampler.find_instances_pids(instances)
+
+        self.assertEqual(inventory, {instances[0].id: [10, 40], instances[1].id: [20, 30]})
+        scan.assert_called_once_with()
+
+    def test_failed_pid_enumeration_is_unknown_not_empty(self):
+        instances = [self.inst]
+        with patch(
+            "crucible.process.resource_monitor._iter_pids", return_value=None
+        ):
+            self.assertIsNone(self.sampler.find_instances_pids(instances))
+
+    def test_unreadable_process_invalidates_partial_inventory(self):
+        instances = [self.inst]
+        with (
+            patch(
+                "crucible.process.resource_monitor._iter_pids",
+                return_value=[555, 666],
+            ),
+            patch(
+                "crucible.process.resource_monitor._read_comm", return_value="java"
+            ),
+            patch(
+                "crucible.process.resource_monitor._read_cmd",
+                side_effect=[
+                    f"java -Dcrucible.session={self.inst.tmux_session}",
+                    None,
+                ],
+            ),
+        ):
+            self.assertIsNone(self.sampler.find_instances_pids(instances))
+
+    def test_unreadable_java_identity_invalidates_path_fallback_scan(self):
+        with (
+            patch("crucible.process.resource_monitor._iter_pids", return_value=[555]),
+            patch(
+                "crucible.process.resource_monitor._read_cmd",
+                return_value="java -jar server.jar",
+            ),
+            patch("crucible.process.resource_monitor._read_comm", return_value=None),
+        ):
+            self.assertIsNone(self.sampler.find_instances_pids([self.inst]))
+
+    def test_unreadable_working_directory_invalidates_path_fallback_scan(self):
+        with (
+            patch("crucible.process.resource_monitor._iter_pids", return_value=[555]),
+            patch(
+                "crucible.process.resource_monitor._read_cmd",
+                return_value="java -jar server.jar",
+            ),
+            patch("crucible.process.resource_monitor._read_comm", return_value="java"),
+            patch("crucible.process.resource_monitor._proc_cwd", return_value=None),
+        ):
+            self.assertIsNone(self.sampler.find_instances_pids([self.inst]))
+
+    def test_process_exiting_during_scan_is_normal_churn(self):
+        with (
+            patch("crucible.process.resource_monitor._iter_pids", return_value=[555]),
+            patch("crucible.process.resource_monitor._read_comm", return_value="java"),
+            patch("crucible.process.resource_monitor._read_cmd", return_value=""),
+        ):
+            self.assertEqual(
+                self.sampler.find_instances_pids([self.inst]),
+                {self.inst.id: []},
+            )
+
+    def test_non_java_process_does_not_read_its_command_line(self):
+        with (
+            patch("crucible.process.resource_monitor._iter_pids", return_value=[555]),
+            patch("crucible.process.resource_monitor._read_comm", return_value="dolphin"),
+            patch("crucible.process.resource_monitor._read_cmd") as read_cmd,
+        ):
+            self.assertEqual(
+                self.sampler.find_instances_pids([self.inst]),
+                {self.inst.id: []},
+            )
+        read_cmd.assert_not_called()
+
+
+    def test_comm_with_invalid_utf8_does_not_abort_process_scan(self):
+        with (
+            patch("crucible.process.resource_monitor._iter_pids", return_value=[555]),
+            patch("builtins.open", return_value=__import__("io").BytesIO(b"java\xff")),
+        ):
+            self.assertEqual(
+                self.sampler.find_instances_pids([self.inst]),
+                {self.inst.id: []},
+            )
+
+
+    def test_uid_scoped_scan_skips_other_users_before_reading_comm(self):
+        import os
+        from types import SimpleNamespace
+
+        with (
+            patch("crucible.process.resource_monitor._iter_pids", return_value=[555, 666]),
+            patch(
+                "crucible.process.resource_monitor.os.stat",
+                side_effect=[
+                    SimpleNamespace(st_uid=os.getuid()),
+                    SimpleNamespace(st_uid=os.getuid() + 1),
+                ],
+            ),
+            patch(
+                "crucible.process.resource_monitor._read_comm",
+                return_value="java",
+            ) as read_comm,
+            patch(
+                "crucible.process.resource_monitor._read_cmd",
+                return_value=f"java -Dcrucible.session={self.inst.tmux_session}",
+            ) as read_cmd,
+        ):
+            inventory = self.sampler.find_instances_pids(
+                [self.inst], owner_uid=os.getuid()
+            )
+
+        self.assertEqual(inventory, {self.inst.id: [555]})
+        read_comm.assert_called_once_with(555)
+        read_cmd.assert_called_once_with(555)
+
+    def test_uid_scoped_scan_returns_unknown_when_process_owner_cannot_be_read(self):
+        with (
+            patch("crucible.process.resource_monitor._iter_pids", return_value=[555]),
+            patch(
+                "crucible.process.resource_monitor.os.stat",
+                side_effect=PermissionError("procfs owner hidden"),
+            ),
+        ):
+            self.assertIsNone(
+                self.sampler.find_instances_pids(
+                    [self.inst], owner_uid=__import__("os").getuid()
+                )
+            )
+
+    def test_os_error_enumerating_proc_is_unknown(self):
+        with patch(
+            "crucible.process.resource_monitor.os.listdir",
+            side_effect=PermissionError("procfs hidden"),
+        ):
+            self.assertIsNone(
+                self.sampler.find_instances_pids([self.inst])
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

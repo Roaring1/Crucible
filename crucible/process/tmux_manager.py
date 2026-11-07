@@ -204,7 +204,8 @@ class TmuxManager:
 
         # GTNH wrappers leave bash in the pane while Java runs as a child;
         # pane_current_command() alone is not a reliable JVM readiness check.
-        if not self._unmanaged_pids(instance):
+        process_pids = self._unmanaged_pids(instance)
+        if process_pids is None or not process_pids:
             return None
 
         try:
@@ -235,13 +236,18 @@ class TmuxManager:
         return False if saw_readable_log else None
 
     @staticmethod
-    def _unmanaged_pids(instance: ServerInstance) -> list[int]:
-        """Best-effort detection of a server JVM not reachable via its tmux session."""
+    def _unmanaged_pids(instance: ServerInstance) -> list[int] | None:
+        """Inspect all visible users for matching JVMs; None means incomplete procfs."""
         try:
             from .resource_monitor import ResourceSampler
-            return ResourceSampler().find_instance_pids(instance)
+            inventory = ResourceSampler().find_instances_pids([instance])
+            if inventory is None:
+                return None
+            return inventory.get(instance.id, [])
         except Exception:
-            return []
+            # An unexpected inspection failure is not evidence that the
+            # server process is absent. Safety-sensitive callers fail closed.
+            return None
 
     def safe_to_remove(self, instance: ServerInstance) -> tuple[bool, str]:
         """Fail-closed live probe before unregistering or deleting an instance.
@@ -263,6 +269,11 @@ class TmuxManager:
         # tmux has-session uses exit 1 when the exact session does not exist.
         if result.returncode == 1:
             pids = self._unmanaged_pids(instance)
+            if pids is None:
+                return False, (
+                    "could not verify whether a server process exists because "
+                    "the procfs process inventory is incomplete"
+                )
             if pids:
                 return False, (
                     "a server-like Java process is still running outside the "
@@ -287,7 +298,10 @@ class TmuxManager:
             return "running"
         if running is None:
             return "unknown"
-        if self._unmanaged_pids(instance):
+        pids = self._unmanaged_pids(instance)
+        if pids is None:
+            return "unknown"
+        if pids:
             return "unmanaged"
         if not Path(instance.path).is_dir():
             return "missing"
@@ -665,6 +679,11 @@ class TmuxManager:
             return False, "Could not verify the tmux session state; no command was sent"
         if not running:
             pids = self._unmanaged_pids(instance)
+            if pids is None:
+                return False, (
+                    "Could not verify whether the server process exists; "
+                    "no console command was sent"
+                )
             if pids:
                 return False, (
                     "Server process exists outside the configured tmux session; "
@@ -753,6 +772,11 @@ class TmuxManager:
             return False, f"kill-session failed: {result.stderr.strip()}"
 
         pids = self._unmanaged_pids(instance)
+        if pids is None:
+            return False, (
+                f"Session '{session}' was torn down, but procfs could not verify "
+                "whether its Java process survived. No process signal was sent."
+            )
         if not pids:
             return True, f"Session '{session}' force-killed"
 
@@ -763,6 +787,11 @@ class TmuxManager:
                 pass
         time.sleep(1.0)
         pids = self._unmanaged_pids(instance)
+        if pids is None:
+            return False, (
+                f"Session '{session}' received SIGTERM, but procfs could not "
+                "verify process exit. SIGKILL was not sent."
+            )
         if not pids:
             return True, (
                 f"Session '{session}' force-killed (java needed SIGTERM after "
@@ -776,6 +805,11 @@ class TmuxManager:
                 pass
         time.sleep(0.5)
         pids = self._unmanaged_pids(instance)
+        if pids is None:
+            return False, (
+                f"Session '{session}' received SIGKILL, but procfs could not "
+                "verify whether the process exited."
+            )
         if pids:
             return False, (
                 f"Session '{session}' was torn down, but the server process "
@@ -832,7 +866,13 @@ class TmuxManager:
         if running is None:
             return False, "Could not verify the tmux session; retry shortly"
         if not running:
-            if self._unmanaged_pids(instance):
+            pids = self._unmanaged_pids(instance)
+            if pids is None:
+                return False, (
+                    "Could not verify whether the server process exists; "
+                    "attach was not attempted"
+                )
+            if pids:
                 return False, (
                     "A server process is running outside the configured tmux "
                     "session; Crucible cannot attach to its console"
@@ -885,25 +925,52 @@ class TmuxManager:
                 f"  Run manually: {attach_cmd}",
             )
 
-    # Bulk queries (for the future sidebar health-check timer)
+    # Bulk queries (for the sidebar health-check timer)
 
     def status_map(
         self, instances: list[ServerInstance]
     ) -> dict[str, Literal[
         "running", "unmanaged", "stopped", "missing", "unknown", "tmux_missing"
     ]]:
-        """Return process/filesystem truth without converting query errors to offline."""
+        """Return fleet process/filesystem truth from one tmux and one procfs snapshot.
+
+        If a tmux session is absent, all such instances are resolved against a
+        single complete process inventory scoped to Crucible's current UID.
+        An incomplete scan leaves those instances unknown rather than reporting
+        them stopped or missing. Per-action safety probes use an all-visible-user
+        inventory and fail closed; this display snapshot does not authorize
+        removal, stop, or force-kill operations.
+        """
         if not self.tmux_available():
             return {i.id: "tmux_missing" for i in instances}
         queried = self.list_sessions()
         if queried is None:
             return {i.id: "unknown" for i in instances}
+
         sessions = set(queried)
+        needs_process_scan = [
+            instance for instance in instances
+            if self.session_name(instance) not in sessions
+        ]
+        inventory: dict[str, list[int]] | None = {}
+        if needs_process_scan:
+            try:
+                from .resource_monitor import ResourceSampler
+                inventory = ResourceSampler().find_instances_pids(
+                    needs_process_scan, owner_uid=os.getuid()
+                )
+            except Exception:
+                inventory = None
+
         result = {}
         for instance in instances:
             if self.session_name(instance) in sessions:
                 result[instance.id] = "running"
-            elif self._unmanaged_pids(instance):
+                continue
+            if inventory is None or instance.id not in inventory:
+                result[instance.id] = "unknown"
+                continue
+            if inventory[instance.id]:
                 result[instance.id] = "unmanaged"
             elif not Path(instance.path).is_dir():
                 result[instance.id] = "missing"

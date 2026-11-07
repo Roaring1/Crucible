@@ -332,7 +332,10 @@ class TmuxCommandTests(unittest.TestCase):
                     [], 1, "", "some distro-specific untranslated diagnostic\n"
                 ),
             ),
-            patch.object(self.tm, "_unmanaged_pids", return_value=[]),
+            patch(
+                "crucible.process.resource_monitor.ResourceSampler.find_instances_pids",
+                return_value={self.inst.id: []},
+            ),
         ):
             self.assertEqual(self.tm.list_sessions(), [])
             self.assertEqual(
@@ -356,7 +359,10 @@ class TmuxCommandTests(unittest.TestCase):
                     "error connecting to /tmp/tmux-1000/default (No such file or directory)\n",
                 ),
             ),
-            patch.object(self.tm, "_unmanaged_pids", return_value=[]),
+            patch(
+                "crucible.process.resource_monitor.ResourceSampler.find_instances_pids",
+                return_value={self.inst.id: []},
+            ),
         ):
             self.assertEqual(self.tm.list_sessions(), [])
             self.assertEqual(
@@ -451,7 +457,10 @@ class TmuxCommandTests(unittest.TestCase):
         import subprocess
         with (
             patch.object(self.tm, "list_sessions", return_value=[]),
-            patch.object(self.tm, "_unmanaged_pids", return_value=[4242]),
+            patch(
+                "crucible.process.resource_monitor.ResourceSampler.find_instances_pids",
+                return_value={self.inst.id: [4242]},
+            ),
         ):
             self.assertEqual(self.tm.status_map([self.inst])[self.inst.id], "unmanaged")
         with (
@@ -494,11 +503,52 @@ class TmuxCommandTests(unittest.TestCase):
             safe, _ = self.tm.safe_to_remove(self.inst)
         self.assertTrue(safe)
 
+    def test_removal_probe_blocks_when_procfs_inventory_is_unknown(self):
+        import subprocess
+
+        with (
+            patch.object(
+                self.tm, "_run",
+                return_value=subprocess.CompletedProcess([], 1, "", "can't find session"),
+            ),
+            patch.object(self.tm, "_unmanaged_pids", return_value=None),
+        ):
+            safe, reason = self.tm.safe_to_remove(self.inst)
+
+        self.assertFalse(safe)
+        self.assertIn("procfs", reason)
+
+    def test_get_status_returns_unknown_when_procfs_inventory_is_incomplete(self):
+        with (
+            patch("crucible.process.tmux_manager.shutil.which", return_value="tmux"),
+            patch.object(self.tm, "probe_running", return_value=False),
+            patch.object(self.tm, "_unmanaged_pids", return_value=None),
+        ):
+            self.assertEqual(self.tm.get_status(self.inst), "unknown")
+
+    def test_stop_does_not_proceed_when_procfs_cannot_verify_absence(self):
+        with (
+            patch.object(self.tm, "probe_running", return_value=False),
+            patch.object(self.tm, "_unmanaged_pids", return_value=None),
+            patch.object(self.tm, "send_command_result") as send,
+            patch.object(self.tm, "_force_kill") as force_kill,
+        ):
+            ok, reason = self.tm.stop(self.inst, graceful=False)
+
+        self.assertFalse(ok)
+        self.assertIn("Could not verify", reason)
+        send.assert_not_called()
+        force_kill.assert_not_called()
+
     def test_missing_directory_is_reported_when_no_session_exists(self):
         missing = ServerInstance(str(self.root / "gone"), "Gone", tmux_session="gone")
         with (
             patch.object(self.tm, "tmux_available", return_value=True),
             patch.object(self.tm, "list_sessions", return_value=[]),
+            patch(
+                "crucible.process.resource_monitor.ResourceSampler.find_instances_pids",
+                return_value={missing.id: []},
+            ),
         ):
             self.assertEqual(self.tm.status_map([missing])[missing.id], "missing")
 
@@ -669,11 +719,77 @@ class TmuxCommandTests(unittest.TestCase):
         with (
             patch.object(self.tm, "tmux_available", return_value=True),
             patch.object(self.tm, "list_sessions", return_value=["gtnh-old"]),
-            patch.object(self.tm, "_unmanaged_pids", return_value=[]),
+            patch(
+                "crucible.process.resource_monitor.ResourceSampler.find_instances_pids",
+                return_value={self.inst.id: []},
+            ),
         ):
             result = self.tm.status_map([self.inst, other])
         self.assertEqual(result[self.inst.id], "stopped")
         self.assertEqual(result[other.id], "running")
+
+    def test_unmanaged_process_safety_probe_keeps_all_user_scope(self):
+        with patch(
+            "crucible.process.resource_monitor.ResourceSampler.find_instances_pids",
+            return_value={self.inst.id: [4242]},
+        ) as scan:
+            self.assertEqual(self.tm._unmanaged_pids(self.inst), [4242])
+
+        scan.assert_called_once_with([self.inst])
+
+    def test_status_map_uses_one_process_inventory_for_all_unmanaged_instances(self):
+        other = ServerInstance(str(self.root / "b"), "Other", tmux_session="gtnh-old")
+        third_root = self.root / "c"
+        third_root.mkdir()
+        third = ServerInstance(str(third_root), "Third", tmux_session="gtnh-third")
+        with (
+            patch.object(self.tm, "tmux_available", return_value=True),
+            patch.object(self.tm, "list_sessions", return_value=["gtnh-old"]),
+            patch(
+                "crucible.process.resource_monitor.ResourceSampler.find_instances_pids",
+                return_value={self.inst.id: [111], third.id: []},
+            ) as scan,
+        ):
+            result = self.tm.status_map([self.inst, other, third])
+
+        self.assertEqual(
+            result,
+            {
+                self.inst.id: "unmanaged",
+                other.id: "running",
+                third.id: "stopped",
+            },
+        )
+        scan.assert_called_once_with([self.inst, third], owner_uid=__import__("os").getuid())
+
+    def test_status_map_keeps_unmatched_instances_unknown_on_incomplete_proc_scan(self):
+        other = ServerInstance(str(self.root / "b"), "Other", tmux_session="gtnh-old")
+        with (
+            patch.object(self.tm, "tmux_available", return_value=True),
+            patch.object(self.tm, "list_sessions", return_value=["gtnh-old"]),
+            patch(
+                "crucible.process.resource_monitor.ResourceSampler.find_instances_pids",
+                return_value=None,
+            ) as scan,
+        ):
+            result = self.tm.status_map([self.inst, other])
+
+        self.assertEqual(result[self.inst.id], "unknown")
+        self.assertEqual(result[other.id], "running")
+        scan.assert_called_once_with([self.inst], owner_uid=__import__("os").getuid())
+
+    def test_status_map_does_not_call_proc_when_every_session_is_present(self):
+        with (
+            patch.object(self.tm, "tmux_available", return_value=True),
+            patch.object(self.tm, "list_sessions", return_value=["gtnh"]),
+            patch(
+                "crucible.process.resource_monitor.ResourceSampler.find_instances_pids"
+            ) as scan,
+        ):
+            result = self.tm.status_map([self.inst])
+
+        self.assertEqual(result[self.inst.id], "running")
+        scan.assert_not_called()
 
 
 class ForceKillTests(unittest.TestCase):
@@ -764,6 +880,66 @@ class ForceKillTests(unittest.TestCase):
         self.assertIn("kill-session failed", message)
         pids.assert_not_called()
         kill.assert_not_called()
+
+    def test_force_kill_does_not_signal_when_first_procfs_check_is_unknown(self):
+        import subprocess
+
+        with (
+            patch.object(
+                self.tm, "_run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ),
+            patch.object(self.tm, "_unmanaged_pids", return_value=None),
+            patch("crucible.process.tmux_manager.os.kill") as kill,
+        ):
+            ok, message = self.tm._force_kill(self.inst)
+
+        self.assertFalse(ok)
+        self.assertIn("procfs could not verify", message)
+        kill.assert_not_called()
+
+    def test_force_kill_does_not_escalate_to_sigkill_after_unknown_sigterm_check(self):
+        import signal
+        import subprocess
+
+        with (
+            patch.object(
+                self.tm, "_run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ),
+            patch.object(self.tm, "_unmanaged_pids", side_effect=[[555], None]),
+            patch("crucible.process.tmux_manager.os.kill") as kill,
+            patch("crucible.process.tmux_manager.time.sleep"),
+        ):
+            ok, message = self.tm._force_kill(self.inst)
+
+        self.assertFalse(ok)
+        self.assertIn("SIGTERM", message)
+        self.assertIn("SIGKILL was not sent", message)
+        kill.assert_called_once_with(555, signal.SIGTERM)
+
+    def test_force_kill_reports_unknown_after_sigkill_without_claiming_success(self):
+        import signal
+        import subprocess
+
+        with (
+            patch.object(
+                self.tm, "_run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ),
+            patch.object(self.tm, "_unmanaged_pids", side_effect=[[555], [555], None]),
+            patch("crucible.process.tmux_manager.os.kill") as kill,
+            patch("crucible.process.tmux_manager.time.sleep"),
+        ):
+            ok, message = self.tm._force_kill(self.inst)
+
+        self.assertFalse(ok)
+        self.assertIn("SIGKILL", message)
+        self.assertIn("could not verify", message)
+        self.assertEqual(
+            [call.args for call in kill.call_args_list],
+            [(555, signal.SIGTERM), (555, signal.SIGKILL)],
+        )
 
 
 class StartTests(unittest.TestCase):

@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 _CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 _PAGE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
@@ -50,48 +49,48 @@ def _read_jiffies(pid: int) -> int:
         return 0
 
 
-def _read_cmd(pid: int) -> str:
+def _read_cmd(pid: int) -> str | None:
+    """Read one command line; None means the process was not inspectable."""
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             raw = f.read()
         return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
-    except OSError:
+    except (FileNotFoundError, ProcessLookupError):
+        # A PID can exit between readdir and the proc-file read.
         return ""
+    except OSError:
+        return None
 
 
-def _read_comm(pid: int) -> str:
-    """Return the kernel-reported executable name for a PID (e.g. 'java',
-    'dolphin'), as opposed to the full command line.
+def _read_comm(pid: int) -> str | None:
+    """Read the kernel executable name; None means inspection failed.
 
-    ``_read_cmd()`` returns the whole argv joined together, which can
-    accidentally contain "java" as a substring of a *path argument* rather
-    than the binary actually being run -- GTNH server folders are
-    conventionally named "..._Server_Java_<ver>", so a file manager, editor,
-    or anything else merely pointed at that folder would otherwise
-    false-positive as a live JVM. /proc/pid/comm has no such ambiguity.
+    The executable name avoids treating "java" in a path argument as a JVM.
     """
     try:
-        with open(f"/proc/{pid}/comm") as f:
-            return f.read().strip()
-    except OSError:
+        with open(f"/proc/{pid}/comm", "rb") as f:
+            return f.read().decode("utf-8", "replace").strip()
+    except (FileNotFoundError, ProcessLookupError):
         return ""
+    except OSError:
+        return None
 
 
-def _proc_cwd(pid: int) -> str:
+def _proc_cwd(pid: int) -> str | None:
     try:
         return os.readlink(f"/proc/{pid}/cwd")
-    except OSError:
+    except (FileNotFoundError, ProcessLookupError):
         return ""
+    except OSError:
+        return None
 
 
-def _have_proc() -> bool:
-    return Path("/proc/self/stat").exists()
-
-
-def _iter_pids() -> list[int]:
-    if not _have_proc():
-        return []
-    return [int(e) for e in os.listdir("/proc") if e.isdigit()]
+def _iter_pids() -> list[int] | None:
+    """Enumerate visible processes; None means procfs could not be scanned."""
+    try:
+        return [int(entry) for entry in os.listdir("/proc") if entry.isdigit()]
+    except OSError:
+        return None
 
 
 class ResourceSampler:
@@ -121,36 +120,127 @@ class ResourceSampler:
             new_jiffies[pid] = j
             result[pid] = ProcStat(
                 pid=pid, rss_mb=_read_rss_mb(pid),
-                cpu_pct=self._cpu_pct(pid, now, j), cmd=_read_cmd(pid),
+                cpu_pct=self._cpu_pct(pid, now, j), cmd=_read_cmd(pid) or "",
             )
         self._prev_jiffies = new_jiffies
         self._prev_time = now
         return result
 
-    def find_instance_pids(self, instance) -> list[int]:
-        """Java/server PIDs belonging to one instance.
+    def find_instances_pids(
+        self, instances, *, owner_uid: int | None = None
+    ) -> dict[str, list[int]] | None:
+        """Find Java/server PIDs for all registered instances in one procfs scan.
 
-        Matches the per-instance marker injected into JAVA_ARGS, then falls back
-        to matching the server directory in the process cwd or command line.
+        Exact per-session markers are preferred. Older instances fall back to
+        the actual Java executable plus a registered path in argv or cwd.
+
+        Returns a mapping (including empty lists) only for a complete scan.
+        None means procfs or one of its visible process records could not be
+        inspected, so callers must not interpret a partial result as offline.
+        PIDs that disappear during a scan are normal process churn and are
+        skipped; permission errors and other read failures invalidate the
+        complete fleet snapshot. When owner_uid is set, only processes owned
+        by that UID are in scope; pass None for all visible users.
+        """
+        configs: dict[str, tuple[str | None, str]] = {}
+        marker_to_ids: dict[str, list[str]] = {}
+        has_path_fallback = False
+        for instance in instances:
+            instance_id = str(getattr(instance, "id", "") or "")
+            if not instance_id:
+                continue
+            path = str(getattr(instance, "path", "") or "")
+            slug = str(getattr(instance, "tmux_session", "") or "")
+            marker = SESSION_MARKER + slug if slug else None
+            configs[instance_id] = (marker, path)
+            if marker:
+                marker_to_ids.setdefault(marker, []).append(instance_id)
+            has_path_fallback = has_path_fallback or bool(path)
+
+        if not configs:
+            return {}
+        result: dict[str, list[int]] = {instance_id: [] for instance_id in configs}
+        if not marker_to_ids and not has_path_fallback:
+            return result
+
+        pids = _iter_pids()
+        if pids is None:
+            return None
+
+        found: dict[str, set[int]] = {instance_id: set() for instance_id in configs}
+        for pid in pids:
+            if owner_uid is not None:
+                try:
+                    process_uid = os.stat(f"/proc/{pid}").st_uid
+                except (FileNotFoundError, ProcessLookupError):
+                    continue
+                except OSError:
+                    return None
+                if process_uid != owner_uid:
+                    continue
+            # comm is a tiny kernel field. Check it before reading full argv so
+            # unrelated processes never incur a command-line read/tokenization.
+            comm = _read_comm(pid)
+            if comm is None:
+                return None
+            if comm.casefold() != "java":
+                continue
+
+            command = _read_cmd(pid)
+            if command is None:
+                return None
+            if not command:
+                # The process exited or has no user-space command line.
+                continue
+
+            # Exact marker dictionary lookup avoids comparing every process
+            # against every registered instance.
+            marker_matches = [
+                instance_id
+                for token in command.split()
+                for instance_id in marker_to_ids.get(token, ())
+            ]
+            if marker_matches:
+                for instance_id in marker_matches:
+                    found[instance_id].add(pid)
+                continue
+
+            if not has_path_fallback:
+                continue
+            command_matches = [
+                instance_id
+                for instance_id, (_marker, path) in configs.items()
+                if path and path in command
+            ]
+            if command_matches:
+                for instance_id in command_matches:
+                    found[instance_id].add(pid)
+                continue
+
+            cwd = _proc_cwd(pid)
+            if cwd is None:
+                return None
+            if cwd:
+                for instance_id, (_marker, path) in configs.items():
+                    if path and cwd == path:
+                        found[instance_id].add(pid)
+
+        return {instance_id: sorted(pids) for instance_id, pids in found.items()}
+
+    def find_instance_pids(self, instance) -> list[int]:
+        """Compatibility wrapper; use find_instances_pids() for safe decisions.
+
+        The legacy list API cannot express an incomplete scan, so it returns an
+        empty list on unknown. Safety-sensitive code must use the tri-state
+        fleet API and distinguish None from a confirmed empty result.
         """
         if instance is None:
             return []
-        path = str(getattr(instance, "path", "") or "")
-        slug = str(getattr(instance, "tmux_session", "") or "")
-        marker = SESSION_MARKER + slug if slug else None
-        pids: list[int] = []
-        for pid in _iter_pids():
-            cmd = _read_cmd(pid)
-            if marker and marker in cmd.split():
-                pids.append(pid)
-                continue
-            # Match the actual executable, not a substring of the full
-            # command line -- see _read_comm() for why that matters.
-            if _read_comm(pid).lower() == "java" and path and (
-                path in cmd or _proc_cwd(pid) == path
-            ):
-                pids.append(pid)
-        return pids
+        instance_id = str(getattr(instance, "id", "") or "")
+        inventory = self.find_instances_pids([instance])
+        if inventory is None:
+            return []
+        return inventory.get(instance_id, [])
 
     def gui_pid(self) -> int:
         return os.getpid()

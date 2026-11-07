@@ -937,15 +937,24 @@ class _PlayerListWidget(QWidget):
             )
             return
         if not running:
-            if self._tmux._unmanaged_pids(self._instance):
+            process_pids = self._tmux._unmanaged_pids(self._instance)
+            if process_pids is None:
+                title = "Server process status unavailable"
+                detail = (
+                    "Crucible could not inspect the process inventory completely. "
+                    "No command was sent; retry when process inspection recovers."
+                )
+            elif process_pids:
+                title = "Managed server console unavailable"
                 detail = (
                     "The server appears to be running outside its configured tmux "
                     "session, so Crucible cannot safely address its console."
                 )
             else:
+                title = "Managed server console unavailable"
                 detail = "The server is not running in its configured tmux session."
             QMessageBox.warning(
-                self, "Managed server console unavailable",
+                self, title,
                 detail + " Crucible will not invent a UUID; restore/start the managed "
                 "session and try again.",
             )
