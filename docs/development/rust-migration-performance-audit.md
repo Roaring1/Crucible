@@ -121,11 +121,15 @@ Do not infer Java is gone when the pane query failed. Preserve the two-poll cras
 
 Existing watchdog tests strongly cover one-instance safety semantics, including unknown probes, wrapper survival, two-miss confirmation, restart limits, pending Stops and world confirmation. They do not currently assert the number of tmux subprocesses for multiple simultaneous watched instances or validate a batched snapshot. The performance benchmark and new batch tests should therefore be kept separate from the existing safety suite.
 
-### 2.6 Resource sampling is on-demand, not a resident monitor
+### 2.6 Resource sampling has two different lifecycles
 
-`sample_machine_usage()` builds the managed PID set, samples procfs counters, waits 350 ms for a CPU delta, samples again, and optionally invokes `nvidia-smi` with a 1.5-second timeout. Its docstring explicitly says no timer is installed and no work continues after the call returns.
+There are two distinct resource paths; do not infer that all resource sampling is one-shot.
 
-This is consistent with Crucible's demand-driven resource philosophy. A Rust daemon or always-running helper would be a regression unless it replaced existing work and measurably reduced total cost.
+- `sample_machine_usage()` is a call-driven helper. It builds the managed PID set, samples procfs counters, waits 350 ms for a CPU delta, samples again, and optionally invokes `nvidia-smi` with a 1.5-second timeout. Its docstring explicitly says it installs no timer and continues no work after the call returns.
+- `SystemTab` is a visible-tab sampler. Its `QTimer` runs every **2 seconds** while the System tab is shown and stops in `hideEvent()`. It also refreshes immediately on tab show and instance load. Every refresh calls `ResourceSampler.find_instance_pids(selected_instance)`, which enumerates all numeric `/proc` entries and checks command lines plus executable/cwd fallback; it then samples the matching JVM PIDs and GUI PID (stat, statm, cmdline) and reads `/proc/meminfo`. This is a repeated full process-table scan while the owner has the tab open, not a single sample.
+- The polling is demand-scoped to a visible tab, so it does not run as a hidden/resident monitor. But it overlaps with MainWindow's five-second batched status worker and the watchdog's ten-second per-instance tmux probes. Since the System tab's matcher performs its own `/proc` enumeration, a single active server view can trigger several independent observations of the same host process table.
+
+**Benchmark requirement:** measure System-tab visible/hidden wakeups, procfs enumerations, per-PID file reads, CPU cost and UI responsiveness at representative process counts. Compare the current 2-second visible sampler to a slower interval or a shared fresh per-instance PID snapshot only after proving CPU-delta accuracy and process-membership freshness. Never reuse a stale PID snapshot across Start/Stop/kill or destructive actions. A Rust daemon or always-running helper would be a regression; a single shared visible-tab observation may be worth investigating only if measurements justify it.
 
 ### 2.7 GUI cold-start imports are a separate measurement target
 
@@ -169,7 +173,9 @@ The performance audit should measure event-loop stalls and worker queue latency 
 | 7 | Measure manifest build/load/verification scaling | One unbounded canonical JSON manifest holds every file/directory/exclusion record; shallow and deep verify have different costs | Medium-to-high on very high file-count servers; a cap/sharding change risks compatibility | Profile 10k/50k/100k-file trees, manifest bytes, encode/decode, peak RSS, stat calls, shallow verify, deep hash throughput |
 | 7 | Reduce startup module/widget work, if material | Ten tab modules are imported and eight tab widgets are constructed during `InstancePanel._build_ui()`; only data loading is lazy | Medium: deferring widgets changes Qt object and signal lifetimes | Measure import, first-paint, initial RSS, and first-open latency; then prototype a single deferred secondary tab |
 | 8 | Reduce redundant client-export passes without weakening verification | Fingerprinting, JAR inspection, distribution review, archive sealing, and final re-fingerprinting can each read the same inputs | High: every reviewed artifact must match the bytes actually packaged | Measure per-stage time/bytes; explore a staged immutable input inventory only if it preserves source-change and exact-SHA checks |
-| 9 | Rust rewrite of Qt or tmux lifecycle | No evidence that language execution is the bottleneck; Qt/process control is mostly waiting on external systems | Very high | Do not pursue in the initial migration |
+| 9 | Reduce visible System-tab process scans if material | SystemTab calls find_instance_pids() every 2 seconds while visible; each call re-enumerates /proc and then samples the matching PIDs | Medium: stale snapshots could misattribute a process or hide a JVM transition | Count scans/PID file reads and measure UI impact at 100/500/2,000 host processes; compare a slower visible interval or shared fresh snapshot |
+| 10 | Bound avatar fetch concurrency during join bursts | PlayersTab creates one QThread/urllib request per distinct player join; duplicates are suppressed only within one tab, no queue/in-flight cap | Medium: event bursts can cause threads/network concurrency; preserve stale-cache fallback and thread lifetime | Generate 1/10/50/100 distinct join events; measure active threads, peak RSS, latency and failure cleanup; only then consider a small bounded queue |
+| 11 | Rust rewrite of Qt or tmux lifecycle | No evidence that language execution is the bottleneck; Qt/process control is mostly waiting on external systems | Very high | Do not pursue in the initial migration |
 
 ### 3.1 Client export has multiple intentional full-content passes
 
@@ -201,6 +207,11 @@ Benchmark generated worlds with 1k, 10k, 100k and 500k files; compare selection-
 ### 3.4 Icon retrieval is already demand-driven and bounded
 
 The Add Mod dialog uses one short-lived `_IconWorker` that drains a single queue sequentially. The queue has a hard cap of 48 pending jobs, visible/selected icons can be promoted ahead of off-screen work, obsolete queued jobs are discarded when the search changes, and an in-flight request is allowed to finish unless the dialog is cancelled. Each request uses the Modrinth-only icon adapter (the current UI offers only Modrinth), which is capped at 8 MiB and 8 seconds. This is a good example of resource-aware application design: it prioritizes what the user can see without introducing a large concurrent request burst or resident icon service. Keep it in Python unless an end-to-end profile proves icon decoding or network scheduling is a real bottleneck.
+
+
+### 3.5 Player avatar fetch is bounded per response but unbounded across a join burst
+
+Each unique join can create a dedicated QThread and a synchronous 8-second HTTP request, with a 2 MiB response cap. A tab-local pending set prevents duplicate requests for the same player name, but there is no global queue or in-flight limit. A server join burst can therefore create many concurrent QThreads and remote requests. The worker lifecycle is well tested for close/stale-generation cleanup; request concurrency, decode memory, and redirect policy are not. Any queue change must preserve visible loading/failure state, stale cache fallback, generation invalidation, and the guarantee that closing/switching a tab does not destroy a live QThread wrapper prematurely. Use a synthetic join burst, not a live multiplayer session, for benchmarks.
 
 ## 4. Why Rust may or may not improve the hot paths
 
@@ -333,6 +344,8 @@ The minimum supported Python matrix should remain 3.11/3.13 until a separate pro
 - `crucible/data/backup_scheduler.py`
 - `crucible/process/resource_monitor.py`
 - `crucible/process/machine_resources.py` (including its existing one-pass `_instance_processes` matcher)
+- `crucible/ui/tabs/system_tab.py` (2-second visible-tab polling)
+- `crucible/ui/tabs/players_tab.py` (per-join avatar workers and 16 MiB JSON reader)
 - `crucible/process/tmux_manager.py`
 - `crucible/process/watchdog.py` (including the current per-instance tmux polling loop)
 - `crucible/ui/add_mod_dialog.py` (bounded prioritized icon queue)
