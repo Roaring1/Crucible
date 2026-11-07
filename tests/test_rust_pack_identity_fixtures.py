@@ -59,3 +59,20 @@ def test_python_only_unicode_regex_features_remain_supported():
         "2.8.4",
         "java17_2X",
     )
+
+
+def test_python_only_unicode_i_casefold_and_strip_behavior_remains_supported():
+    # Python re.IGNORECASE folds dotted/dotless I to ASCII "i" in Horizons.
+    assert identify_gtnh_name("GT_New_Horİzons_2.8.4_Server_Java_8.zip") == (
+        "2.8.4",
+        "java8",
+    )
+    assert identify_gtnh_name("GT_New_Horızons_2.8.4_Server_Java_8.zip") == (
+        "2.8.4",
+        "java8",
+    )
+
+    # Python str.strip() removes U+001C around the captured version.
+    assert identify_gtnh_name(
+        "GT_New_Horizons_\x1c2.8.4\x1c_Server_Java_8"
+    ) == ("2.8.4", "java8")
