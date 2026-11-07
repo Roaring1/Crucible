@@ -183,6 +183,20 @@ class WorldRecoveryPoint:
     legacy_archive_filename: str | None = None
 
 
+@dataclass(frozen=True)
+class GenerationInventory:
+    """One request-scoped, shallow-verified view of the generation store.
+
+    The manifest mapping contains only manifests returned by successful
+    ``verify_generation(deep=False)`` calls. It is intended to be shared
+    across projections in one worker request, not cached between refreshes.
+    """
+
+    generations: tuple[GenerationSummary, ...]
+    issues: tuple[dict[str, Any], ...]
+    manifests: dict[Path, dict[str, Any]]
+
+
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
@@ -926,6 +940,123 @@ class FleetBackupManager:
         except FileNotFoundError:
             return []
 
+    @staticmethod
+    def _generation_summary(
+        path: Path, manifest: dict[str, Any]
+    ) -> GenerationSummary:
+        server_entries = [
+            item
+            for item in manifest.get("instances", [])
+            if isinstance(item, dict)
+        ]
+        server_names = tuple(
+            str(item.get("name") or item.get("id") or "Unknown server")
+            for item in server_entries
+        )
+        world_saves = tuple(
+            f"{item.get('name') or item.get('id')}: "
+            f"{world.get('name') or '(unnamed world)'}"
+            + (" [active]" if world.get("active") else "")
+            for item in server_entries
+            for world in item.get("world_saves", [])
+            if isinstance(world, dict)
+        )
+        excluded_entries: list[str] = []
+        excluded_count = 0
+        for server in server_entries:
+            server_name = str(
+                server.get("name") or server.get("id") or "server"
+            )
+            exclusions = list(server.get("excluded", []))
+            exclusions.extend(server.get("legacy_archive_excluded", []))
+            for exclusion in exclusions:
+                if not isinstance(exclusion, dict):
+                    continue
+                excluded_count += 1
+                if len(excluded_entries) < 8:
+                    excluded_entries.append(
+                        f"{server_name}: {exclusion.get('path', '?')} "
+                        f"({exclusion.get('reason', 'excluded')})"
+                    )
+        legacy_sources = [
+            item
+            for item in manifest.get("legacy_sources", [])
+            if isinstance(item, dict)
+        ]
+        legacy_source_names = tuple(
+            f"{item.get('source', '?')} "
+            f"({item.get('kind', 'legacy backup')}, "
+            f"{int(item.get('bytes', 0)):,} bytes)"
+            for item in legacy_sources
+        )
+        legacy_source_bytes = sum(
+            int(item.get("bytes", 0)) for item in legacy_sources
+        )
+        excluded_legacy = list(manifest.get("legacy_sources_excluded", []))
+        for item in excluded_legacy:
+            if isinstance(item, dict):
+                excluded_count += 1
+                if len(excluded_entries) < 8:
+                    excluded_entries.append(
+                        f"Legacy source {item.get('path', '?')} "
+                        f"({item.get('reason', 'excluded')})"
+                    )
+        return GenerationSummary(
+            generation_id=str(manifest["generation_id"]),
+            path=path,
+            created_at=str(manifest["created_at_utc"]),
+            server_count=int(manifest["servers"]),
+            file_count=int(manifest["file_count"]),
+            logical_bytes=int(manifest["logical_bytes"]),
+            bytes_copied=int(manifest["bytes_copied"]),
+            server_names=server_names,
+            world_saves=world_saves,
+            excluded_entries=tuple(excluded_entries),
+            excluded_count=excluded_count,
+            legacy_sources=legacy_source_names,
+            legacy_source_count=len(legacy_sources),
+            legacy_source_bytes=legacy_source_bytes,
+            server_ids=tuple(
+                str(item.get("id") or "") for item in server_entries
+            ),
+        )
+
+    def generation_inventory(self) -> GenerationInventory:
+        """Take one shallow-verified snapshot of candidates and their manifests.
+
+        Every direct child is verified exactly once. Invalid children remain
+        visible in issues; valid manifests are retained for world recovery
+        projections so those projections do not re-list or reload generations.
+        The returned snapshot is request-scoped and must not be persisted.
+        """
+        found: list[GenerationSummary] = []
+        issues: list[dict[str, Any]] = []
+        manifests: dict[Path, dict[str, Any]] = {}
+        for path in self.generation_candidates():
+            verification = self.verify_generation(path, deep=False)
+            if not verification["ok"]:
+                issues.append({
+                    "path": path,
+                    "errors": verification["errors"],
+                })
+                continue
+            manifest = verification["manifest"]
+            try:
+                summary = self._generation_summary(path, manifest)
+            except (OSError, ValueError, KeyError, TypeError, FleetBackupError):
+                # Preserve list_generations() behavior: a manifest that passes
+                # structural verification but cannot be summarized is omitted.
+                continue
+            found.append(summary)
+            manifests[path] = manifest
+
+        found.sort(key=lambda summary: summary.created_at, reverse=True)
+        return GenerationInventory(
+            generations=tuple(found),
+            issues=tuple(issues),
+            manifests=manifests,
+        )
+
     def generation_issues(self) -> list[dict[str, Any]]:
         """Return incomplete, corrupt or unsafe generation-store children."""
         issues: list[dict[str, Any]] = []
@@ -936,95 +1067,7 @@ class FleetBackupManager:
         return issues
 
     def list_generations(self) -> list[GenerationSummary]:
-        found: list[GenerationSummary] = []
-        for path in self.generation_candidates():
-            if path.is_symlink() or not path.is_dir():
-                continue
-            try:
-                result = self.verify_generation(path, deep=False)
-                if not result["ok"]:
-                    continue
-                manifest = result["manifest"]
-                server_entries = [
-                    item
-                    for item in manifest.get("instances", [])
-                    if isinstance(item, dict)
-                ]
-                server_names = tuple(
-                    str(item.get("name") or item.get("id") or "Unknown server")
-                    for item in server_entries
-                )
-                world_saves = tuple(
-                    f"{item.get('name') or item.get('id')}: "
-                    f"{world.get('name') or '(unnamed world)'}"
-                    + (" [active]" if world.get("active") else "")
-                    for item in server_entries
-                    for world in item.get("world_saves", [])
-                    if isinstance(world, dict)
-                )
-                excluded_entries: list[str] = []
-                excluded_count = 0
-                for server in server_entries:
-                    server_name = str(
-                        server.get("name") or server.get("id") or "server"
-                    )
-                    exclusions = list(server.get("excluded", []))
-                    exclusions.extend(server.get("legacy_archive_excluded", []))
-                    for exclusion in exclusions:
-                        if not isinstance(exclusion, dict):
-                            continue
-                        excluded_count += 1
-                        if len(excluded_entries) < 8:
-                            excluded_entries.append(
-                                f"{server_name}: {exclusion.get('path', '?')} "
-                                f"({exclusion.get('reason', 'excluded')})"
-                            )
-                legacy_sources = [
-                    item
-                    for item in manifest.get("legacy_sources", [])
-                    if isinstance(item, dict)
-                ]
-                legacy_source_names = tuple(
-                    f"{item.get('source', '?')} "
-                    f"({item.get('kind', 'legacy backup')}, "
-                    f"{int(item.get('bytes', 0)):,} bytes)"
-                    for item in legacy_sources
-                )
-                legacy_source_bytes = sum(
-                    int(item.get("bytes", 0)) for item in legacy_sources
-                )
-                excluded_legacy = list(manifest.get("legacy_sources_excluded", []))
-                for item in excluded_legacy:
-                    if isinstance(item, dict):
-                        excluded_count += 1
-                        if len(excluded_entries) < 8:
-                            excluded_entries.append(
-                                f"Legacy source {item.get('path', '?')} "
-                                f"({item.get('reason', 'excluded')})"
-                            )
-                found.append(
-                    GenerationSummary(
-                        generation_id=str(manifest["generation_id"]),
-                        path=path,
-                        created_at=str(manifest["created_at_utc"]),
-                        server_count=int(manifest["servers"]),
-                        file_count=int(manifest["file_count"]),
-                        logical_bytes=int(manifest["logical_bytes"]),
-                        bytes_copied=int(manifest["bytes_copied"]),
-                        server_names=server_names,
-                        world_saves=world_saves,
-                        excluded_entries=tuple(excluded_entries),
-                        excluded_count=excluded_count,
-                        legacy_sources=legacy_source_names,
-                        legacy_source_count=len(legacy_sources),
-                        legacy_source_bytes=legacy_source_bytes,
-                        server_ids=tuple(str(item.get("id") or "") for item in server_entries),
-                    )
-                )
-            except (OSError, ValueError, KeyError, TypeError, FleetBackupError):
-                continue
-        found.sort(key=lambda summary: summary.created_at, reverse=True)
-        return found
+        return list(self.generation_inventory().generations)
 
     @staticmethod
     def _legacy_archive_world_name(path: Path) -> str:
@@ -1087,13 +1130,23 @@ class FleetBackupManager:
         return world_name
 
     def list_world_recovery_points(
-        self, instance_id: str
+        self,
+        instance_id: str,
+        *,
+        inventory: GenerationInventory | None = None,
     ) -> dict[str, list[WorldRecoveryPoint]]:
-        """List world-folder and migrated ZIP restore points by world name."""
+        """List world restore points, optionally reusing one request inventory.
+
+        Without an inventory this method takes its own fresh verified snapshot.
+        A caller listing several servers in one worker should pass the same
+        inventory to each call so generation candidates and manifests are not
+        re-read for every server.
+        """
+        inventory = inventory or self.generation_inventory()
         points: dict[str, list[WorldRecoveryPoint]] = {}
         seen_archives: set[tuple[str, str]] = set()
-        for summary in self.list_generations():
-            manifest = self._load_manifest(summary.path)
+        for summary in inventory.generations:
+            manifest = inventory.manifests.get(summary.path)
             if manifest is None:
                 continue
             server = next(
@@ -2110,18 +2163,23 @@ class FleetBackupManager:
         inventory.sort(key=lambda item: str(item["path"]).casefold())
         return inventory
 
-    def legacy_backup_blockers(self) -> list[dict[str, Any]]:
-        """Return historical backup sources that must be migrated before scheduling.
+    def legacy_backup_blockers(
+        self,
+        *,
+        source_inventory: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return historical sources that must migrate before scheduling.
 
-        Partial failed-import folders are reported for review but are not
-        complete server/world backup restore points. Retired-ID archives,
-        manual server snapshots and flat world archives are blockers because
-        enabling an unattended timer while those copies remain outside the
-        two-generation set would make the visible retention promise false.
+        Partial failed-import folders remain visible for review but are not
+        complete restore points. Callers that already inventoried legacy
+        sources in this request may pass that same list to avoid another
+        recursive walk. Omitting it preserves the standalone API behavior.
         """
+        if source_inventory is None:
+            source_inventory = self.legacy_source_inventory()
         return [
             item
-            for item in self.legacy_source_inventory()
+            for item in source_inventory
             if item["kind"] != "failed_import_data"
         ]
 

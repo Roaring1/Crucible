@@ -75,17 +75,27 @@ class _FleetBackupWorker(QObject):
 
             if self._mode == "list":
                 assert manager is not None
+                # One list request must use one coherent view of generations
+                # and one legacy-source inventory. Re-listing/verifying the
+                # generation store for issues and once per server for world
+                # recovery points multiplied shallow filesystem work.
+                generation_inventory = manager.generation_inventory()
+                legacy_sources = manager.legacy_source_inventory()
                 result = {
-                    "generations": manager.list_generations(),
-                    "issues": manager.generation_issues(),
+                    "generations": list(generation_inventory.generations),
+                    "issues": list(generation_inventory.issues),
                     "state": self._read_state(manager.root / "state.json"),
                     "scheduler": backup_scheduler.scheduler_status(),
                     "world_recovery_points": {
-                        str(instance.id): manager.list_world_recovery_points(instance.id)
+                        str(instance.id): manager.list_world_recovery_points(
+                            instance.id, inventory=generation_inventory
+                        )
                         for instance in self._instances
                     },
-                    "legacy_sources": manager.legacy_source_inventory(),
-                    "legacy_backup_blockers": manager.legacy_backup_blockers(),
+                    "legacy_sources": legacy_sources,
+                    "legacy_backup_blockers": manager.legacy_backup_blockers(
+                        source_inventory=legacy_sources
+                    ),
                 }
             elif self._mode == "capture":
                 assert manager is not None
