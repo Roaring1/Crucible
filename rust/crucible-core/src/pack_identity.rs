@@ -264,8 +264,20 @@ mod tests {
         // Python's re.IGNORECASE treats U+017F LONG S as an ASCII 's'.
         assert!(identify_gtnh_name("GT_New_Horizonſ_2.8.4_Server_Java_8.zip").is_none());
 
+        // Python's re.IGNORECASE treats dotted and dotless I as ASCII 'i'.
+        assert!(identify_gtnh_name("GT_New_Horİzons_2.8.4_Server_Java_8.zip").is_none());
+        assert!(identify_gtnh_name("GT_New_Horızons_2.8.4_Server_Java_8.zip").is_none());
+
         // Python's \\d also matches Unicode decimal digits in the Java token.
         assert!(identify_gtnh_name("GT_New_Horizons_2.8.4_Server_Java_17-٢٥.zip").is_none());
+    }
+
+    #[test]
+    fn python_strip_control_whitespace_remains_a_documented_difference() {
+        // Python str.strip() removes U+001C; Rust str::trim() does not.
+        assert!(
+            identify_gtnh_name("GT_New_Horizons_\u{001c}2.8.4\u{001c}_Server_Java_8").is_none()
+        );
     }
 
     #[test]
