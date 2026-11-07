@@ -70,17 +70,6 @@ The current registry load contract has a mismatch between its declared schema an
 
 The future Rust contract should distinguish `RegistryLoad::Missing`, `Loaded(version, records, unknown_root_fields)`, `UnsupportedVersion`, and `Invalid(reason)`; it must not downgrade an unknown schema by assuming version 1. Validate instance IDs as one safe path segment at both the registry and heartbeat adapter boundary while preserving historic safe identifiers (not only UUIDs). Keep file IO, symlink handling, directory durability and inter-process locking in the Python adapter until hardened and tested.
 
-#### 2.1.3 Registered path identity and symlink provenance
-
-- Both `add_instance()` and registry `load()` resolve server paths and store the canonical target string. The original user-supplied path spelling and whether it was a symlink are not retained.
-- The GUI delete flow later calls `validate_delete_target(instance.path)`, which refuses a leaf symlink. For a path that was a symlink when registered, that check receives the already-resolved target and cannot detect the original alias. It will therefore authorize staging and recursive deletion of the target directory after the owner sees the canonical path in the confirmation. This is a behavior/policy ambiguity, not proof of an exploit: choose explicitly whether to reject symlink roots at registration, retain both original and canonical path, or treat canonical-target deletion as intended and disclose it. Add a registration-through-symlink/delete fixture.
-- `find_server_dirs()` (CLI `crucible scan`) also follows directory symlinks: it tests `child.is_dir()` without rejecting `child.is_symlink()`, recursively walks aliases outside the chosen root and can visit the same physical directory multiple times. It has a depth cap but no visited inode set/root-containment check. The scan is read-only and prints candidate paths; `crucible add` resolves them before registration. There are currently no focused tests for symlink traversal, out-of-root discovery or duplicate physical directories.
-- This behavior must be an explicit contract for a future Rust walker: choose follow/no-follow semantics, cycle handling, root containment, duplicate physical identity and permission-error reporting. Do not assume Rust's default filesystem iterator follows or skips symlinks in a way that matches Python.
-
-
-
-
-
 #### 2.1.2 Pack provenance and local sidecar records
 
 Small sidecars have different authority and durability levels. Do not treat every valid JSON object as verified application state.
@@ -97,6 +86,19 @@ Small sidecars have different authority and durability levels. Do not treat ever
 `compute_carry_mods()` consumes pack provenance to decide which JAR names belong to the new pack and which owner additions survive an update. That is a consequential decision, not just metadata display. A receipt with an unchecked `pack_mods` array can alter the next update's carry set. The pure Rust classifier may receive a validated immutable baseline, but it must never parse an arbitrary sidecar and silently promote it to authoritative evidence.
 
 The existing tests cover valid provenance receipt precedence, a corrupt receipt fallback, import-summary source inference, and the pack-baseline carry calculation. Missing tests include oversize and symlinked sidecars, wrong schema/type/provider/variant, unsafe/duplicate pack-mod names, pack JAR replaced under the same filename, fixed-temp symlink/collision, failed receipt publication after swap, added-mod record write failure after successful JAR download, and legacy-to-versioned migration.
+
+
+#### 2.1.3 Registered path identity and symlink provenance
+
+- Both `add_instance()` and registry `load()` resolve server paths and store the canonical target string. The original user-supplied path spelling and whether it was a symlink are not retained.
+- The GUI delete flow later calls `validate_delete_target(instance.path)`, which refuses a leaf symlink. For a path that was a symlink when registered, that check receives the already-resolved target and cannot detect the original alias. It will therefore authorize staging and recursive deletion of the target directory after the owner sees the canonical path in the confirmation. This is a behavior/policy ambiguity, not proof of an exploit: choose explicitly whether to reject symlink roots at registration, retain both original and canonical path, or treat canonical-target deletion as intended and disclose it. Add a registration-through-symlink/delete fixture.
+- `find_server_dirs()` (CLI `crucible scan`) also follows directory symlinks: it tests `child.is_dir()` without rejecting `child.is_symlink()`, recursively walks aliases outside the chosen root and can visit the same physical directory multiple times. It has a depth cap but no visited inode set/root-containment check. The scan is read-only and prints candidate paths; `crucible add` resolves them before registration. There are currently no focused tests for symlink traversal, out-of-root discovery or duplicate physical directories.
+- This behavior must be an explicit contract for a future Rust walker: choose follow/no-follow semantics, cycle handling, root containment, duplicate physical identity and permission-error reporting. Do not assume Rust's default filesystem iterator follows or skips symlinks in a way that matches Python.
+
+
+
+
+
 
 ### 2.2 Process observation versus GUI lifecycle phase
 
