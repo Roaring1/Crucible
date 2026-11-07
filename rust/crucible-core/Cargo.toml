@@ -7,3 +7,7 @@ description = "Pure Rust domain primitives for the Crucible Minecraft server man
 
 [lib]
 path = "src/lib.rs"
+
+[[bench]]
+name = "parser_micro"
+harness = false
