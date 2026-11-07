@@ -1,6 +1,6 @@
 # Crucible Rust Migration: Context and Architecture Assessment
 
-**Status:** Phase 0 audit documented; Phase 1 non-production Rust parity pilot added, awaiting CI validation  
+**Status:** Phase 0 audit documented; first Phase 1 non-production Rust parity pilot validated by GitHub CI  
 **Date:** 2026-11-06  
 **Repository baseline:** `main`, observed at `0eb89f2517fc3c4ba9417c2bc97e6c63b5f80b8c` during this assessment  
 **Scope:** Document the existing product, runtime boundaries, compatibility obligations, migration risks, and a deliberately incremental path. A first isolated Rust parity pilot now exists; it is not connected to production Crucible behavior.
@@ -246,7 +246,7 @@ Each phase is a separate reviewable change. Stop and reassess when a phase expos
 - [x] Add a small dependency-free crate at `rust/crucible-core`.
 - [x] Add the first pure primitive: GTNH pack-version parsing, channel classification, and ordering.
 - [x] Add one shared TSV fixture corpus consumed by Rust unit tests and a Python pytest reference test.
-- [x] Add a dedicated GitHub Actions job for stable Rust formatting, tests, and Clippy. The job must pass before this pilot is considered validated.
+- [x] Add a dedicated GitHub Actions job for stable Rust formatting, tests, and Clippy. Passed on commit `db342d4c73201e511bb33504efd74b0cb7b35fe7` using Rust 1.99.1: formatting clean, 4 unit tests passed, and Clippy passed with warnings denied. See [Rust core CI run](https://github.com/Roaring1/Crucible/actions/runs/42315311312).
 - [x] Keep the crate independent of Qt, tmux, filesystem mutation, and network access; no Python production call site invokes it.
 - [ ] Resolve/document the Unicode-decimal compatibility edge before this parser can be considered drop-in parity.
 - [ ] Add representative domain enums/structs only after their serialized compatibility contracts and golden fixtures are ready.
@@ -256,7 +256,7 @@ Each phase is a separate reviewable change. Stop and reassess when a phase expos
 
 The pilot lives in `rust/crucible-core/src/pack_version.rs`. It mirrors the existing ASCII GTNH version syntax and sort key used by `crucible/importers/pack_update.py`: major, minor, patch (default zero), channel rank (alpha 0, beta 1, RC 2, stable 3), and prerelease number (default zero). Decimal components are normalized and compared as strings so the Rust code does not introduce fixed-width integer overflow. The shared vectors live in `rust/crucible-core/fixtures/pack-version-cases.tsv`; Rust tests and `tests/test_rust_pack_version_fixtures.py` consume the same file.
 
-This is a contract/toolchain pilot, not a hot-path optimization. Python remains authoritative because Python's regex accepts Unicode decimal digits while the initial Rust parser deliberately accepts ASCII digits only. No runtime behavior, pack choice, update, or installed application uses the Rust code. The Rust CI result and Python test result must be inspected before proceeding to a second slice.
+The same PR head passed the existing Python CI matrix on Python 3.11 and 3.13: 842 tests plus 95 subtests passed in each job, the PyQt interaction smoke passed, and UI preview artifacts were captured. See [Python CI run](https://github.com/Roaring1/Crucible/actions/runs/42315311300). This is a contract/toolchain pilot, not a hot-path optimization. Python remains authoritative because Python's regex accepts Unicode decimal digits while the initial Rust parser deliberately accepts ASCII digits only. No runtime behavior, pack choice, update, or installed application uses the Rust code. The Rust CI result and Python test result must be inspected before proceeding to a second slice.
 
 ### Phase 2 - parity harness
 
@@ -298,7 +298,7 @@ The discovery phase is complete only when:
 - Persistent data formats and paths are documented with fixtures.
 - The Python reference behavior can be exercised without touching live server processes or owner data.
 - The first Rust slice is pure and has no Qt, tmux, filesystem mutation, or network side effects.
-- CI proves Python remains functional and the new Rust crate builds/tests independently.
+- CI proves Python remains functional and the new Rust crate builds/tests independently. The first pilot has met this criterion on the current PR head; broader Phase 0 fixture/dependency discovery remains incomplete.
 - A reviewer can explain exactly how to disable the Rust slice and return to the Python implementation.
 - No live server, world, backup, installed Crucible copy, or user registry is modified by the migration scaffolding.
 
