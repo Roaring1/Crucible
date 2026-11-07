@@ -248,7 +248,7 @@ Each phase is a separate reviewable change. Stop and reassess when a phase expos
 - [x] Add one shared TSV fixture corpus consumed by Rust unit tests and a Python pytest reference test.
 - [x] Add a dedicated GitHub Actions job for stable Rust formatting, tests, and Clippy. Passed on commit `db342d4c73201e511bb33504efd74b0cb7b35fe7` using Rust 1.99.1: formatting clean, 4 unit tests passed, and Clippy passed with warnings denied. See [Rust core CI run](https://github.com/Roaring1/Crucible/actions/runs/42315311312).
 - [x] Keep the crate independent of Qt, tmux, filesystem mutation, and network access; no Python production call site invokes it.
-- [ ] Resolve/document the Unicode-decimal compatibility edge before this parser can be considered drop-in parity.
+- [ ] Resolve/document both known parser differences (Unicode decimal digits and Python-specific U+001C..U+001F trimming) before this parser can be considered drop-in parity.
 - [ ] Add representative domain enums/structs only after their serialized compatibility contracts and golden fixtures are ready.
 - Do not access the user's filesystem, invoke tmux, or integrate with the GUI in this phase.
 
@@ -256,7 +256,7 @@ Each phase is a separate reviewable change. Stop and reassess when a phase expos
 
 The pilot lives in `rust/crucible-core/src/pack_version.rs`. It mirrors the existing ASCII GTNH version syntax and sort key used by `crucible/importers/pack_update.py`: major, minor, patch (default zero), channel rank (alpha 0, beta 1, RC 2, stable 3), and prerelease number (default zero). Decimal components are normalized and compared as strings so the Rust code does not introduce fixed-width integer overflow. The shared vectors live in `rust/crucible-core/fixtures/pack-version-cases.tsv`; Rust tests and `tests/test_rust_pack_version_fixtures.py` consume the same file.
 
-The same PR head passed the existing Python CI matrix on Python 3.11 and 3.13: 842 tests plus 95 subtests passed in each job, the PyQt interaction smoke passed, and UI preview artifacts were captured. See [Python CI run](https://github.com/Roaring1/Crucible/actions/runs/42315311300). This is a contract/toolchain pilot, not a hot-path optimization. Python remains authoritative because Python's regex accepts Unicode decimal digits while the initial Rust parser deliberately accepts ASCII digits only. No runtime behavior, pack choice, update, or installed application uses the Rust code. The Rust CI result and Python test result must be inspected before proceeding to a second slice.
+The verified pre-expansion PR head `5ea8c80f57acf51b4eca488a09d76e73756ecf68` passed Python 3.11 and 3.13 with 842 tests plus 95 subtests in each job and passed the PyQt interaction smoke; its Rust job passed four unit tests, formatting, and Clippy on Rust 1.99.1. The pilot has since gained 15 additional ASCII fixture vectors, a Rust test for channel/prerelease ordering, an explicit Rust test pinning the two known Python divergences, a Python-only regression test for those inputs, and an MSRV test job for Rust 1.85.0. These latest changes require fresh CI before their result can be claimed. This is a contract/toolchain pilot, not a hot-path optimization. Python remains authoritative: Python's regex accepts Unicode decimal digits while Rust currently accepts ASCII only, and Python `str.strip()` removes additional U+001C..U+001F controls that Rust `str::trim()` does not. No runtime behavior, pack choice, update, or installed application uses the Rust code.
 
 ### Phase 2 - parity harness
 
