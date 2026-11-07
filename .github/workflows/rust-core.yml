@@ -12,6 +12,7 @@ on:
     paths:
       - "rust/crucible-core/**"
       - "tests/test_rust_pack_version_fixtures.py"
+      - "tests/test_rust_pack_identity_fixtures.py"
       - ".github/workflows/rust-core.yml"
 
 permissions:
