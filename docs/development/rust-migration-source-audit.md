@@ -218,7 +218,7 @@ Existing Start regression coverage is insufficient for this contract. StartTests
 
 
 
-### 2.3.4 Worlds-tab legacy archive inventory is synchronous and repeated on first load
+### 2.3.2 Worlds-tab legacy archive inventory is synchronous and repeated on first load
 
 `WorldTab.load()` calls `_refresh()` synchronously and then starts the asynchronous fleet recovery-list worker. The first `_refresh()` performs these operations on the Qt GUI thread:
 
@@ -251,7 +251,7 @@ The resource sampler is dependency-free and reads Linux procfs directly:
 **Diagnostics load also performs duplicated recursive filesystem work on the GUI thread:** `InfoTab.load()` calls `instance.validate()`, and `ServerInstance.validate()` calls `get_bundled_jars()` to enumerate every nested JAR below `mods/`. The same `InfoTab.load()` then calls `get_bundled_jars()` again to display the count/list, repeating that recursive `rglob("*.jar")` traversal. It also calls `get_world_names()` and `get_mod_count()` synchronously, then `SystemTab.load()` performs the full `/proc` process scan and sampling before the new Diagnostics layout is complete. This is source-confirmed duplicate work. A first Python improvement is to compute a bounded immutable diagnostics snapshot once (including bundled JAR paths), reuse it for validation and display, and move the slow/read-only inventory and metrics portions to a generation-checked worker if measurements show a UI delay. Do not use a metrics/process snapshot as a lifecycle safety observation. There is no dedicated InfoTab/SystemTab load-latency test; `test_resource_monitor.py` and `test_machine_resources.py` mock `_iter_pids()` and do not cover this integrated Qt path.
 
 A measured Python-side improvement would be to move the visible-tab sample to a bounded worker and pass back an immutable per-instance observation snapshot, or reuse a shared fresh association scan for metrics. Keep the timer visibility-scoped; never add a global sampler. Explicitly distinguish complete, incomplete and per-PID-disappeared outcomes. Metrics may render unavailable on an incomplete scan, but the same result must not satisfy lifecycle Start/Stop/removal preconditions. A stale metrics snapshot must never be reused by a safety action.
-### 2.3.2 Watchdog polling: implementation does not match its batch comment
+### 2.3.4 Watchdog polling: implementation does not match its batch comment
 
 The module docstring in `watchdog.py` says one `tmux list-sessions` call per poll covers all watched instances. The current `Watchdog._poll()` does not use that operation:
 
@@ -612,7 +612,7 @@ The current polling implementation does not match the watchdog module docstring'
 
 Tests already cover heartbeat read/write transitions, reboot detection, same-boot interrupted Stop, cross-boot interrupted Stop, uncertain tmux/Java probes, wrapper-alive/Java-gone pending state, repeated crash confirmation, and Stop coordination. Preserve these as Rust/Python cross-implementation fixtures if watchdog logic is ever extracted. Do not move the QTimer, watchdog thread, restart scheduling, or tmux commands into Rust as a first slice.
 
-### 3.2.3 Startup exit marker is a predictable shared-/tmp write
+### 3.2.2 Startup exit marker is a predictable shared-/tmp write
 
 `TmuxManager._start_marker_path(session)` currently returns `tempfile.gettempdir() / ("crucible-start-" + session + ".exit")`. On the normal Linux configuration this is a predictable name under shared `/tmp`. The default session name is itself predictable: `ServerInstance._derive_session_name()` lowercases the display name, replaces spaces/underscores, and retains alphanumeric/hyphen characters.
 
@@ -623,7 +623,7 @@ This is a potential cross-user local file-truncation primitive if the attacker c
 Safe design: allocate a random per-start directory with mode 0700 (for example `tempfile.mkdtemp()` under the runtime temp root), put a fixed marker leaf inside it, and pass that exact private path to the wrapper. The directory must remain available until a failed-start marker has been observed or the live process exits; arrange wrapper-side cleanup after the one-second verification grace, and clean it in Python if session creation fails. Never ignore an unsafe marker unlink and continue. Read the marker by bounded no-follow open and accept only the exact expected integer format. A marker-allocation failure must prevent launching rather than fall back to a shared predictable path.
 
 Add tests for: foreign-owner/unlink-permission failure; pre-existing symlink target preservation (must not be truncated); a symlink created in the unlink-to-shell-open race; secure random 0700 parent and cleanup after both successful long-lived start and immediate failure; bounded no-follow marker read; and tmux-start failure cleanup. Keep the test tmux server on a private socket and use only generated temporary files.
-### 3.2.2 World-start confirmation is a read-only gate with a persisted last choice
+### 3.2.3 World-start confirmation is a read-only gate with a persisted last choice
 
 The configured `level-name` is read raw and preserved. The inspector rejects empty, dot, traversal, absolute, and path-like names before using the value as one direct child of the server root. It rejects symlinks and non-directory targets, never follows directory symlinks, recognizes developed alternate saves using `level.dat` plus region/player data (including selected Forge dimension subtrees), and scans the configured world for size, newest regular-file mtime, region count, and playerdata count. Permission or walk errors result in `unavailable`, not an assumed empty/new world.
 
@@ -637,7 +637,7 @@ The watchdog uses the same inspection helper but cannot show a modal confirmatio
 
 **World-scan cost:** when a selected world folder exists, `inspect_world_start_state()` recursively walks it and stats every regular file to calculate total bytes, newest mtime, region count, and playerdata count. The pre-start summary worker runs when an instance is selected and is run again afresh when Start is pressed; WorldTab may separately run `ServerInstance.world_size_bytes()` when that tab is opened. The work is off the Qt event loop, but Start still waits for the full traversal to finish, and very large GTNH trees can contain many thousands of region files. This is not a measured latency claim. Benchmark by file count and tree shape. A candidate design is to separate a fast safety classification (safe selected path, selected save state, alternate developed saves, confirmation requirement) from optional detailed size/mtime/count statistics, or to reuse a versioned read-only inventory only after action-time revalidation. Do not let a partial/failed safety scan become "new" or "no other worlds"; if any required path cannot be inspected, return unavailable and block the action.
 
-### 3.2.3 Watchdog polling and the multi-instance scaling gap
+### 3.2.4 Watchdog polling and the multi-instance scaling gap
 
 The active watchdog timer runs every 10 seconds, but the current code performs fresh tmux client calls inside the watched-instance loop: normal running instances use one `has-session` subprocess and one `list-panes` subprocess each. The `watchdog.py` module comment says one `list-sessions` call covers all watched instances, but that batch query is not used by the current `_poll()` implementation. This is a mismatch between the module comment and implementation.
 
