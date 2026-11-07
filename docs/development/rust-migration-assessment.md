@@ -246,7 +246,7 @@ Each phase is a separate reviewable change. Stop and reassess when a phase expos
 - [x] Add a small dependency-free crate at `rust/crucible-core`.
 - [x] Add the first pure primitive: GTNH pack-version parsing, channel classification, and ordering.
 - [x] Add one shared TSV fixture corpus consumed by Rust unit tests and a Python pytest reference test.
-- [x] Add a dedicated GitHub Actions job for stable Rust formatting, tests, and Clippy. Passed on commit `db342d4c73201e511bb33504efd74b0cb7b35fe7` using Rust 1.99.1: formatting clean, 4 unit tests passed, and Clippy passed with warnings denied. See [Rust core CI run](https://github.com/Roaring1/Crucible/actions/runs/42315311312).
+- [x] Add dedicated GitHub Actions jobs for stable Rust formatting/tests/Clippy and the declared MSRV. Verified on pilot head `03daa5fe3ccc068ebce04bac3275b127c9f5efe1`: stable Rust 1.99.1 passed formatting, 6 unit tests and Clippy; Rust 1.85.0 passed all 6 unit tests. See [Rust core CI run](https://github.com/Roaring1/Crucible/actions/runs/42318100094).
 - [x] Keep the crate independent of Qt, tmux, filesystem mutation, and network access; no Python production call site invokes it.
 - [ ] Resolve/document both known parser differences (Unicode decimal digits and Python-specific U+001C..U+001F trimming) before this parser can be considered drop-in parity.
 - [ ] Add representative domain enums/structs only after their serialized compatibility contracts and golden fixtures are ready.
