@@ -317,13 +317,13 @@ mod tests {
 
     #[test]
     fn known_python_parity_differences_remain_explicit() {
-        // Python's \\d and int() accept Unicode decimal digits. Rust's
+        // Python's \d and int() accept Unicode decimal digits. Rust's
         // dependency-free pilot currently accepts ASCII digits only.
         assert!(parse_pack_version("٢.٨.٤").is_none());
 
         // Python str.strip() also strips U+001C..U+001F; Rust str::trim()
         // follows Unicode White_Space and does not strip these separators.
-        assert!(parse_pack_version("\\u{001c}2.8.4\\u{001c}").is_none());
+        assert!(parse_pack_version("\u{001c}2.8.4\u{001c}").is_none());
     }
 
     #[test]
