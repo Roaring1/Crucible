@@ -720,18 +720,6 @@ The following list was generated from the recursive tree at the recorded `main` 
 
 `tests/conftest.py`, `tests/qt_refinement_smoke.py`, `tests/test_add_mod_icons.py`, `tests/test_add_mod_icons_qt.py`, `tests/test_backup_scheduler.py`, `tests/test_backup_ui.py`, `tests/test_ci_report.py`, `tests/test_client_export.py`, `tests/test_client_export_dialog_source.py`, `tests/test_client_export_review.py`, `tests/test_core.py`, `tests/test_crash_recovery.py`, `tests/test_curseforge_downloads.py`, `tests/test_curseforge_fallback.py`, `tests/test_desktop_shortcuts.py`, `tests/test_fleet_backup.py`, `tests/test_fml_gui_start.py`, `tests/test_gofile_upload.py`, `tests/test_local_svg_icons.py`, `tests/test_log_tail.py`, `tests/test_machine_resources.py`, `tests/test_mod_distribution_catalog.py`, `tests/test_modpack_installer_safety.py`, `tests/test_pack_update.py`, `tests/test_pack_update_bugfixes.py`, `tests/test_pack_update_sources.py`, `tests/test_pack_update_ui.py`, `tests/test_player_avatar_states_qt.py`, `tests/test_port_conflicts.py`, `tests/test_prism_import_worker.py`, `tests/test_prism_prebuilt_server_import.py`, `tests/test_properties_validation.py`, `tests/test_qt_slot_contracts.py`, `tests/test_readiness_placeholder_detection.py`, `tests/test_refinement.py`, `tests/test_release_scripts.py`, `tests/test_reset_wipe_and_memory.py`, `tests/test_resource_monitor.py`, `tests/test_security_boundaries.py`, `tests/test_server_icons.py`, `tests/test_setup_responsive_layout_qt.py`, `tests/test_setup_scroll_keyboard_qt.py`, `tests/test_share_history.py`, `tests/test_share_history_dialog.py`, `tests/test_share_players_dialog.py`, `tests/test_shortcut_action.py`, `tests/test_shortcut_notifications.py`, `tests/test_source_page_url_guard.py`, `tests/test_startup_patterns.py`, `tests/test_status_accessibility.py`, `tests/test_system_tray.py`, `tests/test_thread_lifecycle_safety.py`, `tests/test_tray_main_window.py`, `tests/test_tray_shared_status.py`, `tests/test_ui_preview_capture.py`, `tests/test_watchdog_stop_coordination.py`, `tests/test_world_backup_swap.py`, `tests/test_world_recovery_worker.py`, `tests/test_world_start_summary.py`, `tests/test_world_stats_thread_guard.py`, `tests/test_world_wipe_confirmation_qt.py`, `tests/tmux_isolation.py`
 
-## 12. Initial Rust pilot inventory
-
-The branch now contains an isolated crate under `rust/crucible-core/`:
-
-- `Cargo.toml` and `Cargo.lock`: dependency-free crate metadata, edition 2024, declared Rust 1.85 MSRV.
-- `src/lib.rs` and `src/pack_version.rs`: pure GTNH version parser, channel classifier, and tuple-equivalent ordering.
-- `fixtures/pack-version-cases.tsv`: shared inputs and expected canonical key/channel.
-- `tests/test_rust_pack_version_fixtures.py`: invokes the unchanged Python reference against the same fixture.
-- `.github/workflows/rust-core.yml`: separate stable Rust formatting, unit-test, and Clippy gate.
-
-The crate is not imported by Python, not packaged into the installed app, and not called by the update flow. It has no filesystem/process/network/Qt dependencies. Its first known compatibility gap is deliberate and documented: Rust accepts ASCII digits only, while the Python regex's Unicode-aware `\d` accepts Unicode decimal digits. Python remains authoritative until that difference is resolved. The first Rust CI run passed using Rust 1.99.1 (format check, four unit tests, Clippy with warnings denied): https://github.com/Roaring1/Crucible/actions/runs/42315311312. The existing Python CI matrix also passed on Python 3.11 and 3.13 (842 tests and 95 subtests in each run, plus the PyQt smoke): https://github.com/Roaring1/Crucible/actions/runs/42315311300. There is no production bridge or benchmark result.
-
 ## 11. Current Phase 0 gaps
 
 The source inventory is now complete by file path, principal runtime flows and the largest deferred dependency knots have been traced. Remaining discovery before choosing production Rust scope:
@@ -743,3 +731,16 @@ The source inventory is now complete by file path, principal runtime flows and t
 5. Prototype packaging/rollback in CI before any production Rust call site is enabled.
 
 No benchmark numbers are claimed in this document. The source observations above are hypotheses to validate, not permission to remove safety checks.
+
+## 12. Initial Rust pilot inventory
+
+The branch now contains an isolated crate under `rust/crucible-core/`:
+
+- `Cargo.toml` and `Cargo.lock`: dependency-free crate metadata, edition 2024, declared Rust 1.85 MSRV.
+- `src/lib.rs` and `src/pack_version.rs`: pure GTNH version parser, channel classifier, and tuple-equivalent ordering.
+- `fixtures/pack-version-cases.tsv`: shared inputs and expected canonical key/channel.
+- `tests/test_rust_pack_version_fixtures.py`: invokes the unchanged Python reference against the same fixture.
+- `.github/workflows/rust-core.yml`: stable formatting, unit-test and Clippy gate plus a separate test on the declared Rust 1.85.0 MSRV.
+
+The crate is not imported by Python, not packaged into the installed app, and not called by the update flow. It has no filesystem/process/network/Qt dependencies. Two deliberate compatibility gaps remain: Rust accepts ASCII digits only while Python's Unicode-aware `\d` accepts Unicode decimal digits; and Rust `str::trim()` does not strip U+001C..U+001F even though Python `str.strip()` does. Rust-only tests pin those current differences, and the Python-only reference test asserts that the Python behavior remains. The earlier verified Rust CI run passed using Rust 1.99.1 (format check, four unit tests, Clippy with warnings denied): https://github.com/Roaring1/Crucible/actions/runs/42315311312. Its Python 3.11 and 3.13 jobs each passed 842 tests and 95 subtests plus the PyQt smoke: https://github.com/Roaring1/Crucible/actions/runs/42315311300. The current PR head expands the ASCII fixture corpus by 15 cases, adds two Rust unit tests and one Python compatibility test, and adds an MSRV job; fresh CI is pending. There is no production bridge or benchmark result.
+
