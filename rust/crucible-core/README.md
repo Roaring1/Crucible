@@ -11,17 +11,18 @@ unit tests and Python pytest reference tests:
 - `fixtures/pack-version-cases.tsv`
 - `fixtures/pack-name-cases.tsv`
 
-The Rust parser deliberately accepts ASCII decimal digits only and uses Rust's
-`str::trim()`. Python's existing expression accepts Unicode decimal digits via
-`\d` and `str.strip()` also removes U+001C..U+001F controls that Rust's
-`trim()` does not remove. Both differences are explicit in Rust-only tests and
-a Python-only regression test. Python remains authoritative; do not use the
-Rust parser as a production decision source until both edges are resolved or
-a verified Python fallback is designed.
+The version parser accepts ASCII decimal components only and uses Rust's
+`str::trim()`. The server-name parser also requires an ASCII first digit after
+`17-` when identifying the Java 17+ variant. Python's existing regex accepts
+Unicode decimal digits via `\d`; Python `str.strip()` also removes U+001C..U+001F
+controls that Rust's `trim()` does not remove. These differences are explicit
+in Rust-only tests and Python-only regression tests. Python remains
+authoritative; do not use either Rust parser as a production decision source
+until the differences are resolved or a verified Python fallback is designed.
 
 Decimal components are stored as canonical strings and compared by length
 then lexicographically. This preserves arbitrary-length ordering without a
-big-integer dependency. The first pilot makes no performance claim; future
+big-integer dependency. These pilots make no performance claim; future
 work should benchmark real workflows before prioritizing optimization.
 
 Run from the repository root:
