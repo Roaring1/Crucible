@@ -36,6 +36,8 @@ jobs:
           rust-src-dir: rust/crucible-core
       - name: Build and test at the declared MSRV
         run: cargo test --manifest-path rust/crucible-core/Cargo.toml --locked
+      - name: Compile benchmark target at the declared MSRV
+        run: cargo bench --manifest-path rust/crucible-core/Cargo.toml --locked --bench parser_micro --no-run
 
   check:
     runs-on: ubuntu-24.04
