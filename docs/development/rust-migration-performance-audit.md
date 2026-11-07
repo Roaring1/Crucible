@@ -337,6 +337,26 @@ Crucible's current install path does not use Maturin or install a native wheel. 
 
 The minimum supported Python matrix should remain 3.11/3.13 until a separate product decision changes it. A build that works only under the developer's host interpreter is insufficient.
 
+### 7.5 Archive-crate and no-replace filesystem primitive constraints
+
+Do not choose a Rust ZIP crate or filesystem helper solely because it is convenient or fast. Crucible's present archive workflows rely on distinct limits and destination-publication policies, and a dependency can silently raise the app's Rust MSRV or installed dependency footprint.
+
+**ZIP crate candidate check (2026-11-06):**
+- The current published `zip` crate is 9.4.1. Its normalized Cargo manifest declares `rust-version = "1.88"`, above Crucible's pilot crate MSRV of 1.85. Adopting that release would force an MSRV increase or require an older pinned release. [zip 9.4.1 Cargo.toml](https://docs.rs/crate/zip/9.4.1/source/Cargo.toml).
+- Its default feature set enables AES, BZip2, Deflate/Zopfli, Deflate64, LZMA, PPMd, time, XZ and Zstandard support. That is a lot of algorithms and transitive build surface for Crucible's current needs. If it is ever evaluated, begin with `default-features = false` and explicitly enable only formats actually present in supported GTNH, Prism, Modrinth and legacy world archives. Verify real archives before dropping any algorithm; do not accidentally make an existing archive unreadable. [zip 9.4.1 feature set](https://docs.rs/crate/zip/9.4.1/features).
+- RustSec advisory RUSTSEC-2025-0168 (CVE-2025-29787) describes a symlink/path-canonicalization flaw in `ZipArchive::extract` and the streaming extraction helper in zip versions 1.3.0 through versions below 2.3.0. It was issued 2026-08-11 and fixed in 2.3.0. Never use a vulnerable range, and do not assume a fixed crate's convenience `extract()` automatically enforces Crucible's additional per-workflow policies. [RUSTSEC-2025-0168](https://rustsec.org/advisories/RUSTSEC-2025-0168.html).
+- ZIP parsing should be off the Qt event loop and have a bounded central-directory strategy. Current Python code frequently materializes `namelist()` or `infolist()` before applying member-count caps; a Rust rewrite that eagerly materializes an even larger index is not an automatic memory improvement. Benchmark high-entry-count central directories, many-small-member archives, high compression ratio and large GTNH archives; record peak RSS, parsing time, decompression CPU and bytes written.
+
+Crucible still needs its own per-workflow validation: reject absolute/traversal/backslash/NUL names, duplicate normalized destinations, links and special files; enforce entry count, per-member bytes, aggregate expanded bytes and route-specific compression ratios; stream with cancellation and exact declared-length checks; verify CRC and any required cryptographic digest; and publish only after destination containment/no-follow guarantees. These limits are not uniform today: Prism, `.mrpack`, legacy world ZIP and fleet restore each have different policies. Do not 'standardize' those limits without an explicit behavior decision.
+
+**No-replace publication is not provided by stable `std::fs::rename()`:**
+- Stable Rust documents that `std::fs::rename(from, to)` replaces an existing destination file on Unix. This is not safe for operations such as enabling/disabling a JAR, publishing an import member, creating a sidecar or retaining a previous-install tree when an existing path must never be overwritten. [Stable `std::fs::rename`](https://doc.rust-lang.org/stable/std/fs/fn.rename.html).
+- Rust's `std::fs::rename_noreplace()` is documented as a race-free no-overwrite operation, but on 2026-11-06 it is a **nightly-only experimental API**, first shown in the 1.101.0 nightly docs dated 2026-11-03. It maps to Linux/Android `renameat2(RENAME_NOREPLACE)`, Apple `renamex_np(RENAME_EXCL)`, and Windows no-replace semantics. Crucible's stable/MSRV plan cannot call this API. [Nightly `rename_noreplace`](https://doc.rust-lang.org/nightly/std/fs/fn.rename_noreplace.html), [Linux `renameat2`](https://www.man7.org/linux/man-pages/man2/renameat2.2.html).
+- A pre-check such as `if !to.exists() { rename(from, to) }` is a TOCTOU race and must not be described as no-replace. Nor is copying to a fixed `.tmp` name safe when a symlink/collision can be planted there.
+- Early Rust should therefore return a publication plan/result to Python, leaving effect ownership in the existing adapter. If a future Rust slice genuinely needs atomic no-replace, specify supported OS/filesystem behavior first, use an audited stable platform API/crate or narrowly scoped syscall adapter, fail closed when the platform cannot provide the guarantee, and test destination-appearance races. Do not enable nightly Rust just to get this helper without a separate release-toolchain decision.
+
+**Performance rule:** do not add a ZIP dependency or a no-replace FFI helper to the first Rust crate. The current string-parsing pilot is small and dependency-free by design. Archive and filesystem work needs an independently measured benefit, MSRV/dependency review, and parity tests before it earns any production dependency.
+
 ## 8. Source files inspected for this audit
 
 - `crucible/data/fleet_backup.py`
