@@ -147,9 +147,10 @@ fn decimal_from_range(input: &str, start: usize, end: usize) -> Option<Decimal> 
 ///
 /// Accepted forms mirror the current Python expression for ASCII input:
 /// 2.8.4, v2.8, 2.9.0-beta-3, 2.5.0-RC1, and 2.9.0 beta 3.
-/// The Python regex also accepts every Unicode decimal digit class; this first
-/// pilot intentionally accepts ASCII digits only. It is not called by
-/// production code. Python remains authoritative until this edge is handled.
+/// The Python regex also accepts Unicode decimal digits, and Python's
+/// `str.strip()` removes a few control characters that Rust's `trim()` does
+/// not. This pilot intentionally preserves both differences in tests; it is
+/// not called by production code. Python remains authoritative.
 pub fn parse_pack_version(raw: &str) -> Option<PackVersion> {
     let trimmed = raw.trim();
     let value = trimmed
