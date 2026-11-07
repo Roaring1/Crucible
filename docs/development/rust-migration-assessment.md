@@ -239,7 +239,7 @@ Each phase is a separate reviewable change. Stop and reassess when a phase expos
 - [x] Record current architecture and high-risk invariants.
 - [x] Enumerate all 80 Python source files and 62 test/support files; map the main package boundaries, fleet backup, status/resource sampling, principal worker routes and main end-to-end flows. A complete per-symbol dependency graph is still pending.
 - [ ] Implement representative sanitized fixtures from the matrix in `rust-migration-contracts.md` for registry, heartbeat, lifecycle status, world-start summaries, backup manifest, import receipts, export manifest, catalog records, and provider responses.
-- [x] Identify benchmark candidates and separate source-confirmed costs from unmeasured hypotheses in `rust-migration-performance-audit.md`, including repeated procfs scans, eager tab-module imports, client-export content passes, and backup I/O.
+- [x] Identify benchmark candidates and separate source-confirmed costs from unmeasured hypotheses in `rust-migration-performance-audit.md`, including repeated process discovery, serial watchdog tmux probes, eager tab-module imports, synchronous/repeated archive inventories, redundant Backup-tab generation/legacy-source scans, client-export content passes, and backup I/O. The log tail/console path is already byte- and document-bounded; only metric-signal coalescing remains a measurement-gated Python candidate.
 
 ### Phase 1 - Rust core skeleton, no production call sites
 
