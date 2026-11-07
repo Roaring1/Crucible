@@ -224,7 +224,7 @@ Benchmark generated worlds with 1k, 10k, 100k and 500k files; compare selection-
 The Add Mod dialog uses one short-lived `_IconWorker` that drains a single queue sequentially. The queue has a hard cap of 48 pending jobs, visible/selected icons can be promoted ahead of off-screen work, obsolete queued jobs are discarded when the search changes, and an in-flight request is allowed to finish unless the dialog is cancelled. Each request uses the Modrinth-only icon adapter (the current UI offers only Modrinth), which is capped at 8 MiB and 8 seconds. This is a good example of resource-aware application design: it prioritizes what the user can see without introducing a large concurrent request burst or resident icon service. Keep it in Python unless an end-to-end profile proves icon decoding or network scheduling is a real bottleneck.
 
 
-### 3.5.3 Model/view is the likely UI scaling seam, not a Rust JSON parser
+### 3.5.1 Model/view is the likely UI scaling seam, not a Rust JSON parser
 
 Crucible's large lists are currently presented with item-based convenience widgets: `QTableWidget` for Mods and permission lists, and `QListWidget` for online/recent players. Their data is also held separately in Python structures, so the UI builds and synchronizes a second, per-row item/widget representation. The Mods table creates several `QTableWidgetItem` objects per JAR plus a `QPushButton` in the State column for every manageable mod; each Players permission row creates name/UUID items and a Remove `QPushButton`. This is a significant object-count multiplier beyond the underlying Python records.
 
@@ -240,7 +240,7 @@ Proposed order:
 5. Only introduce incremental `fetchMore()` if a full model still has measured first-paint or scroll cost. A server/mod inventory may need complete filesystem reconciliation for correctness even when not all rows are immediately materialized.
 
 Acceptance needs to include keyboard navigation/accessibility, selected-row action names, sorting stability, filter results, duplicate display names, concurrent file changes, stale instance-generation rejection, and no lost server-owned permission records. Record first-paint, scroll responsiveness, p50/p95 event-loop delay, Python record memory, Qt item/child-widget count, and selection/action latency. The win should come from fewer GUI objects and batched model updates, not from a Rust parser replacing `json.loads()` or JAR I/O.
-### 3.5.1 Players-page initial JSON load can build an unbounded number of Qt row widgets
+### 3.5.2 Players-page initial JSON load can build an unbounded number of Qt row widgets
 
 `PlayersTab.load()` is called only when the Players page is first selected for an instance, but its data path is synchronous:
 - `_load_seen()` parses the recently-played sidecar with a 16 MiB per-file cap and calls `_refresh_online_list()`.
@@ -251,7 +251,7 @@ Acceptance needs to include keyboard navigation/accessibility, selected-row acti
 A first Python design should keep complete validated records but render through a model/view that creates only visible rows (or pagination), use one aggregate read/decode budget for the four files, and select the 12 newest history entries without sorting the entire list. If parsing itself is measurable, parse in a bounded worker and pass an immutable result to the GUI with the selected-instance generation token; do not let stale results populate a different server's page. Any hard row cap must be owner-visible and must not silently drop server-owned permission entries during a save.
 
 Benchmark generated fixtures at 100/1,000/10,000/50,000 permission rows and 100/1,000/10,000/100,000 recently-played records. Record JSON bytes, parse time, Python object count/peak RSS, Qt item/widget count, first-paint latency, GUI event-loop p95 delay and scroll responsiveness. Test combined whitelist+ops+banned+history size, not just each file independently. This is likely a better Qt/Python data-presentation optimization than a Rust parser; `json.loads()` is already implemented in C and the dominant cost may be widget creation and full sorting.
-### 3.5.2 Recently-played history has a read-limit/write amplification failure
+### 3.5.3 Recently-played history has a read-limit/write amplification failure
 
 This path is more than a performance candidate; it currently has a data-retention hazard.
 
@@ -263,7 +263,7 @@ This path is more than a performance candidate; it currently has a data-retentio
 This is a **correctness-before-performance** fix. The reader needs a tri-state load result (`Loaded(data)`, `Missing`, `Unavailable(reason)`); an oversized, malformed or inaccessible file must remain unavailable/dirty and must not be overwritten as though empty. Define a versioned bounded retention policy that preserves the newest records and makes intentional pruning visible/recoverable. Batch all players leaving on server stop into one state mutation and one save. For live join/leave bursts, use a short coalescing debounce or queued writer with a generation counter; clear dirty only after the atomic publication succeeds, and flush the latest generation on server stop/tab close. Use collision-safe no-follow temp publication. Keep this in Python: a Rust serializer would not remove the synchronous GUI-thread scheduling or the data-loss policy.
 
 Add deterministic tests for a sidecar just below, exactly at and above 16 MiB; malformed JSON and read permission failure; assert no write/replace occurs for `Unavailable`; verify a later explicit reset is owner-confirmed; a synthetic stop with 1/10/50/100 online players must issue exactly one persistence publication; concurrent join/leave burst must coalesce without losing counters; disk-full/replace failure keeps dirty; and successful retry persists the latest generation. Benchmark serialization bytes/time and Qt callback p95 after correctness is fixed.
-### 3.5 Player avatar fetch is bounded per response but unbounded across a join burst
+### 3.5.4 Player avatar fetch is bounded per response but unbounded across a join burst
 
 Each unique join can create a dedicated QThread and a synchronous 8-second HTTP request, with a 2 MiB response cap. A tab-local pending set prevents duplicate requests for the same player name, but there is no global queue or in-flight limit. A server join burst can therefore create many concurrent QThreads and remote requests. The worker lifecycle is well tested for close/stale-generation cleanup; request concurrency, decode memory, and redirect policy are not. Any queue change must preserve visible loading/failure state, stale cache fallback, generation invalidation, and the guarantee that closing/switching a tab does not destroy a live QThread wrapper prematurely. Use a synthetic join burst, not a live multiplayer session, for benchmarks.
 
@@ -481,7 +481,7 @@ No operation benchmark, CPU profile, allocation profile, runtime bridge benchmar
 
 
 
-### 3.7 ConfigTab full-buffer property file and per-key widget work
+### 10.2 ConfigTab full-buffer property file and per-key widget work
 
 ConfigTab is a lightweight editor for normal server.properties files, but its input size is not bounded. Load reads the entire file into a Python string, splits all physical lines, builds a dict-like OrderedDict, sorts all unique keys, and creates one table row per key with a value item or a QComboBox for booleans. Filtering runs synchronously over every row on each keystroke. Save reads the whole original file again, creates a full list of rewritten lines and another joined string before writing the fixed temporary file.
 
