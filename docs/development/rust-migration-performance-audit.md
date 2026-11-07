@@ -350,11 +350,12 @@ Crucible's CI currently supports Python 3.11 and 3.13, not 3.15. Use `-X importt
 
 
 
+## 10. Current Rust pilot and performance interpretation
+
 ### 10.1 PyO3 boundary and batching rule
 
 The official PyO3 performance guide explains that attaching/detaching and converting Python objects is part of total cost; it recommends `Python::detach` for Rust-only work expected to last multiple milliseconds. Its implementation guidance also favors lower-cost type checks/call conventions where relevant. For Crucible the architecture implication is more important than micro-optimizing wrapper calls: send a bounded batch of plain owned values to Rust, do the work without Python objects, and return one bounded structured result. Avoid a Python<->Rust transition per JAR, per archive member, per process, or per UI row. Never detach while still holding Python references and then touch those references in the detached closure. Do not use unsafe reference-pool flags as an early performance tweak; they make object-lifetime errors fatal or leak-prone. See [PyO3 performance guidance](https://pyo3.rs/v0.30.1/performance.html) and [PyO3 parallelism guidance](https://pyo3.rs/v0.30.1/parallelism.html).
 
-## 10. Current Rust pilot and performance interpretation
 
 The first Rust code in this PR is a dependency-free GTNH version parser/comparator at `rust/crucible-core/src/pack_version.rs`. It is intentionally chosen as a low-risk contract/toolchain exercise because its behavior is deterministic and independent of application I/O. It is not identified as a current performance bottleneck. Version parsing is a tiny part of pack-index processing; no benchmark has shown it to dominate update planning or release selection.
 
