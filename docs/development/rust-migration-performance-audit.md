@@ -279,6 +279,20 @@ NotesTab uses a 500 ms single-shot debounce, but each successful save calls Inst
 
 
 
+### 3.2 Parser-pilot microbenchmark harness
+
+A dependency-free comparison harness now exists at `scripts/benchmark_pack_parsers.py`, with the Rust benchmark target at `rust/crucible-core/benches/parser_micro.rs`. Both sides consume the same checked-in TSV cases for `parse_pack_version`, `channel_of`, and `identify_gtnh_name`. The Rust target runs under Cargo's release benchmark profile; the Python side calls the unchanged Python reference functions. Each reports per-input p50/p95 nanoseconds over 15 rounds after warm-up.
+
+Run it from the repository root:
+
+```sh
+python scripts/benchmark_pack_parsers.py
+```
+
+This deliberately measures only tiny pure parsing functions. It excludes module import, Python/Rust bridge conversion, process startup for a hypothetical worker, ZIP central-directory parsing, archive extraction, disk I/O, Qt work, network calls, and end-to-end pack-update time. It cannot support a claim that Crucible will be faster. The useful result may be that the existing Python functions are already fast enough and that no bridge is warranted for this slice.
+
+For reproducibility, record CPU model, OS/kernel, Rust compiler, Python version/build, power profile, and whether the run was on battery or AC. Run at least three full invocations on an otherwise idle machine; compare per-run medians and p95, not the single best number. Do not use hosted CI timings as the owner's desktop baseline. The harness has been added to the Rust `--all-targets` Clippy compilation path, but no benchmark result has yet been recorded in this audit.
+
 ## 4. Why Rust may or may not improve the hot paths
 
 - Python's `hashlib` delegates SHA-256 to native cryptographic code (typically OpenSSL-backed in CPython builds). The Python loop has overhead, but the hash computation itself is not interpreted Python bytecode.
