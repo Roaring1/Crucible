@@ -245,10 +245,11 @@ Each phase is a separate reviewable change. Stop and reassess when a phase expos
 
 - [x] Add a small dependency-free crate at `rust/crucible-core`.
 - [x] Add the first pure primitive: GTNH pack-version parsing, channel classification, and ordering.
-- [x] Add one shared TSV fixture corpus consumed by Rust unit tests and a Python pytest reference test.
-- [x] Add dedicated GitHub Actions jobs for stable Rust formatting/tests/Clippy and the declared MSRV. Verified on current PR head `c448b365289f8042a9d3c35315062a9023940375`: stable Rust 1.99.1 passed formatting, 6 unit tests and Clippy; Rust 1.85.0 passed all 6 unit tests. See [Rust core CI run](https://github.com/Roaring1/Crucible/actions/runs/42318489693).
+- [x] Add a second pure primitive: GTNH server-pack name parsing into captured version and Java variant, without filesystem or receipt discovery.
+- [x] Add separate shared TSV fixture corpora consumed by Rust unit tests and Python pytest reference tests.
+- [x] Add dedicated GitHub Actions jobs for stable Rust formatting/tests/Clippy and the declared MSRV. Verified on tested code head `5de50a906330323f000aa44ab69b8bbcdbd95d69`: stable Rust 1.99.1 passed formatting, 9 unit tests and Clippy; Rust 1.85.0 passed all 9 unit tests. See [Rust core CI run](https://github.com/Roaring1/Crucible/actions/runs/42321790877).
 - [x] Keep the crate independent of Qt, tmux, filesystem mutation, and network access; no Python production call site invokes it.
-- [ ] Resolve/document both known parser differences (Unicode decimal digits and Python-specific U+001C..U+001F trimming) before this parser can be considered drop-in parity.
+- [ ] Resolve/document the known parser differences (Unicode decimal digits and Python-specific U+001C..U+001F trimming) before either parser can be considered drop-in parity.
 - [ ] Add representative domain enums/structs only after their serialized compatibility contracts and golden fixtures are ready.
 - Do not access the user's filesystem, invoke tmux, or integrate with the GUI in this phase.
 
@@ -256,7 +257,13 @@ Each phase is a separate reviewable change. Stop and reassess when a phase expos
 
 The pilot lives in `rust/crucible-core/src/pack_version.rs`. It mirrors the existing ASCII GTNH version syntax and sort key used by `crucible/importers/pack_update.py`: major, minor, patch (default zero), channel rank (alpha 0, beta 1, RC 2, stable 3), and prerelease number (default zero). Decimal components are normalized and compared as strings so the Rust code does not introduce fixed-width integer overflow. The shared vectors live in `rust/crucible-core/fixtures/pack-version-cases.tsv`; Rust tests and `tests/test_rust_pack_version_fixtures.py` consume the same file.
 
-The current PR head `c448b365289f8042a9d3c35315062a9023940375` passed Python 3.11 and 3.13 with 843 tests plus 95 subtests in each job, and the PyQt interaction smoke passed in both jobs. See [Python CI run](https://github.com/Roaring1/Crucible/actions/runs/42318489723). Its Rust workflow passed 6 unit tests on stable Rust 1.99.1 and 6 unit tests on the declared Rust 1.85.0 MSRV, with formatting and Clippy clean on stable: [Rust CI run](https://github.com/Roaring1/Crucible/actions/runs/42318489693). This is a contract/toolchain pilot, not a hot-path optimization. Python remains authoritative: Python's regex accepts Unicode decimal digits while Rust currently accepts ASCII only, and Python `str.strip()` removes additional U+001C..U+001F controls that Rust `str::trim()` does not. No runtime behavior, pack choice, update, or installed application uses the Rust code.
+The tested code head `5de50a906330323f000aa44ab69b8bbcdbd95d69` passed Python 3.11 and 3.13 with 845 tests plus 95 subtests in each job, and the PyQt interaction smoke passed in both jobs. See [Python CI run](https://github.com/Roaring1/Crucible/actions/runs/42321790881). Its Rust workflow passed 9 unit tests on stable Rust 1.99.1 and 9 unit tests on the declared Rust 1.85.0 MSRV, with formatting and Clippy clean on stable: [Rust CI run](https://github.com/Roaring1/Crucible/actions/runs/42321790877). These are contract/toolchain pilots, not hot-path optimizations. Python remains authoritative: Python's regex accepts Unicode decimal digits while Rust version validation accepts ASCII only; the server-name parser also requires an ASCII first digit in its `17-<digits>` Java token. Python `str.strip()` removes additional U+001C..U+001F controls that Rust `str::trim()` does not. No runtime behavior, pack choice, update, or installed application uses the Rust code.
+
+#### Second Rust parity pilot: GTNH server-pack name and Java variant
+
+The second primitive lives in `rust/crucible-core/src/pack_identity.rs`. It mirrors only the pure string portion of Python's `identify_gtnh_name()`: locate a GT New Horizons server name, validate its captured GTNH version, and classify Java 8 versus Java 17+. It searches the full input string, preserves the original trimmed version spelling, respects the first syntactic match, and permits archive suffix text. It does not open files, read provenance receipts, inspect instance paths, or choose identity confidence.
+
+The shared vectors live in `rust/crucible-core/fixtures/pack-name-cases.tsv`; Rust tests and `tests/test_rust_pack_identity_fixtures.py` use the same file. The corpus covers official filenames, folder/path prefixes, case/separator variants, prerelease versions, trailing extensions, malformed names, unsupported Java tokens and first-match precedence. Python and Rust both passed these vectors. One Unicode mismatch remains: Python's Java token uses Unicode-aware `\d`, whereas the Rust pilot currently requires the first character after `17-` to be ASCII. The parser has no production call site and makes no performance claim.
 
 ### Phase 2 - parity harness
 
