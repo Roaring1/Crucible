@@ -4,9 +4,12 @@ This crate is an isolated, dependency-free Rust parity pilot. It is not linked
 into Crucible's Python application and has no filesystem, process, Qt, or
 network effects.
 
-The first primitive is the GTNH release-version parser/comparator. Its shared
-fixture file is consumed by Rust unit tests and a Python pytest test:
-`fixtures/pack-version-cases.tsv`.
+The first primitives are the GTNH release-version parser/comparator and the
+pure server-pack name parser. Their shared fixture files are consumed by Rust
+unit tests and Python pytest reference tests:
+
+- `fixtures/pack-version-cases.tsv`
+- `fixtures/pack-name-cases.tsv`
 
 The Rust parser deliberately accepts ASCII decimal digits only and uses Rust's
 `str::trim()`. Python's existing expression accepts Unicode decimal digits via
