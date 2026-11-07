@@ -218,6 +218,27 @@ Existing Start regression coverage is insufficient for this contract. StartTests
 
 
 
+### 2.3.4 Worlds-tab legacy archive inventory is synchronous and repeated on first load
+
+`WorldTab.load()` calls `_refresh()` synchronously and then starts the asynchronous fleet recovery-list worker. The first `_refresh()` performs these operations on the Qt GUI thread:
+
+- `BackupManager.list_backups()` globs every legacy `*.zip`, stats each file and reads its optional sidecar label.
+- `FleetBackupManager.list_legacy_world_archives()` loads the newest complete manifest using the fast manifest path and stats/checks each migrated archive.
+- For every combined archive entry, `WorldTab._refresh()` calls `BackupManager._backup_level_name(entry)`; this opens the ZIP and materializes its full `namelist()` to identify the root folder. It does not decompress payloads, but central-directory parsing/memory grows with archive member count.
+- It then builds all row widgets, scans pre-swap directories and starts the recursive world-size worker. The actual recursive size walk is already off-thread and queued safely when one is in flight.
+
+When the fleet recovery-list worker completes, `_on_recovery_job_finished(mode="list")` updates `_world_recovery_points` and calls `_refresh()` again. That second refresh repeats the legacy ZIP glob/sidecar/stat work and opens every archive central directory again, even though only the recovery-point data changed. This is a source-confirmed duplicate first-load pass; actual UI latency depends on archive count and each ZIP's central-directory size and has not been benchmarked.
+
+This differs from the standalone Fleet Backups tab: its `BackupTab._refresh()` dispatches the list operation through `_FleetBackupWorker`, which calls `list_generations()`, `generation_issues()`, `legacy_source_inventory()`, and recovery-point listing away from the GUI thread. WorldTab does use a worker for its fleet recovery-point data, but the legacy ZIP inventory around that worker remains synchronous.
+
+Performance-first Python candidates:
+1. Split archive discovery/root-name inspection into the existing recovery worker result, so the UI receives one immutable archive metadata snapshot instead of opening every ZIP on each refresh.
+2. Reuse the same archive inventory when only `_world_recovery_points` changes; rebuild the table from cached immutable entries.
+3. If legacy archives have no safe cached root metadata, key any cache by a verified identity (e.g. stable file signature plus archive digest where already available), never by filename alone.
+4. Keep ZIP validation/hash verification before restore; a presentation cache must not authorize restore or replace the deep restore preflight.
+
+Add a Qt test that counts `_backup_level_name()` calls during initial WorldTab load and recovery-list completion, then a benchmark with 0/10/100/500 legacy archives and controlled member counts. Measure first paint, GUI event-loop delay, central-directory bytes/entries and total root-name parsing time. The target is one background inventory per view generation, not a Rust ZIP parser.
+
 ### 2.3.3 Resource sampling embedded in the Diagnostics/Info page
 
 The resource sampler is dependency-free and reads Linux procfs directly:
