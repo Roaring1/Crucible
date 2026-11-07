@@ -11,6 +11,7 @@ planning, or end-to-end server management.
 
 from __future__ import annotations
 
+import platform
 import statistics
 import subprocess
 import sys
@@ -87,7 +88,20 @@ def main() -> int:
     except (FileNotFoundError, subprocess.CalledProcessError) as exc:
         raise SystemExit(f"Rust toolchain unavailable: {exc}") from exc
 
+    cpu_model = platform.processor() or "unknown"
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+            if line.lower().startswith("model name"):
+                cpu_model = line.partition(":")[2].strip()
+                break
+    except OSError:
+        pass
+
     print(f"Repository: {ROOT}")
+    print(f"OS: {platform.platform()}")
+    print(f"Architecture: {platform.machine()}")
+    print(f"CPU: {cpu_model}")
+    print(f"Python: {platform.python_version()} ({sys.implementation.name})")
     print(f"Rust toolchain: {rustc}")
     print("Rust release benchmark follows; first build may add compile time.")
     subprocess.run(
