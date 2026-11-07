@@ -21,9 +21,12 @@ authoritative; do not use either Rust parser as a production decision source
 until the differences are resolved or a verified Python fallback is designed.
 
 Decimal components are stored as canonical strings and compared by length
-then lexicographically. This preserves arbitrary-length ordering without a
-big-integer dependency. These pilots make no performance claim; future
-work should benchmark real workflows before prioritizing optimization.
+then lexicographically. This avoids fixed-width integer overflow and accepts
+the 4,301-digit test case without a big-integer dependency. This is a known
+difference from the Python reference: CPython 3.11+ normally caps decimal
+`int()` conversions at 4,300 digits, although the runtime limit is configurable
+and may be disabled. These pilots make no performance claim; future work
+should benchmark real workflows before prioritizing optimization.
 
 Run from the repository root:
 
