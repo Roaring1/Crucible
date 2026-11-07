@@ -21,6 +21,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  msrv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+      - name: Set up the declared minimum Rust version
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: "1.85.0"
+      - name: Build and test at the declared MSRV
+        run: cargo test --manifest-path rust/crucible-core/Cargo.toml --locked
+
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
