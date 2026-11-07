@@ -33,6 +33,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: "1.85.0"
+          rust-src-dir: rust/crucible-core
       - name: Build and test at the declared MSRV
         run: cargo test --manifest-path rust/crucible-core/Cargo.toml --locked
 
