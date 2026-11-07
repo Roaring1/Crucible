@@ -89,9 +89,7 @@ fn gtnh_prefix_end(bytes: &[u8], start: usize) -> Option<usize> {
 /// Java_8_suffix still identifies the Java 8 variant. We preserve that rule.
 fn java_variant_after_separator(bytes: &[u8], separator_start: usize) -> Option<PackVariant> {
     let mut position = separator_start;
-    if !consume_required_separators(bytes, &mut position)
-        || !word_at(bytes, position, b"Server")
-    {
+    if !consume_required_separators(bytes, &mut position) || !word_at(bytes, position, b"Server") {
         return None;
     }
     position += 6;
@@ -236,7 +234,8 @@ mod tests {
                     panic!("line {}: {:?} should identify", line_number + 1, fields[0])
                 });
                 assert_eq!(
-                    version, expected_version,
+                    version,
+                    expected_version,
                     "line {}: {:?}",
                     line_number + 1,
                     fields[0]
