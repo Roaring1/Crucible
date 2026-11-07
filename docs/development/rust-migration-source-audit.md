@@ -239,6 +239,26 @@ Performance-first Python candidates:
 
 Add a Qt test that counts `_backup_level_name()` calls during initial WorldTab load and recovery-list completion, injects disappearing/inaccessible archive stats and pre-swap directory errors, asserts explicit unavailable inventory rather than a callback exception, asserts central-directory enumeration does not run on the GUI thread after the refactor, then a benchmark with 0/10/100/500 legacy archives and controlled member counts. Measure first paint, GUI event-loop delay, central-directory bytes/entries and total root-name parsing time. The target is one background inventory per view generation, not a Rust ZIP parser.
 
+### 2.3.2.1 Fleet-backup list worker repeats generation and legacy inventories
+
+The standalone Backup tab keeps its expensive work off the Qt thread, but one `mode="list"` request recomputes much of the same read-only inventory several times:
+
+- It calls `manager.list_generations()` for the displayed generation summaries.
+- It calls `manager.generation_issues()`, which independently enumerates `generation_candidates()` and calls `verify_generation(deep=False)` for every candidate. The shallow verification is useful, but the candidate list and manifests are not passed from the first call.
+- It builds `world_recovery_points` by calling `manager.list_world_recovery_points(instance.id)` once per registered instance. Each call starts by invoking `list_generations()` again and then loads/parses manifests to derive that instance's world points. With N registered servers and G retained/candidate generations, generation discovery/manifest work can therefore be repeated roughly N additional times in the same list job.
+- It calls `manager.legacy_source_inventory()` and then `manager.legacy_backup_blockers()`. The latter simply calls `legacy_source_inventory()` again and filters out `failed_import_data`; the second call repeats root enumeration and recursive `os.walk` size/file counting for those same historical backup trees.
+
+This is source-confirmed duplicated work inside one worker request, not a measured latency result. Moving it off the GUI thread avoids blocking the UI, but does not remove the repeated disk traversal, JSON parsing, `stat()` calls or peak allocations. The work scales with generation count, manifest size, registered-instance count, and the size/file count of legacy backup trees.
+
+A good Python-first refactor is one request-scoped immutable inventory snapshot:
+1. Enumerate generation candidates and load each usable manifest once.
+2. Derive summaries, shallow issues and every registered instance's world recovery points from that same manifest set.
+3. Enumerate and measure legacy sources once, then derive blocker records by filtering the same result.
+4. Return the combined snapshot to the UI. Keep deep verification for explicit Verify/Restore actions, and revalidate the selected generation/archive at the point of restore. Do not make a list-time cached summary authoritative for a later mutation.
+5. Preserve partial/unavailable semantics: a failed generation or legacy-source enumeration must remain visible as an issue, not turn into an empty successful list.
+
+Add a worker-level test that counts calls to `list_generations()`, manifest loads, `generation_candidates()`, `legacy_source_inventory()` and per-instance world-point derivation for 1/5/20/50 instances and 2/10/50 generations. A regression should prove that every manifest and legacy tree is enumerated only once per list request, while returned rows/issues/points/blockers match the existing reference output. Benchmark 0/10/100/1000 legacy files and many-small-file legacy directories; record wall time, CPU, bytes/stat calls, peak RSS and time-to-first-render. This is an inventory-sharing and Python algorithm problem, not evidence that a Rust JSON parser is needed.
+
 ### 2.3.3 Resource sampling embedded in the Diagnostics/Info page
 
 The resource sampler is dependency-free and reads Linux procfs directly:
