@@ -1163,6 +1163,14 @@ class FleetBackupManager:
                 item for item in server.get("files", [])
                 if isinstance(item, dict) and isinstance(item.get("path"), str)
             ]
+            # Index snapshot files once by their top-level world/dimension
+            # folder. The former per-world filter revisited every file record
+            # for every saved world in this server.
+            files_by_root: dict[str, list[dict[str, Any]]] = {}
+            for item in file_records:
+                root_name = str(item["path"]).partition("/")[0]
+                files_by_root.setdefault(root_name, []).append(item)
+
             for world in server.get("world_saves", []):
                 if not isinstance(world, dict):
                     continue
@@ -1173,18 +1181,19 @@ class FleetBackupManager:
                     continue
                 if len(relative_root.parts) != 1:
                     continue
-                world_roots = {
+                world_roots = (
                     world_name,
                     f"{world_name}_nether",
                     f"{world_name}_the_end",
-                }
+                )
                 world_files = [
-                    item for item in file_records
-                    if str(item["path"]).split("/", 1)[0] in world_roots
+                    item
+                    for root_name in world_roots
+                    for item in files_by_root.get(root_name, ())
                 ]
                 level_dat = next(
                     (
-                        item for item in world_files
+                        item for item in files_by_root.get(world_name, ())
                         if str(item["path"]) == f"{world_name}/level.dat"
                     ),
                     None,
