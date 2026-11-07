@@ -7,6 +7,8 @@ on:
       - "rust/crucible-core/**"
       - "tests/test_rust_pack_version_fixtures.py"
       - "tests/test_rust_pack_identity_fixtures.py"
+      - "tests/test_benchmark_pack_parsers.py"
+      - "scripts/benchmark_pack_parsers.py"
       - ".github/workflows/rust-core.yml"
   pull_request:
     paths:
@@ -57,5 +59,9 @@ jobs:
         run: cargo test --manifest-path rust/crucible-core/Cargo.toml --locked
       - name: Run Clippy
         run: cargo clippy --manifest-path rust/crucible-core/Cargo.toml --locked --all-targets -- -D warnings
-      - name: Smoke-run parser microbenchmark (not a performance baseline)
-        run: cargo bench --manifest-path rust/crucible-core/Cargo.toml --locked --bench parser_micro
+      - name: Set up Python for parser comparison smoke
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Smoke-run Rust/Python parser comparison (not a performance baseline)
+        run: python scripts/benchmark_pack_parsers.py
