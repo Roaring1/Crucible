@@ -721,7 +721,7 @@ The branch now contains an isolated crate under `rust/crucible-core/`:
 - `tests/test_rust_pack_version_fixtures.py`: invokes the unchanged Python reference against the same fixture.
 - `.github/workflows/rust-core.yml`: separate stable Rust formatting, unit-test, and Clippy gate.
 
-The crate is not imported by Python, not packaged into the installed app, and not called by the update flow. It has no filesystem/process/network/Qt dependencies. Its first known compatibility gap is deliberate and documented: Rust accepts ASCII digits only, while the Python regex's Unicode-aware `\d` accepts Unicode decimal digits. Python remains authoritative until that difference is resolved. There is no production bridge or benchmark result.
+The crate is not imported by Python, not packaged into the installed app, and not called by the update flow. It has no filesystem/process/network/Qt dependencies. Its first known compatibility gap is deliberate and documented: Rust accepts ASCII digits only, while the Python regex's Unicode-aware `\d` accepts Unicode decimal digits. Python remains authoritative until that difference is resolved. The first Rust CI run passed using Rust 1.99.1 (format check, four unit tests, Clippy with warnings denied): https://github.com/Roaring1/Crucible/actions/runs/42315311312. The existing Python CI matrix also passed on Python 3.11 and 3.13 (842 tests and 95 subtests in each run, plus the PyQt smoke): https://github.com/Roaring1/Crucible/actions/runs/42315311300. There is no production bridge or benchmark result.
 
 ## 11. Current Phase 0 gaps
 
