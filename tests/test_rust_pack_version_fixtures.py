@@ -41,13 +41,13 @@ def test_python_pack_version_parser_matches_shared_fixture():
         )
 
 def test_python_only_unicode_version_inputs_remain_supported():
-    # Python's existing regex uses Unicode-aware \\d and str.strip().
+    # Python's existing regex uses Unicode-aware \d and str.strip().
     # The isolated Rust pilot intentionally does not match these yet.
     parsed = parse_pack_version("٢.٨.٤")
     assert parsed == (2, 8, 4, 3, 0)
     assert channel_of("٢.٨.٤") == "stable"
 
-    control_whitespace = "\\x1c2.8.4\\x1c"
+    control_whitespace = "\x1c2.8.4\x1c"
     parsed = parse_pack_version(control_whitespace)
     assert parsed == (2, 8, 4, 3, 0)
     assert channel_of(control_whitespace) == "stable"
