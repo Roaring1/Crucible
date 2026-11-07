@@ -336,7 +336,7 @@ The pure name parser contract is:
 - Python accepts Unicode decimal digits in both the version and Java 17 digit token because its regex uses Unicode-aware `\d`. Rust version validation accepts ASCII decimal digits only; its Java 17 suffix check currently requires the first digit after `17-` to be ASCII (the remaining numeric suffix is not consumed because only the variant classification is returned). This is a known compatibility gap. The Python-only regression test preserves Unicode behavior; the Rust-only test pins the current divergence.
 - This is a parity/toolchain exercise, not a hot-path optimization. It does not read receipts, resolve a folder, inspect a Prism source, infer confidence, or change the version/variant Python callers currently use.
 
-The second pilot passed with the same tested head and CI runs listed above: 9 Rust unit tests on stable 1.99.1 and MSRV 1.85.0; 845 Python tests plus 95 subtests on each supported interpreter, and both Qt smoke jobs passed. No runtime bridge or production caller has been added.
+The second pilot passed on the same tested code head and CI runs listed above: 10 Rust unit tests on stable 1.99.1 and MSRV 1.85.0; 846 Python tests plus 95 subtests on each supported interpreter, and both Qt smoke jobs passed. No runtime bridge or production caller has been added.
 
 ### 2.8 Fleet-backup generation contract
 
