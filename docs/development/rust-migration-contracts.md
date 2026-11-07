@@ -377,7 +377,7 @@ The old per-instance world ZIP manager remains a read/restore compatibility surf
 - prune_pre_swap_dirs() deletes candidates with shutil.rmtree(ignore_errors=True) but increments its deleted count even when removal failed. The helper does not acquire fleet_operation_lock, and the visible World-tab cleanup action invokes it directly rather than the checkpointed worker branch.
 - reset_world() and wipe_world() accept caller-supplied safety_backup_verified and non-empty fleet_generation_id flags; they do not verify the ID against a generation manifest or check that the generation contains this instance. Production WorldTab supplies them only after the fleet checkpoint, under the lock, and rechecks stopped status. The booleans are not an authority proof for a direct caller.
 
-Required legacy restore fixtures: raw-ID traversal, broad-permission root, symlink ZIP listing, partial-path symlink, oversized central directory, extreme compression ratio, fleet ZIP SHA mismatch, CRC/truncated stream, post-swap corruption, properties temp collision, rmtree failure count, and direct reset/wipe with fake generation ID. Do not change or migrate the legacy on-disk path without an explicit compatibility plan.
+Required legacy restore fixtures: raw-ID traversal, broad-permission root, symlink ZIP listing, partial-path symlink, oversized central directory, extreme compression ratio, fleet ZIP SHA mismatch, CRC/truncated stream, post-swap corruption, properties temp collision, rmtree failure count, and direct reset/wipe with fake generation ID, plus a nonexistent/wrong-instance generation ID. Do not change or migrate the legacy on-disk path without an explicit compatibility plan.
 
 ### 2.9 Export/share/provider contracts
 
