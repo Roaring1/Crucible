@@ -281,7 +281,7 @@ NotesTab uses a 500 ms single-shot debounce, but each successful save calls Inst
 
 ### 3.2 Parser-pilot microbenchmark harness
 
-A dependency-free comparison harness now exists at `scripts/benchmark_pack_parsers.py`, with the Rust benchmark target at `rust/crucible-core/benches/parser_micro.rs`. Both sides consume the same checked-in TSV cases for `parse_pack_version`, `channel_of`, and `identify_gtnh_name`. The Rust target runs under Cargo's release benchmark profile; the Python side calls the unchanged Python reference functions. Each reports per-input p50/p95 nanoseconds over 15 rounds after warm-up.
+A dependency-free comparison harness now exists at `scripts/benchmark_pack_parsers.py`, with the Rust benchmark target at `rust/crucible-core/benches/parser_micro.rs`. Both sides consume the same checked-in TSV cases for `parse_pack_version`, `channel_of`, and `identify_gtnh_name`. The Rust target runs under Cargo's release benchmark profile; the Python side calls the unchanged Python reference functions. Each reports per-input p50/p95 nanoseconds over 15 rounds after warm-up. This is a quick exploratory harness, not a statistically rigorous decision benchmark: rounds share one process, and p95 over 15 samples is effectively the upper tail. For decision-quality Python measurements, use [pyperf](https://pyperf.readthedocs.io/en/stable/run_benchmark.html), which calibrates loops, runs worker processes, checks instability and collects environment metadata. [pyperf system-tuning guidance](https://pyperf.readthedocs.io/en/stable/system.html) recommends reducing system noise and checking affinity/load.
 
 Run it from the repository root:
 
@@ -466,6 +466,8 @@ Relevant existing regression coverage includes incremental hard-link reuse, rete
 - Python `-X importtime` reports cumulative and self import timings and is available in Python 3.11/3.13: https://docs.python.org/3/using/cmdline.html
 - Python's `cProfile` documentation explains call counts, direct/cumulative time, and why profiling data is not a substitute for timing: https://docs.python.org/3.14/library/profile.html
 - Python `timeit` provides repeated timing for isolated expressions/functions: https://docs.python.org/3/library/timeit.html
+- `pyperf` provides calibrated multi-process benchmark runs, instability checks and metadata collection: https://pyperf.readthedocs.io/en/stable/run_benchmark.html
+- `pyperf` system-tuning guide covers CPU affinity, idle-system runs and noise checks: https://pyperf.readthedocs.io/en/stable/system.html
 - Rust's library benchmarking guidance says to optimize real-world hot paths rather than syscall-dominated operations: https://std-dev-guide.rust-lang.org/development/perf-benchmarking.html
 - Cargo release profile defaults and build/runtime trade-offs: https://doc.rust-lang.org/cargo/reference/profiles.html
 - Rust FFI unwinding and abort behavior: https://doc.rust-lang.org/nomicon/ffi.html
