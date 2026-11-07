@@ -174,7 +174,7 @@ There are concrete existing risks at both removal and launch boundaries. `TmuxMa
 
 There is another compatibility trap: both current PID matchers accept an exact `-Dcrucible.session=<session>` command-line token without checking `/proc/<pid>/comm`; only the legacy path/cwd fallback requires `comm == java`. Because Crucible injects the marker into a `bash -c` command, a shell wrapper may also carry the token. Add a wrapper-plus-JVM fixture and decide deliberately whether the marker is intended to attribute the wrapper, Java child, or both. Do not silently tighten or broaden this matcher during migration.
 
-### 2.3.1 Startup exit-marker filesystem contract
+#### 2.2.2 Startup exit-marker filesystem contract
 
 The start wrapper writes its exit status to `tempfile.gettempdir()/crucible-start-<tmux-session>.exit`. The name is deterministic because the session is a slug of the instance display name. `start()` tries to unlink the old marker but ignores every `OSError`; the shell later uses ordinary `>` redirection to the same path. Under a shared sticky `/tmp`, an attacker-owned symlink cannot be unlinked by Crucible, and the ignored failure leaves the link for the shell to follow. The shell runs as the Crucible user, so it may truncate a user-writable file through that link. A link created after successful unlink but before shell open is the same check/use race. This is a potential local file-truncation vector, not a tested exploit.
 
