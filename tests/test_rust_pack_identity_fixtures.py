@@ -45,3 +45,17 @@ def test_python_gtnh_name_parser_matches_shared_fixture():
 def test_python_only_unicode_version_name_remains_supported():
     parsed = identify_gtnh_name("GT_New_Horizons_٢.٨.٤_Server_Java_8.zip")
     assert parsed == ("٢.٨.٤", "java8")
+
+
+def test_python_only_unicode_regex_features_remain_supported():
+    # Python re.IGNORECASE folds U+017F LONG S to ASCII 's'.
+    assert identify_gtnh_name("GT_New_Horizonſ_2.8.4_Server_Java_8.zip") == (
+        "2.8.4",
+        "java8",
+    )
+
+    # Python's Unicode-aware \\d accepts non-ASCII decimal digits here too.
+    assert identify_gtnh_name("GT_New_Horizons_2.8.4_Server_Java_17-٢٥.zip") == (
+        "2.8.4",
+        "java17_2X",
+    )
