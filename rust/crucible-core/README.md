@@ -10,7 +10,7 @@ fixture file is consumed by Rust unit tests and a Python pytest test:
 
 The Rust parser deliberately accepts ASCII decimal digits only and uses Rust's
 `str::trim()`. Python's existing expression accepts Unicode decimal digits via
-`\\d` and `str.strip()` also removes U+001C..U+001F controls that Rust's
+`\d` and `str.strip()` also removes U+001C..U+001F controls that Rust's
 `trim()` does not remove. Both differences are explicit in Rust-only tests and
 a Python-only regression test. Python remains authoritative; do not use the
 Rust parser as a production decision source until both edges are resolved or
