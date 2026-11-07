@@ -524,6 +524,45 @@ BackupTab and WorldTab dispatch to FleetBackupManager in workers. The manager se
 
 Incremental behavior is already significant: unchanged content can be hard-linked from the preceding immutable generation, avoiding fresh reads/writes. Do not replace this with an always-full copy or an archive format change under the guise of a Rust port.
 
+### 3.3.1 Fleet generation manifest and restore contract
+
+The fleet backup's manifest is a versioned data contract, not just a file list. The current schema is version 1 and each generation stores one canonical JSON manifest at `manifest.json`.
+
+**Top-level generation fields**
+- `schema`: current integer generation schema (1).
+- `status`: must be `complete` before a generation is considered publishable.
+- `generation_id`: must match the generation directory name.
+- `created_at_utc`: UTC timestamp with microsecond precision.
+- `retention_generations`: two-generation retention declaration.
+- `servers`, `file_count`, `logical_bytes`: inventory totals.
+- `bytes_copied`, `bytes_reused`: storage-work accounting, not logical restore size.
+- `instances`: per-server captured inventory.
+- `legacy_sources`, `legacy_sources_excluded`: opaque external retired/manual source material carried into the generation, plus sources intentionally omitted as incomplete/failed-import data.
+- `manifest_sha256`: SHA-256 of the canonical JSON encoding of all preceding manifest fields, with sorted keys and compact separators. This detects accidental/tampered-field changes when the digest is not also rewritten, but is an unkeyed checksum, not an authenticity signature.
+
+**Per-instance fields**
+- Identity/context: `id`, `name`, resolved `path`, a registry snapshot (`registry`), pack `version`, Minecraft version, loader/version and tmux session.
+- Capture context: `capture_status` (`stopped` or `running (save-off/save-all/save-on)`), `active_world`, and `world_saves` (world name, active flag and `level.dat` byte count).
+- File tree: `directories` (relative path and original mode), `files` (one record per regular file), `excluded` (path and explicit reason), and `excluded_roots` (top-level subset of exclusions).
+- Migration compatibility: `legacy_world_archives` (immutable copies of old world ZIPs with slot/time metadata and hashes) and `legacy_archive_excluded` (e.g. symlinks/partial archives).
+
+Each normal file record includes `path` (safe relative POSIX path), `size`, SHA-256, original mode, `source_stat` (device, inode, size, mtime_ns, ctime_ns), and `reused_from_previous`. Directory records include relative path and mode. Legacy archive records add filename, slot name and created time; legacy-source records include the original source-relative path, source type, per-file source path/snapshot path/hash/stat/size, file count, byte total, and skipped-entry reasons.
+
+**Publication and verification behavior**
+- The current server walk excludes a documented set of cache/log/temp/session files and directories. Every excluded path is recorded with a reason; symlinks and non-regular filesystem objects are explicitly excluded, not followed.
+- For live server files, Crucible opens the source with `O_NOFOLLOW`, records `fstat` before/after, streams 1 MiB blocks while hashing, checks the byte count, fsyncs a unique temporary copy, and publishes with `os.replace()`. It then reads a fresh destination copy again and compares SHA-256. After all files, it repeats the structural inventory and checks final source stat signatures to catch files changed later in the long walk.
+- Unchanged files are hard-linked only from a prior immutable generation after source-stat signature match, expected-size match and a check that the previous snapshot is read-only. If hard links are unavailable, it copies and verifies the previous immutable file. It never hard-links a live world file into the snapshot.
+- The manifest hash is verified on every `_load_manifest()`. `verify_generation(deep=False)` checks manifest checksum/schema/status/directory ID, file/directory existence, relative paths, sizes, read-only modes, inventory counts and logical bytes, but it does **not** hash every payload file. `verify_generation(deep=True)` additionally reads and SHA-256 hashes every file. Server restore defaults to deep verification; the UI restore worker passes `deep_verify=True`. Shallow verification is for listing/fast inventory, not permission to restore unverified payload.
+- A generation is staged, its files/directories sealed read-only, manifest and directories fsynced, shallow-verified, atomically renamed to its final generation ID, then final generation/root directories are fsynced strictly. A post-rename durability failure rolls the unpublished generation back before pruning. Existing invalid generations block another publish/retention rotation rather than being silently discarded.
+- Restore writes to a new isolated directory only; it refuses an existing target, symlinked parent components and targets inside/over any registered server path. Files are copied, original modes restored, and by default each restored file is re-hashed before the staging root is renamed into the new target. Older named world ZIPs are restored into a separate hidden recovery directory, not injected into the live world save.
+
+**Limits and performance questions**
+- The manifest is read and JSON-decoded as one whole file in `_load_manifest()`; there is no explicit manifest-byte or entry-count cap. A legitimate server with a very large tree can therefore produce a very large JSON allocation at generation listing/verification time. Measure manifest bytes, decode time, peak RSS and file count with many-small-files fixtures before introducing a cap. A safe cap must be compatible with real Crucible/GTNH installs, or move to a versioned sharded manifest/index while keeping one complete generation inventory.
+- Deep verification intentionally performs a full read of every payload; it is required by the default restore path today. Do not substitute shallow metadata verification without an explicit recovery-policy decision and tests.
+- The manifest SHA-256 is not a signature: a local actor able to rewrite both manifest and digest can create a self-consistent false manifest. Snapshot integrity therefore depends on private directory permissions, immutable generations, SHA-256 payload checks, and verified publication, not on provenance/authenticity against a privileged local attacker.
+
+The fleet-backup suite already covers stopped snapshot/deep verify/restore, hard-link reuse only from a prior immutable generation, exact two-generation retention, failure preserving the prior generations, directory-fsync and post-rename-fsync failures, unready/running server save acknowledgement, unknown/unmanaged refusal, symlink/exclusion behavior, invalid-manifest retention, immutable modes, isolated restore targets, legacy archive migration and two-generation source retirement. Remaining fixture needs include giant manifest memory/parse profiles, truncated/oversized manifest reads, duplicate/extra manifest fields and a deep-vs-shallow corruption matrix proving that shallow listing may pass while deep restore blocks.
+
 ### 3.4 Import and pack update
 
 Import paths detect source type and build a plan, extract archives into staging on the destination filesystem when possible, reject unsafe paths/links/oversized entries, copy server-safe content, add metadata/receipt, optionally download indexed mods and install server software, and surface warnings. GTNH pack updates first create a reviewable plan, then separately stage/download/apply, preserve world/config/mod inputs, verify, and keep rollback. Apply is serialized with fleet backups in both GUI and CLI. Rollback and previous-install prune are not serialized by their current GUI/CLI callers, even though rollback renames the live tree; a backup or competing rollback can race those effects. See the operation-lock call-site audit in section 2.5.2.
