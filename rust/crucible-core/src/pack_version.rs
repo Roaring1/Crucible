@@ -352,6 +352,9 @@ mod tests {
         // dependency-free pilot currently accepts ASCII digits only.
         assert!(parse_pack_version("٢.٨.٤").is_none());
 
+        // The prerelease number uses the same Unicode-aware \\d in Python.
+        assert!(parse_pack_version("2.8.4-rc-٢").is_none());
+
         // Python str.strip() also strips U+001C..U+001F; Rust str::trim()
         // follows Unicode White_Space and does not strip these separators.
         assert!(parse_pack_version("\u{001c}2.8.4\u{001c}").is_none());
