@@ -26,5 +26,6 @@ Run from the repository root:
 ```sh
 cargo fmt --manifest-path rust/crucible-core/Cargo.toml -- --check
 cargo test --manifest-path rust/crucible-core/Cargo.toml --locked
+cargo +1.85.0 test --manifest-path rust/crucible-core/Cargo.toml --locked
 cargo clippy --manifest-path rust/crucible-core/Cargo.toml --locked --all-targets -- -D warnings
 ```
