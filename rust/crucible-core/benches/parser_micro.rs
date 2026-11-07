@@ -2,9 +2,9 @@ use crucible_core::{channel_of, identify_gtnh_name, parse_pack_version};
 use std::hint::black_box;
 use std::time::Instant;
 
-const ROUNDS: usize = 25;
-const ITERATIONS_PER_ROUND: usize = 10_000;
-const WARMUP_ITERATIONS: usize = 500;
+const ROUNDS: usize = 15;
+const ITERATIONS_PER_ROUND: usize = 2_000;
+const WARMUP_ITERATIONS: usize = 100;
 
 fn fixture_inputs(source: &str) -> Vec<String> {
     source
