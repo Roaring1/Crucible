@@ -270,7 +270,7 @@ The current Python reference is `parse_pack_version()` and `channel_of()` in `cr
 - Python uses `re.IGNORECASE` and Unicode-aware `\d`, then Python integers. The first Rust pilot accepts ASCII digits only. This is a recorded incompatibility, not full semantic parity. The Rust parser is not callable from production code; resolve Unicode decimal support or add a Python fallback before any integration.
 - Rust stores decimal components as canonical strings and compares by digit length then lexicographically. This avoids a fixed-width integer bound while preserving integer ordering; fixtures include values larger than 64-bit ranges.
 - The shared fixture is `rust/crucible-core/fixtures/pack-version-cases.tsv`. Rust unit tests and `tests/test_rust_pack_version_fixtures.py` must both consume that exact file. Keep the fixture authoritative for accepted syntax, canonical tuple, and channel output. Add edge cases there before widening the parser.
-- This slice has no filesystem, network, tmux, Qt, or process effects and makes no performance claim. It must not alter release selection in Python.
+- The first CI validation passed on stable Rust 1.99.1: format check, four Rust unit tests, and Clippy with warnings denied. The shared Python fixture test ran in both existing Python CI versions (3.11 and 3.13); each full run reported 842 passed and 95 subtests passed. This validates the current ASCII vector set only; it does not close the Unicode-decimal difference or authorize a production bridge. This slice has no filesystem, network, tmux, Qt, or process effects and makes no performance claim. It must not alter release selection in Python.
 
 ### 2.7.1 Pack-update and world-mutation effect/lock contract
 
