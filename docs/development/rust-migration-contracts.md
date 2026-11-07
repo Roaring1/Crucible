@@ -340,16 +340,24 @@ The second pilot passed with the same tested head and CI runs listed above: 9 Ru
 
 ### 2.8 Fleet-backup generation contract
 
-The current fleet backup generation schema is **1**, with fixed two-generation retention. A generation manifest includes at least:
-- status and generation ID
-- UTC creation timestamp and retention count
-- server/file counts and logical bytes
-- bytes copied and bytes reused
-- per-instance records and file/directory inventory
-- legacy source records/exclusions
-- manifest SHA-256
+The current fleet backup generation schema is **1**, with fixed two-generation retention. A generation manifest includes:
+- `schema`, `status=complete`, generation ID matching the containing directory, UTC creation timestamp and retention count;
+- server/file counts, logical bytes, bytes copied and bytes reused;
+- an `instances` array with server identity/context, registry snapshot, capture status, active world, world inventory, directory records, file records, explicit exclusion records, and legacy world-archive records/exclusions;
+- `legacy_sources` and `legacy_sources_excluded` for opaque migrated retired/manual backup sources, including source type, original relative paths, captured file inventory, counts/bytes and skipped-entry reasons;
+- `manifest_sha256`, computed from canonical sorted/compact JSON of the rest of the manifest.
 
-Each copied file record carries a normalized relative path, size, SHA-256, source-stat signature, mode and whether it was reused from the previous immutable generation. Generation publication is staged, verified, atomically renamed, fsynced and sealed read-only; malformed prior generations are not automatically rotated away.
+Each copied file record carries a normalized relative path, size, SHA-256, source-stat signature (`device`, `inode`, `size`, `mtime_ns`, `ctime_ns`), original mode and whether it was reused from the previous immutable generation. Directory records carry path and original mode. Excluded records preserve why a symlink, non-regular object, cache, log or temporary entry was not captured.
+
+The manifest SHA-256 is an unkeyed integrity checksum, not a signature. It detects a changed manifest when the digest is unchanged; it does not authenticate a manifest against an actor able to rewrite both fields. Snapshot trust also relies on private/immutable generation directories and deep payload verification.
+
+`verify_generation(deep=False)` checks the manifest checksum/schema/status/directory ID, inventory counts, safe relative paths, file/directory existence, sizes and immutable permissions, but does not hash each payload. `deep=True` additionally hashes every payload file. Default `restore_server()` and the Backup-tab restore worker require deep verification; shallow verification is for fast listing/inventory only. The Rust/Python contract must preserve this difference.
+
+Publication is staged, manifest-written, file/directory-sealed, fsynced and shallow-verified before atomic rename to the final generation ID; final directory entries are fsynced strictly before old generations are pruned. A durability failure after rename rolls back the unpublished generation. Invalid retained generations block rotation.
+
+Restore targets are separate new directories, never the registered live path or an existing directory. Restore validates every target parent against symlinks, deep-verifies the generation by default, copies and re-hashes payload into a sibling staging directory, restores original file/directory modes, and atomically renames staging to the new target. Legacy world ZIPs are restored in a separate hidden recovery directory with an index, not injected into the active world save.
+
+The current manifest is loaded and JSON-decoded as a single unbounded file; no manifest-byte/entry-count cap is present. Benchmark file count, manifest bytes, decode time and peak RSS before setting any new limit. If real installs produce large manifests, consider a versioned sharded index while retaining one complete generation identity and integrity contract. Do not weaken default deep verification for restore just to reduce I/O.
 
 This is a critical on-disk compatibility contract. Before any Rust work touches backups, capture full sanitized manifests, old/new generation pairs with hard-link reuse, and failure-state fixtures. The first Rust slice must not write or restore generations.
 
