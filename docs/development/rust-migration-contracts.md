@@ -404,6 +404,21 @@ The old per-instance world ZIP manager remains a read/restore compatibility surf
 
 Required legacy restore fixtures: raw-ID traversal, broad-permission root, symlink ZIP listing, partial-path symlink, oversized central directory, extreme compression ratio, fleet ZIP SHA mismatch, CRC/truncated stream, post-swap corruption, properties temp collision, rmtree failure count, and direct reset/wipe with fake generation ID, plus a nonexistent/wrong-instance generation ID. Do not change or migrate the legacy on-disk path without an explicit compatibility plan.
 
+### 2.8.2 Fleet-backup listing uses one request-scoped inventory snapshot
+
+The Backup tab's `mode="list"` worker currently returns generation summaries, issues, per-instance world recovery points, scheduler state, legacy source inventory and legacy blockers. These values should describe one bounded read request, not trigger independent full scans:
+
+- `list_generations()` enumerates generation candidates and loads usable generation manifests.
+- `generation_issues()` separately enumerates candidates and shallow-verifies each one.
+- `list_world_recovery_points(instance_id)` calls `list_generations()` internally. The worker calls it once per registered instance, so it repeats generation listing/manifest parsing N times.
+- `legacy_backup_blockers()` is currently a filter over a fresh `legacy_source_inventory()` call. The worker already called `legacy_source_inventory()` immediately beforehand, so recursive legacy-source enumeration and size/file counting run twice.
+
+A future read adapter should produce a request-scoped `FleetInventorySnapshot` from one generation-candidate enumeration, one parse per usable manifest and one legacy-source traversal. Derive summaries, shallow issues, per-instance recovery points, legacy inventory and blockers from that shared snapshot. Preserve per-generation errors rather than dropping corrupt candidates as if they were absent. The snapshot may be used to render the list, but it is not a restore authorization: before restore, deep-verify the chosen generation/archive and revalidate the target as today.
+
+Keep this adapter request-scoped and immutable. Do not store a long-lived cache that can survive a concurrent backup publication, retention rotation, external legacy-source change or another Crucible process. Include the snapshot generation IDs and read errors in the result so the UI can explain when the inventory was incomplete. The first implementation should remain Python; Rust does not make repeated filesystem traversal or JSON parsing disappear.
+
+Fixture acceptance: 1/5/20/50 registered instances, 2/10/50 complete/corrupt generations, varied manifest sizes and 0/10/100/1000 legacy ZIP/source entries. Assert one candidate enumeration, one manifest load per generation, one legacy source traversal and byte-for-byte equivalent summaries/issues/recovery points/blockers against the current reference implementation. Include a generation published between two independent test calls to prove no cross-request stale cache is reused, plus restore after the list snapshot to prove deep verification is still performed.
+
 ### 2.9 Export/share/provider contracts
 
 The client-export workflow intentionally separates:
