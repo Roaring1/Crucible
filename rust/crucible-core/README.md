@@ -34,7 +34,7 @@ A small dependency-free microbenchmark compares these exact fixture inputs in Ru
 python scripts/benchmark_pack_parsers.py
 ```
 
-The harness runs 15 timed rounds after warm-up and reports per-input p50/p95 nanoseconds for version parsing, channel classification, and server-pack name identification. The Rust side uses `cargo bench` (release profile); the Python side uses `perf_counter_ns`. Record the CPU model, OS, Rust compiler, Python version/build, and power profile with any results. Run at least three complete invocations and compare medians; do not compare CI runners to the owner's desktop or extrapolate these microbenchmarks to ZIP, filesystem, tmux, Qt, or server performance.
+The harness runs 15 timed rounds after warm-up and reports per-input p50/p95 nanoseconds for version parsing, channel classification, and server-pack name identification. The Rust side uses `cargo bench` (release profile); the Python side uses `perf_counter_ns`. This is a quick exploratory harness, not a statistically rigorous benchmark: its rounds share one process, and with 15 samples p95 is effectively the upper tail. For decision-quality Python measurements, use [pyperf](https://pyperf.readthedocs.io/en/stable/run_benchmark.html), which calibrates loops, uses multiple worker processes, checks instability, and records metadata. Record the CPU model, OS, Rust compiler, Python version/build, and power profile with any results. Run at least three complete invocations and compare medians; do not compare CI runners to the owner's desktop or extrapolate these microbenchmarks to ZIP, filesystem, tmux, Qt, or server performance.
 
 Run from the repository root:
 
