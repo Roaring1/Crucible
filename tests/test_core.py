@@ -339,6 +339,76 @@ class TmuxCommandTests(unittest.TestCase):
                 self.tm.status_map([self.inst]), {self.inst.id: "stopped"}
             )
 
+    def test_watchdog_snapshot_batches_all_sessions_and_keeps_first_pane(self):
+        import subprocess
+
+        output = "gtnh\t0\tbash\ngtnh\t1\tjava\ngtnh\t1\tbash\nother\t1\tsleep\n"
+        with patch.object(
+            self.tm,
+            "_run",
+            return_value=subprocess.CompletedProcess([], 0, output, ""),
+        ) as run:
+            snapshot = self.tm.watchdog_snapshot()
+
+        self.assertEqual(snapshot, {"gtnh": "java", "other": "sleep"})
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "tmux",
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}\t#{window_active}\t#{pane_current_command}",
+            ],
+        )
+        self.assertEqual(run.call_count, 1)
+
+    def test_watchdog_snapshot_treats_known_no_server_as_empty(self):
+        import subprocess
+
+        with patch.object(
+            self.tm,
+            "_run",
+            return_value=subprocess.CompletedProcess(
+                [], 1, "", "no server running on /tmp/tmux-1000/default\n"
+            ),
+        ):
+            self.assertEqual(self.tm.watchdog_snapshot(), {})
+
+    def test_watchdog_snapshot_treats_unknown_errors_and_timeouts_as_unknown(self):
+        import subprocess
+
+        for result in (
+            subprocess.CompletedProcess([], 1, "", "permission denied\n"),
+            subprocess.CompletedProcess([], 1, "", "timeout"),
+            subprocess.CompletedProcess([], 127, "", "tmux not found"),
+        ):
+            with self.subTest(result=result), patch.object(
+                self.tm, "_run", return_value=result
+            ):
+                self.assertIsNone(self.tm.watchdog_snapshot())
+
+    def test_watchdog_snapshot_keeps_session_unknown_without_active_window_row(self):
+        import subprocess
+
+        output = "gtnh\t0\tbash\nother\t1\tsleep\n"
+        with patch.object(
+            self.tm,
+            "_run",
+            return_value=subprocess.CompletedProcess([], 0, output, ""),
+        ):
+            self.assertEqual(self.tm.watchdog_snapshot(), {"gtnh": None, "other": "sleep"})
+
+    def test_watchdog_snapshot_rejects_malformed_inventory(self):
+        import subprocess
+
+        with patch.object(
+            self.tm,
+            "_run",
+            return_value=subprocess.CompletedProcess([], 0, "gtnh java\n", ""),
+        ):
+            self.assertIsNone(self.tm.watchdog_snapshot())
+
     def test_status_map_treats_missing_socket_dir_as_no_sessions(self):
         """When tmux's own server/socket dir is gone (e.g. wiped alongside a
         crashed app cgroup), 'tmux list-sessions' reports 'error connecting

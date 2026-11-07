@@ -11,7 +11,7 @@ Design:
   - Runs in its own QThread (moveToThread pattern, same as LogWatcher)
   - QTimer created in start() — NOT in __init__ — to avoid the
     cross-thread timer warning
-  - One tmux list-sessions call per poll covers all watched instances
+  - One tmux list-panes -a snapshot per poll covers all watched instances
   - Crash-loop protection: stops auto-restarting after N consecutive crashes
 """
 
@@ -178,24 +178,28 @@ class Watchdog(QObject):
         if not self._active or not self._watching:
             return
 
+        # One read-only tmux invocation covers every registered instance. A
+        # missing session in a complete snapshot is offline; a failed snapshot
+        # or a pane without a readable foreground command is unknown.
+        snapshot = self._tmux.watchdog_snapshot()
+
         for iid, instance in list(self._instances.items()):
             heartbeat = self._heartbeats.read(iid)
             state = heartbeat.get("state") if heartbeat else None
             previous_state = self._heartbeat_state.get(iid)
             self._heartbeat_state[iid] = state
 
+            session = instance.tmux_session
+
             if state == STOP_REQUESTED:
                 self._watching[iid] = False
                 self._miss_count[iid] = 0
                 self._java_miss_count[iid] = 0
-                # Intentional Stop is not a crash. Keep crash auto-restart
-                # disarmed, but continue a bounded tmux/JVM status check so a
-                # wrapper countdown cannot become a false crash or a permanent
-                # pending heartbeat.
-                running = self._tmux.probe_running(instance)
-                if running is None:
+                # Intentional Stop is not a crash. Keep a bounded status check
+                # until Java returns or the session is positively absent.
+                if snapshot is None:
                     continue
-                if not running:
+                if session not in snapshot:
                     self._heartbeats.mark_stopped_clean(iid)
                     self._heartbeat_state.pop(iid, None)
                     self._watching.pop(iid, None)
@@ -206,8 +210,8 @@ class Watchdog(QObject):
                     self._java_miss_count.pop(iid, None)
                     self._watch_generation.pop(iid, None)
                     continue
-                java_up = self._tmux.is_java_foreground(instance)
-                if java_up is True:
+                pane_command = snapshot[session]
+                if pane_command is not None and pane_command.strip().lower() == "java":
                     # A failed Stop was positively cancelled and Minecraft
                     # is back. Restore the configured watchdog policy now.
                     self._heartbeats.mark_running(iid, instance.tmux_session)
@@ -231,24 +235,18 @@ class Watchdog(QObject):
 
             if state == RUNNING and previous_state == STOP_REQUESTED:
                 # The external Stop failed and its caller confirmed that the
-                # session is still running. Resume the watch that was paused
-                # for that stop request. A clean stop followed by a new
-                # external start is deliberately not auto-watched until the
-                # normal GUI readiness signal calls watch().
+                # session is still running. Resume watching, but never restart
+                # until the Java foreground command is positively observed.
                 self._watching[iid] = True
                 self._miss_count[iid] = 0
                 self._java_miss_count[iid] = 0
 
             if not self._watching.get(iid):
                 continue
-            # Require repeated misses: one timed-out/failed tmux query must not
-            # trigger a false crash and an unnecessary competing restart.
-            running = self._tmux.probe_running(instance)
-            if running is None:
-                # Unknown is not offline. Preserve the previous evidence and
-                # retry next poll instead of inventing a crash.
+            if snapshot is None:
+                # Unknown is not offline. Preserve evidence and retry next tick.
                 continue
-            if not running:
+            if session not in snapshot:
                 misses = self._miss_count.get(iid, 0) + 1
                 self._miss_count[iid] = misses
                 if misses >= CRASH_CONFIRM_POLLS:
@@ -256,26 +254,18 @@ class Watchdog(QObject):
                 continue
             self._miss_count[iid] = 0
 
-            # The tmux *session* can stay alive forever even after java
-            # crashes or exits cleanly: official start scripts such as
-            # GTNH's startserver-java9.sh/.bat wrap java in an outer
-            # "while true" reboot loop, by design, so the session survives
-            # every crash. Watch the pane's foreground command too, so a
-            # crash is still detected and reported even though has-session
-            # never flips to False. If auto-restart is enabled, _do_restart's
-            # own is_running() guard prevents launching a second, competing
-            # java process while the wrapper's own countdown is still live.
-            java_up = self._tmux.is_java_foreground(instance)
-            if java_up is None:
-                # Uncertain — do not invent a crash off an unrelated pane
-                # query failure.
+            # GTNH start scripts can leave a wrapper countdown in the pane
+            # after Java exits. The session remains present, so observe the
+            # pane's foreground command from the same global tmux snapshot.
+            pane_command = snapshot[session]
+            if pane_command is None:
                 continue
+            java_up = pane_command.strip().lower() == "java"
             if java_up:
                 self._java_miss_count[iid] = 0
                 # A failed intentional Stop may temporarily register this
-                # server with auto-restart disabled while a wrapper script
-                # finishes its countdown. Restore the user's saved policy only
-                # after Java itself is confirmed back in the foreground.
+                # server with auto-restart disabled while its wrapper finishes
+                # the countdown. Restore policy only after Java is back.
                 self._auto_restart[iid] = bool(instance.auto_restart)
                 continue
             java_misses = self._java_miss_count.get(iid, 0) + 1

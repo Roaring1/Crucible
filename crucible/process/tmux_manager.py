@@ -340,6 +340,63 @@ class TmuxManager:
             sessions = [s for s in sessions if s.startswith(self.SESSION_PREFIX)]
         return sessions
 
+    def watchdog_snapshot(self) -> dict[str, str | None] | None:
+        """Return one consistent, read-only snapshot for every tmux pane.
+
+        The watchdog needs both session existence and the pane's foreground
+        command. list-panes -a exposes both in one tmux process, avoiding two
+        subprocess launches per watched instance every polling interval.
+
+        An empty mapping means tmux positively reported no server/sessions.
+        None means the observation failed or was incomplete and must never be
+        interpreted as a crash. A session maps to its first pane's current
+        command in its active window, matching the session-scoped pane query.
+        """
+        result = self._run(
+            [
+                "tmux",
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}\t#{window_active}\t#{pane_current_command}",
+            ],
+            timeout=2,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or "").strip().lower()
+            no_server_markers = (
+                "no server running",
+                "failed to connect to server",
+                "no such file or directory",
+                "connection refused",
+                "error connecting to",
+            )
+            if result.returncode == 1 and any(
+                marker in detail for marker in no_server_markers
+            ):
+                return {}
+            return None
+
+        panes: dict[str, str | None] = {}
+        active_windows_seen: set[str] = set()
+        for line in result.stdout.splitlines():
+            session, separator, remainder = line.partition("\t")
+            window_active, separator2, command = remainder.partition("\t")
+            if not separator or not separator2 or not session.strip():
+                # One malformed row makes the all-session inventory
+                # incomplete. Preserve the last known state; do not guess.
+                return None
+            session = session.strip()
+            if self.SESSION_PREFIX and not session.startswith(self.SESSION_PREFIX):
+                continue
+            panes.setdefault(session, None)
+            if window_active.strip() == "1" and session not in active_windows_seen:
+                # The old targeted query read the session's current window.
+                # -a includes inactive windows too, so ignore those rows.
+                panes[session] = command.strip() or None
+                active_windows_seen.add(session)
+        return panes
+
     # Lifecycle
 
     @staticmethod
