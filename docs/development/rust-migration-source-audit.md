@@ -78,6 +78,30 @@ The same class also performs filesystem and host queries: validate paths, find l
 
 This is a key migration boundary: do not port the whole `ServerInstance` class as if it were a clean Rust struct. Separate (a) the versioned registry/domain record, (b) pure parsing/classification helpers, and (c) filesystem/process adapters. The public Python object can continue to be the compatibility facade while these components are gradually extracted.
 
+### 2.2.2 Registry serialization, identity, and heartbeat path contracts
+
+The registry and heartbeat store are separate persistence adapters. Their current behavior is not equivalent to a typed/schema-validating record store.
+
+**Registry load and model behavior**
+- The on-disk schema constant is `REGISTRY_VERSION = 1`, with a 16 MiB load cap. `load()` requires the root to be a JSON object and `instances` (if present) to be a list, but it does not require or validate the root `version` field. It also ignores unknown root keys.
+- Every record is passed to `ServerInstance.from_dict()`. It requires `path` and `name`, but does not validate the JSON types/ranges of other known fields or validate `id`/existing `tmux_session` format. Missing `id` generates a new UUID in memory on each load; it is not written until a later save. Missing/empty `tmux_session` is derived from the display name. `validate_session_name()` is applied on `add_instance()`, not on records loaded from disk.
+- Per-record unknown keys are preserved in `ServerInstance.extra`; `to_dict()` writes them first and known fields second. This protects newer per-instance metadata from an older build. Unknown **root-level** registry keys are not retained: `_write_instances()` always writes only `version` and `instances`. A registry claiming a future version can therefore be loaded as version 1 semantics and silently rewritten/downgraded on save.
+- Registry paths are expanded and resolved during load, even if the server directory is currently missing. This produces a normalized absolute path and follows existing symlinks; it is not a stable path string if the symlink target changes between runs. Duplicate normalized paths, duplicate IDs and duplicate tmux session names are rejected.
+- External-change detection compares `(st_dev, st_ino, st_size, st_mtime_ns)`; it does not hash the content. The one supported reconciliation is limited to `last_started` and `last_started_world`, preserving the existing in-memory `ServerInstance` objects. A concurrent edit outside that narrow diff leaves writes disabled until restart.
+
+**Registry publication caveats**
+- `_write_instances()` uses a deterministic sibling path, `instances.tmp`, opens it with ordinary text `open("w")`, flushes/fsyncs the file and calls `Path.replace()`. It does not use `mkstemp`/exclusive creation/no-follow semantics for that sibling; a pre-existing `instances.tmp` symlink can be followed/truncated when the writer opens it.
+- It does not fsync the containing config directory after replace. The rename is atomic for ordinary readers, but the method's “durably publish” wording is stronger than the source proves for sudden power loss because the directory entry is not explicitly flushed.
+- The signature check and fixed temp write have no inter-process lock. Two Crucible processes that pass the external-signature check before either publishes can race on the same temp name or overwrite one another's complete registry snapshots. Current tests cover failed add/remove memory state and external-edit detection/reconciliation, not concurrent two-writer races, temp symlink, root schema version, unknown root keys or directory-fsync failure.
+- `validate_delete_target()` rejects a leaf symlink, broad targets, and mount points before recursive deletion. This remains a separate delete guard, not a property of the registry path itself.
+
+**Heartbeat identity path**
+- `HeartbeatStore._path(instance_id)` appends the raw registry ID to a filename. `ServerInstance.from_dict()` and `InstanceManager.load()` do not currently restrict IDs to a single safe path component. A malformed/hand-edited ID containing `/`, `..`, or an absolute path can escape the heartbeat directory; `HeartbeatStore._write()` then uses `os.replace()` to publish the generated JSON at that derived destination. This is a source-level path-construction issue, not an observed exploit. Add a safe ID-segment validator at the registry boundary and retain support for existing safe IDs such as the test IDs `inst-1`; do not assume every historic ID is a UUID.
+- `HeartbeatStore.read()` has no file-size cap or field/schema validation. Missing file, malformed JSON, and non-object JSON all become `None`; `reconcile()` skips all three as if there were no usable heartbeat. That avoids false crash reports, but it also hides corrupt-state uncertainty from the owner.
+- Heartbeat writes use a random `mkstemp` in the state directory, flush/fsync the file and atomically `os.replace()` it. Like the registry writer, it does not fsync the parent directory. The unique temp file is better protected against collision/symlink attacks than `instances.tmp`, but the final destination still comes from the unvalidated ID.
+
+**Rust/data-model boundary:** preserve unknown record fields and current defaults only after schema version is explicitly understood. The first typed API should represent `RegistryLoad::Missing`, `Loaded(version, records, unknown_root)`, and `Invalid/Unsupported(reason)`, rather than interpreting unsupported schema as version 1. Keep path resolution and atomic publication in Python. Before production serialization moves, add a schema-version migration policy, safe identifier validation, no-follow/exclusive temp publication, directory fsync, and two-process lost-update tests.
+
 ### 2.3 Process and host adapters
 
 - `tmux_manager.py`: command execution, exact tmux targets, session/process/readiness probes, start/stop/send/attach, status map.
@@ -722,7 +746,7 @@ The following list was generated from the recursive tree at the recorded `main` 
 
 ## 11. Current Phase 0 gaps
 
-The source inventory is now complete by file path, principal runtime flows and the largest deferred dependency knots have been traced. Remaining discovery before choosing production Rust scope:
+The source inventory is now complete by file path, principal runtime flows and the largest deferred dependency knots have been traced. Registry publication/heartbeat identity edge cases and the exact two-process persistence behavior remain test-and-hardening work, not approved Rust behavior.
 
 1. Finish per-symbol call-site mapping for every candidate module, especially the UI-to-worker edges and all import/export/backup callers.
 2. Build sanitized, representative fixtures for registry, heartbeat, lifecycle observations, world-start summaries, fleet manifests, import receipts, export manifests, catalog records, and provider responses.
