@@ -56,6 +56,20 @@ Important compatibility rules:
 
 **Rust boundary:** a serializable `InstanceRecord` plus pure validation/defaulting helpers may belong in the core. Path resolution, registry signatures, atomic write/fsync/rename and external-edit detection remain filesystem-adapter responsibilities until separately specified.
 
+
+
+#### 2.1.1 Registry load/write and identity edge semantics
+
+The current registry load contract has a mismatch between its declared schema and its enforcement:
+
+- The constant says version 1, and the writer always emits `{"version": 1, "instances": [...]}`. The reader checks that the root is a JSON object and instances is a list, but it does not validate the version or require the version field. It accepts missing/unknown versions and ignores unknown root keys; a later save rewrites to version 1 and drops unknown root-level metadata. Per-record unknown keys are different: `ServerInstance.extra` preserves them on round trip, with known fields overriding any collision.
+- Missing record `id` generates a new UUID during each load. Missing `tmux_session` derives a safe slug from the display name; provided session names from a persisted registry are not passed through `validate_session_name()`. Other known-field types are mostly trusted rather than schema-validated. Paths are expanded/resolved and duplicate normalized paths, IDs and sessions are rejected.
+- The external-change signature is `(device, inode, size, mtime_ns)`, not a content digest. The narrow reconciliation accepts only `last_started` and `last_started_world` changes and keeps the live object identities. All other changes remain write-blocking until restart.
+- The writer uses the fixed sibling `instances.tmp`, opens it with normal write/truncate semantics, fsyncs the file and atomically replaces `instances.json`. It does not use exclusive/no-follow temp creation, fsync the containing directory, or hold a cross-process registry lock around check-and-publish. Two independent Crucible processes can race after both pass the signature check. The temp path can also be a pre-existing symlink. These are current source properties; the tests do not cover them.
+- `HeartbeatStore._path()` uses the raw `instance.id` as a path component. Registry load does not enforce a safe ID segment. A crafted ID containing separators/traversal/absolute-path text can direct heartbeat read/replace outside the state directory. Heartbeat write does use unique `mkstemp`, but the final replace target still derives from that ID. The store also reads heartbeat JSON without a size cap and maps malformed/non-object data to the same `None` as a missing file.
+
+The future Rust contract should distinguish `RegistryLoad::Missing`, `Loaded(version, records, unknown_root_fields)`, `UnsupportedVersion`, and `Invalid(reason)`; it must not downgrade an unknown schema by assuming version 1. Validate instance IDs as one safe path segment while preserving historic safe identifiers (not only UUIDs). Keep file IO, symlink handling, directory durability and inter-process locking in the Python adapter until hardened and tested.
+
 ### 2.2 Process observation versus GUI lifecycle phase
 
 The host-observation values returned by `TmuxManager.status_map()` are:
