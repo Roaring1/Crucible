@@ -55,3 +55,5 @@ jobs:
         run: cargo test --manifest-path rust/crucible-core/Cargo.toml --locked
       - name: Run Clippy
         run: cargo clippy --manifest-path rust/crucible-core/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Smoke-run parser microbenchmark (not a performance baseline)
+        run: cargo bench --manifest-path rust/crucible-core/Cargo.toml --locked --bench parser_micro
