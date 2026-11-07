@@ -13,7 +13,7 @@ The recursive Git tree for the recorded `main` baseline contains 219 entries, in
 - **62 Python test/support files** under `tests/`, approximately **755 KB** of source text.
 - Eleven Python package directories/subpackages.
 
-These counts describe source-control contents, not installed package size or runtime memory. They are not a performance benchmark.
+These counts describe source-control contents, not installed package size or runtime memory. They are not a performance benchmark. The migration PR adds two Python parity tests under `tests/` (`test_rust_pack_version_fixtures.py` and `test_rust_pack_identity_fixtures.py`), so the current PR branch contains 64 Python test/support files.
 
 The repository is a layered desktop application, not a narrow launcher. Important ownership boundaries are:
 
