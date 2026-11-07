@@ -309,6 +309,26 @@ mod tests {
     }
 
     #[test]
+    fn channel_and_prerelease_order_matches_python_tuple_semantics() {
+        let alpha = parse_pack_version("2.9.0-alpha-10").unwrap();
+        let beta = parse_pack_version("2.9.0-beta-0").unwrap();
+        let beta_two = parse_pack_version("2.9.0-beta-2").unwrap();
+        let beta_ten = parse_pack_version("2.9.0-beta-10").unwrap();
+        let rc = parse_pack_version("2.9.0-rc-1").unwrap();
+        let stable = parse_pack_version("2.9.0").unwrap();
+
+        assert!(alpha < beta);
+        assert!(beta < beta_two);
+        assert!(beta_two < beta_ten);
+        assert!(beta_ten < rc);
+        assert!(rc < stable);
+        assert_eq!(
+            parse_pack_version("2.9").unwrap(),
+            parse_pack_version("2.9.0").unwrap()
+        );
+    }
+
+    #[test]
     fn arbitrary_length_components_do_not_overflow() {
         let larger = parse_pack_version("123456789012345678901234567890.1.0").unwrap();
         let smaller = parse_pack_version("99999999999999999999999999999.1.0").unwrap();
