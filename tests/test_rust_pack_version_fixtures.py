@@ -50,6 +50,10 @@ def test_python_only_unicode_version_inputs_remain_supported():
     assert parsed == (2, 8, 4, 3, 0)
     assert channel_of("٢.٨.٤") == "stable"
 
+    prerelease_number = "2.8.4-rc-٢"
+    assert parse_pack_version(prerelease_number) == (2, 8, 4, 2, 2)
+    assert channel_of(prerelease_number) == "rc"
+
     control_whitespace = "\x1c2.8.4\x1c"
     parsed = parse_pack_version(control_whitespace)
     assert parsed == (2, 8, 4, 3, 0)
