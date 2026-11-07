@@ -237,7 +237,7 @@ Each phase is a separate reviewable change. Stop and reassess when a phase expos
 
 - [x] Inspect README, package/build metadata, CI, primary entry points, registry, instance model, tmux manager, crash recovery, backup manager, importer/exporter, provider module, and Crosshair Rust reference.
 - [x] Record current architecture and high-risk invariants.
-- [x] Enumerate all 80 Python source files and 63 test/support files; map the main package boundaries, fleet backup, status/resource sampling, principal worker routes and main end-to-end flows. A complete per-symbol dependency graph is still pending.
+- [x] Enumerate the baseline's 80 Python source files and 62 Python test/support files; the PR branch adds three parity/benchmark tests, bringing its test/support inventory to 65. Map the main package boundaries, fleet backup, status/resource sampling, principal worker routes and main end-to-end flows. A complete per-symbol dependency graph is still pending.
 - [ ] Implement representative sanitized fixtures from the matrix in `rust-migration-contracts.md` for registry, heartbeat, lifecycle status, world-start summaries, backup manifest, import receipts, export manifest, catalog records, and provider responses.
 - [x] Identify benchmark candidates and separate source-confirmed costs from unmeasured hypotheses in `rust-migration-performance-audit.md`, including repeated process discovery, serial watchdog tmux probes, eager tab-module imports, synchronous/repeated archive inventories, redundant Backup-tab generation/legacy-source scans, client-export content passes, and backup I/O. The log tail/console path is already byte- and document-bounded; only metric-signal coalescing remains a measurement-gated Python candidate.
 
