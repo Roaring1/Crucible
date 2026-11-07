@@ -102,6 +102,36 @@ The registry and heartbeat store are separate persistence adapters. Their curren
 
 **Rust/data-model boundary:** preserve unknown record fields and current defaults only after schema version is explicitly understood. The first typed API should represent `RegistryLoad::Missing`, `Loaded(version, records, unknown_root)`, and `Invalid/Unsupported(reason)`, rather than interpreting unsupported schema as version 1. Keep path resolution and atomic publication in Python. Before production serialization moves, add a schema-version migration policy, safe identifier validation, no-follow/exclusive temp publication, directory fsync, and two-process lost-update tests.
 
+
+### 2.2.3 Pack provenance, import summary, and owner-added-mod metadata
+
+These three small JSON sidecars drive pack identity and the owner-mod carry-forward decision. They currently have different and mostly best-effort persistence semantics.
+
+**Pack provenance (`.crucible/pack-provenance.json`)**
+- `read_receipt()` follows the path with `read_text()` and has no file-size limit, symlink rejection, JSON shape/schema validation, or per-field validation. It returns `{}` only when JSON decoding/read fails or the root isn't an object.
+- `identify_pack()` gives the receipt highest precedence. Any truthy `provider` and `version` are cast to strings and treated as authoritative; an absent/unknown `variant` silently becomes the Java 17 default. There is no receipt schema version, checksum, signature, validation of provider/version syntax, or consistency check against the server tree.
+- `pack_baseline()` accepts any list under `pack_mods` and converts each member to `str`. There is no filename/path validation, no duplicate rejection, and no distinction between `.jar` and arbitrary names. `compute_carry_mods()` then uses that set as exact evidence of pack-owned files; a forged/stale receipt can change which mods are carried into a future server update.
+- `_write_receipt()` enumerates the live `mods/` directory and treats every regular-looking `*.jar` not in `carried` as pack-owned. `Path.is_file()` follows symlinks; there is no symlink rejection or stable hash/identity capture for each JAR. The receipt stores filenames, not the SHA-256 of the bytes used for the baseline.
+- Publication uses a fixed `pack-provenance.json.tmp`, ordinary `write_text()`, then replace. It does not use exclusive temp creation, fsync the file/directory, reject a symlink at the final receipt path, or surface failure: `OSError` is swallowed. After a successful live pack swap the update can therefore report success with no new provenance, and future update planning silently falls back to weaker heuristics.
+
+**Import summary (`.crucible/import-summary.json`)**
+- `prism.import_prism_source()` writes a rich object (`source`, install root, detected game root and temporary flag, detected metadata, copied counts, optional download result and server-install result) with a direct `write_text()`. There is no atomic temp publication, fsync, size bound, symlink check, schema version or required-field validation.
+- `identify_pack()` reads this file without a size cap or symlink check, trusts `source` and `detected.name` as candidate filenames, and only later runs the GTNH name regex. This is an advisory identity source, lower precedence than provenance but higher than the registry/folder heuristic.
+- The `detected_game_root` may have been a deleted temporary extraction path; the `detected_game_root_was_temporary` flag explains that. Do not mistake it for the installed server root. A failed write of this summary currently escapes `import_prism_source()` and can make an otherwise mostly completed direct-copy import report failure after many files have already been written.
+
+**Owner-added mod record (`.crucible/added-mods.json`)**
+- `modrinth._load_record()` has no size cap, symlink check, schema version, filename validation or record-field validation. A malformed/unreadable file becomes `{}`. It filters the root object to string keys and object values only.
+- `modrinth._save_record()` writes a fixed `added-mods.tmp` via ordinary `write_text()` and replace, catches and ignores `OSError`, and has no file/directory fsync. `install_files()` can therefore report per-file successes while the owner-added identity record fails to persist.
+- `versions._write_record()` is stronger: randomized `mkstemp` in the same directory, file fsync and `os.replace()`, but no directory fsync, no symlink check on the record path, no schema/size policy, and the caller still does not acquire the fleet operation lock.
+- Both `identify_files()` and install/update paths treat the record as advisory provenance. It is not proof that a JAR's bytes still match the stored metadata: `check_update()` looks up project/version metadata, and later `replace_files()` has a stronger SHA-1 verification path for the selected current file.
+
+**Other owner-local sidecars**
+- `server_icons.py` hashes the instance ID before using it as a filename, caps image input at 20 MiB and 4096×4096, uses a Crucible-owned private 0700 icon directory, a randomized temp file and 0600 published PNG. This avoids the raw heartbeat-ID path issue for icon storage. It still uses path checks followed by later opens (so source image/root replacement races are not eliminated) and does not fsync the icon directory.
+- `sharing/history.py` is the most explicit sidecar schema in this group: version 1, exact event allowlist, 50-record/1 MiB caps, URL/hash/type validation, private 0700 parent/0600 file, randomized temp, file fsync and atomic replace. It deliberately stores no credentials or raw HTTP responses. It does not fsync the parent directory and its check-then-open path handling is not a directory-descriptor sandbox.
+- The Crucible import report `CRUCIBLE_IMPORT.md` is human-readable, direct-written and has no schema/security contract; it is not used as authority for automated pack decisions.
+
+**Required Rust/data contract:** don't model “JSON parses” as “trusted provenance”. Define explicit versioned schemas for pack provenance and owner-added records, validate every filename as one safe leaf, reject unknown provider/variant/value types, and bind pack-owned mod baselines to content hashes if they are used for future destructive/carry decisions. The Python adapter must own bounded no-follow reads and durable sidecar publication. For legacy unversioned receipts, add a compatibility reader that distinguishes `LegacyUnverified` from a new `Verified` receipt; do not silently grant an old file the same authority as a newly validated one. Keep import summaries advisory only.
+
 ### 2.3 Process and host adapters
 
 - `tmux_manager.py`: command execution, exact tmux targets, session/process/readiness probes, start/stop/send/attach, status map.
@@ -749,7 +779,7 @@ The following list was generated from the recursive tree at the recorded `main` 
 The source inventory is now complete by file path, principal runtime flows and the largest deferred dependency knots have been traced. Registry publication/heartbeat identity edge cases and the exact two-process persistence behavior remain test-and-hardening work, not approved Rust behavior.
 
 1. Finish per-symbol call-site mapping for every candidate module, especially the UI-to-worker edges and all import/export/backup callers.
-2. Build sanitized, representative fixtures for registry, heartbeat, lifecycle observations, world-start summaries, fleet manifests, import receipts, export manifests, catalog records, and provider responses.
+2. Build sanitized, representative fixtures for registry/heartbeat, versioned pack provenance and legacy receipts, import summaries, owner-added mod records, lifecycle observations, world-start summaries, fleet manifests, export manifests, catalog records, and provider responses.
 3. Record real baseline timings on the owner's normal hardware, without using or modifying a live GTNH server/world.
 4. Decide whether the first measured optimization should be a Python algorithm refactor (likely first for shared process discovery) or a standalone Rust CPU-heavy primitive.
 5. Prototype packaging/rollback in CI before any production Rust call site is enabled.
