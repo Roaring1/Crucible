@@ -70,6 +70,25 @@ The current registry load contract has a mismatch between its declared schema an
 
 The future Rust contract should distinguish `RegistryLoad::Missing`, `Loaded(version, records, unknown_root_fields)`, `UnsupportedVersion`, and `Invalid(reason)`; it must not downgrade an unknown schema by assuming version 1. Validate instance IDs as one safe path segment while preserving historic safe identifiers (not only UUIDs). Keep file IO, symlink handling, directory durability and inter-process locking in the Python adapter until hardened and tested.
 
+
+
+#### 2.1.2 Pack provenance and local sidecar records
+
+Small sidecars have different authority and durability levels. Do not treat every valid JSON object as verified application state.
+
+| Sidecar | Current format/behavior | Rust contract requirement |
+|---|---|---|
+| `.crucible/pack-provenance.json` | Unversioned JSON. Reader has no size cap, no symlink rejection and no schema/field validation. Any truthy provider+version outrank all other identity evidence; absent/invalid variant defaults to Java 17. `pack_mods` is an unchecked list of strings used as exact pack-owned baseline. Writer uses a fixed `.json.tmp`, no fsync, and swallows OSError. | Versioned schema; bounded no-follow read; validate provider/version/variant; each pack-mod name is one safe JAR leaf and optionally bind to SHA-256. Legacy receipt is `LegacyUnverified`, not equivalent to a validated new receipt. Publication is atomic, exclusive-temp, fsynced, error-visible. |
+| `.crucible/import-summary.json` | Unversioned, direct-written JSON; reader has no size cap or symlink check. Its source/detected.name are advisory GTNH filename candidates; temporary extraction roots may be recorded and explicitly marked temporary. | Bounded advisory data only; never authoritative over provenance; distinguish installed root from deleted temporary detection root; malformed/unreadable should not claim verified identity. |
+| `.crucible/added-mods.json` | Unversioned object keyed by filename. Reader silently returns empty on corrupt/unreadable data; no size/symlink/filename/value validation. Modrinth writer uses fixed `added-mods.tmp`, no fsync and swallows OSError. Version replacement writer uses random temp + file fsync/replace but no directory fsync. | Bounded schema and safe leaf keys; exact identity fields typed; store digest semantics explicitly; report record-write failure separately from JAR install success; maintain legacy reader without granting trust to malformed data. |
+| `CRUCIBLE_IMPORT.md` | Human-readable best-effort report, direct text write; not consumed as automated authority. | Keep as presentation output, not a decision source. |
+| Server icon override | Instance ID is SHA-256 hashed before forming its filename; input <=20 MiB/4096 edge, private directory/file, randomized temp and atomic replace. | Preserve privacy/size/dimension limits; keep ID-derived storage key deterministic; treat icon bytes as presentation-only. |
+| Share history | Versioned schema 1, event allowlist, <=50 records, <=1 MiB, validated Gofile URL/hash/types, private 0700/0600, random temp, file fsync and atomic replace. | Maintain strict typed schema and privacy allowlist; parent-directory fsync and directory-descriptor race hardening remain adapter tests. |
+
+`compute_carry_mods()` consumes pack provenance to decide which JAR names belong to the new pack and which owner additions survive an update. That is a consequential decision, not just metadata display. A receipt with an unchecked `pack_mods` array can alter the next update's carry set. The pure Rust classifier may receive a validated immutable baseline, but it must never parse an arbitrary sidecar and silently promote it to authoritative evidence.
+
+The existing tests cover valid provenance receipt precedence, a corrupt receipt fallback, import-summary source inference, and the pack-baseline carry calculation. Missing tests include oversize and symlinked sidecars, wrong schema/type/provider/variant, unsafe/duplicate pack-mod names, pack JAR replaced under the same filename, fixed-temp symlink/collision, failed receipt publication after swap, added-mod record write failure after successful JAR download, and legacy-to-versioned migration.
+
 ### 2.2 Process observation versus GUI lifecycle phase
 
 The host-observation values returned by `TmuxManager.status_map()` are:
