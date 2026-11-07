@@ -501,6 +501,19 @@ The same operation policy should be shared by CLI and GUI; it should not be recr
 - Neither ConfigTab nor NotesTab has its own Rust-shaped algorithm worth porting. The reusable core candidate is only a pure parser/normalizer over supplied property text; all path reads, read-completeness, confirmation, locking, publication, registry writes and UI retry state remain in Python.
 
 
+### 2.5.8 ConfigTab server.properties load/render has no input budget
+
+The Config tab is a separate UI reader/editor over the same server.properties file:
+- ConfigTab._parse_props() calls Path.read_text(...).splitlines() without a file-size, line-count, key-count, or value-size limit. It skips comments/blank lines, recognizes only literal =, and collapses duplicates into an OrderedDict using the last value while preserving the original insertion position of the first occurrence.
+- ConfigTab._populate_table() sorts every unique key, creates two table columns and a QTableWidgetItem per key, and creates a QComboBox cell widget for each value equal to true/false. It then calls _apply_filter() across every row. Both initial load and reload run synchronously on the Qt thread.
+- _apply_filter() walks every row and reads key/value text on each textChanged event; typing a filter therefore performs O(number of unique keys) string checks per keystroke. The table has no model/view virtualization, row cap, or deferred population.
+- _save() reads the complete original file again using read_text().splitlines(), creates a second full list of rewritten lines, joins it into another string, and writes it to the fixed .tmp sibling before replace. There is no byte/line budget or streaming path. The existing properties validator/CLI uses another full-buffer reader, so adding a Rust parser would not bound I/O or UI widget construction.
+- Ordinary Minecraft server.properties files are small, so this is not a demonstrated everyday bottleneck. The concern is corrupted/externally-generated oversized files or pathological key counts: no UI input budget means load, filter and save time/memory scale with attacker- or user-controlled bytes and row count. The server.properties file is also reread independently by the ConfigTab, PropertiesDoc validator, ServerInstance world/port helpers and pack-update reader; this source audit describes those compatibility differences elsewhere.
+
+**Python-first improvement:** establish a conservative, documented maximum file byte size, maximum parsed key count and maximum per-key/value length before table construction; show a clear read-only “file exceeds editor limit” state rather than treating it as empty. If real profile data shows large-but-valid configs, migrate the view to a model/view with incremental filtering and batch updates; do not silently truncate settings or write an incomplete file. A Rust parser is not a useful first step while the UI still constructs one widget/item per key and the file is read wholesale multiple times.
+
+Coverage gap: there is no dedicated ConfigTab save/load contract suite. Add generated property files at normal, large and over-limit sizes, large boolean-key counts, duplicate keys, malformed UTF-8 replacement, filter-keystroke timing, unreadable/replaced file during save, and assertions that over-limit input is never presented as an empty config or saved back partially. Benchmark read/parse, table population, per-keystroke filter latency, peak RSS and save serialization independently.
+
 ### 2.6 Diagnostics
 
 `diagnostics/loadcheck.py` parses logs/crash reports and inspects JAR metadata, maps reported mod IDs back to JARs, and can quarantine/restore selected files. Parsing/diagnosis and filesystem mutation should remain separate operations. The Rust core may eventually help with a pure parser, but a quarantine/restore operation is not a suitable first port.
