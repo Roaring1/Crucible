@@ -164,10 +164,12 @@ fn first_server_suffix<'a>(
 /// text after the Java token. It validates the captured version through
 /// parse_pack_version().
 ///
-/// Known Python/Rust parity gaps in parse_pack_version() also apply here:
-/// Python accepts Unicode decimal digits and strips U+001C..U+001F, whereas
-/// this dependency-free Rust pilot currently accepts ASCII digits and uses
-/// Rust's Unicode trim().
+/// Known Python/Rust parity gaps apply here: Python's `re.IGNORECASE` also
+/// matches a small set of non-ASCII case variants (including long-s in
+/// "Horizons"), and `\\d` accepts Unicode decimal digits in both the version
+/// and Java-runtime suffix. Python `str.strip()` also strips U+001C..U+001F.
+/// This dependency-free pilot intentionally uses ASCII token matching/digits
+/// and Rust's Unicode `trim()`; it is not a production decision source yet.
 pub fn identify_gtnh_name(raw: &str) -> Option<GtnhServerName> {
     let bytes = raw.as_bytes();
 
@@ -255,6 +257,15 @@ mod tests {
     fn invalid_unicode_version_remains_a_documented_python_difference() {
         // Python's \d accepts Arabic-Indic decimal digits in the version.
         assert!(identify_gtnh_name("GT_New_Horizons_٢.٨.٤_Server_Java_8.zip").is_none());
+    }
+
+    #[test]
+    fn python_unicode_casefold_and_java_digits_remain_documented_differences() {
+        // Python's re.IGNORECASE treats U+017F LONG S as an ASCII 's'.
+        assert!(identify_gtnh_name("GT_New_Horizonſ_2.8.4_Server_Java_8.zip").is_none());
+
+        // Python's \\d also matches Unicode decimal digits in the Java token.
+        assert!(identify_gtnh_name("GT_New_Horizons_2.8.4_Server_Java_17-٢٥.zip").is_none());
     }
 
     #[test]
