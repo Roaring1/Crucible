@@ -58,6 +58,22 @@ There are other possible I/O costs:
 
 Benchmark these separately. A many-small-files server and a few-large-files world stress different bottlenecks.
 
+### 2.2.1 Manifest parsing and verification are a separate scaling cost
+
+The generation manifest contains one record per captured file plus directories, exclusions, per-server registry metadata, world slots and legacy-source inventories. It is canonicalized, hashed, written and later loaded with a single `read_text()` plus `json.loads()`; there is no manifest-byte cap, streaming parser or entry-count cap.
+
+This means an incremental backup that reuses almost every large world file can still have a CPU/RSS cost proportional to the total number of filesystem entries. The payload I/O may be near zero while manifest construction, canonical JSON encoding, SHA-256 of the manifest, JSON decode, Python dictionaries/lists, validation and repeated path/stat calls consume memory and time. This is a separate performance dimension from bytes copied.
+
+Verification modes also have deliberately different costs:
+- `deep=False` authenticates the manifest's canonical content against its embedded SHA-256 and checks generation schema/status/ID, inventory counts, safe paths, file/directory existence, file sizes and immutable modes. It does not hash every payload.
+- `deep=True` additionally reads every stored file and SHA-256 hashes its contents. This is required before restore by default; it must not be replaced with shallow verification to make restore benchmarks faster.
+- `_latest_manifest_fast()` and generation listing use manifest/inventory metadata for responsive browsing. They are not evidence that every backup payload remains intact.
+- The embedded manifest SHA-256 is unkeyed. It detects accidental/casual edits where the digest is not recomputed; it is not a signature against an actor able to rewrite both the manifest and checksum. Trust also depends on owner-private storage, immutable published tree permissions and deep payload checks.
+
+Benchmark a real-ish tree with 10k, 50k and 100k files, including a large unchanged generation and a many-small-files profile. Record manifest byte length, canonicalization and hash duration, JSON encode/decode duration, validation duration, peak RSS, number of path/stat calls, shallow verify time and deep verify bytes/throughput. Measure memory after manifest load as well as peak during generation creation. Only consider a sharded/streamed manifest if the whole workflow shows manifest memory/parse time is material; any versioned redesign must preserve a single generation identity, complete inventory, explicit exclusions, integrity validation and current two-generation recovery rules. Do not introduce an arbitrary small manifest cap that rejects legitimate GTNH installs.
+
+
+
 ### 2.3 Incremental reuse is an important optimization to preserve
 
 For normal server files, prior snapshot entries are reused when source stat signatures match and the prior immutable file is present with the expected size and immutable permissions. Crucible then hard-links the old snapshot into the new generation. If the source signature changed, Crucible copies and hashes the live file; if the bytes match the old digest, it can replace the staged copy with a link to the old immutable inode.
@@ -150,6 +166,7 @@ The performance audit should measure event-loop stalls and worker queue latency 
 | 4 | Separate fast world-start safety classification from full save statistics | Full recursive selected-world scan runs on selection and again on Start; WorldTab can also scan size separately | High: incomplete alternate-save inspection must never become `no other world` or `new` | Benchmark p50/p95 scan time by file count; prototype quick classification plus independent stats only if all required safety paths remain fail-closed |
 | 5 | Measure backup copy + destination readback | Fresh copies are hashed while streaming and fsynced, then read back and hashed again; the legacy archive path has a similar verification pass | High: removing verification could weaken backup integrity | Benchmark full, unchanged, and changed generations; compare disk read/write counters and CPU; retain exact-byte verification |
 | 6 | Measure per-file durability and inventory overhead | Every fresh file is fsynced; staging is walked twice; every directory is sealed and fsynced; source files receive final stat checks | High: durability and race guarantees | Use synthetic trees with many small files and large files; profile syscall counts and time before considering batching |
+| 7 | Measure manifest build/load/verification scaling | One unbounded canonical JSON manifest holds every file/directory/exclusion record; shallow and deep verify have different costs | Medium-to-high on very high file-count servers; a cap/sharding change risks compatibility | Profile 10k/50k/100k-file trees, manifest bytes, encode/decode, peak RSS, stat calls, shallow verify, deep hash throughput |
 | 7 | Reduce startup module/widget work, if material | Ten tab modules are imported and eight tab widgets are constructed during `InstancePanel._build_ui()`; only data loading is lazy | Medium: deferring widgets changes Qt object and signal lifetimes | Measure import, first-paint, initial RSS, and first-open latency; then prototype a single deferred secondary tab |
 | 8 | Reduce redundant client-export passes without weakening verification | Fingerprinting, JAR inspection, distribution review, archive sealing, and final re-fingerprinting can each read the same inputs | High: every reviewed artifact must match the bytes actually packaged | Measure per-stage time/bytes; explore a staged immutable input inventory only if it preserves source-change and exact-SHA checks |
 | 9 | Rust rewrite of Qt or tmux lifecycle | No evidence that language execution is the bottleneck; Qt/process control is mostly waiting on external systems | Very high | Do not pursue in the initial migration |
