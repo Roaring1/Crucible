@@ -1,6 +1,9 @@
 """Shared fixture parity checks for the isolated Rust parser pilot."""
 
+import sys
 from pathlib import Path
+
+import pytest
 
 from crucible.importers.pack_update import channel_of, parse_pack_version
 
@@ -51,3 +54,15 @@ def test_python_only_unicode_version_inputs_remain_supported():
     parsed = parse_pack_version(control_whitespace)
     assert parsed == (2, 8, 4, 3, 0)
     assert channel_of(control_whitespace) == "stable"
+
+
+def test_python_reference_retains_cpython_decimal_conversion_limit():
+    get_limit = getattr(sys, "get_int_max_str_digits", None)
+    if get_limit is None:
+        pytest.skip("This interpreter does not expose CPython's decimal conversion limit.")
+    limit = get_limit()
+    if limit == 0:
+        pytest.skip("The runtime explicitly disabled the decimal conversion limit.")
+    raw = f"{'9' * (limit + 1)}.1.0"
+    with pytest.raises(ValueError, match="Exceeds the limit"):
+        parse_pack_version(raw)
