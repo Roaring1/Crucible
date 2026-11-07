@@ -218,6 +218,16 @@ Existing Start regression coverage is insufficient for this contract. StartTests
 
 
 
+### 2.3.3 Resource sampling and the visible System tab
+
+The resource sampler is dependency-free and reads Linux procfs directly:
+- _iter_pids() first checks whether /proc/self/stat exists and then calls os.listdir('/proc') to build the full numeric PID list. The os.listdir() call is not inside a try/except, so an inaccessible or transiently failing procfs enumeration can raise despite the module-level 'best-effort and never raises' statement.
+- ResourceSampler.find_instance_pids(instance) performs a complete process-table walk for one instance. For every PID it reads cmdline; if the exact -Dcrucible.session=<slug> token is absent, it reads comm, and for Java processes may read cwd. The exact marker path accepts a process without first validating its executable name; the legacy path/cwd fallback requires comm == java. This is the same matching contract used by lifecycle detection and must not be changed by a metrics optimization.
+- sample_pids() reads /proc/<pid>/stat, statm, and cmdline for each selected PID and computes CPU from the previous sample; it is stateful, so callers should retain a ResourceSampler instance. The first CPU result is zero until a second sample establishes a delta.
+- SystemTab starts a 2-second QTimer only while visible (showEvent/hideEvent) and refreshes immediately on load/show. _refresh() calls find_instance_pids() and sample_pids() synchronously from the Qt GUI thread, then reads /proc/meminfo and updates widgets. It is demand-scoped rather than a resident hidden monitor, but procfs enumeration can block painting/input while the tab is open. No worker, shared status snapshot or explicit unavailable state currently protects this view from a find_instance_pids() exception.
+- sample_machine_usage() in machine_resources.py is a separate on-demand path that enumerates managed instances together and waits 350 ms between two samples for CPU; do not assume its aggregate scan is already used by the System tab.
+
+A measured Python-side improvement would be to move the visible-tab sample to a bounded worker and pass back an immutable per-instance observation snapshot, or reuse a shared fresh association scan for metrics. Keep the timer visibility-scoped; never add a global sampler. Explicitly distinguish complete, incomplete and per-PID-disappeared outcomes. Metrics may render unavailable on an incomplete scan, but the same result must not satisfy lifecycle Start/Stop/removal preconditions. A stale metrics snapshot must never be reused by a safety action.
 ### 2.3.2 Watchdog polling: implementation does not match its batch comment
 
 The module docstring in `watchdog.py` says one `tmux list-sessions` call per poll covers all watched instances. The current `Watchdog._poll()` does not use that operation:
