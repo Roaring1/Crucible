@@ -93,6 +93,39 @@ def _iter_pids() -> list[int] | None:
         return None
 
 
+_COMMAND_PATH_BEFORE = frozenset("=:'\"([{,;")
+_COMMAND_PATH_AFTER = frozenset("/:'\"),]};,")
+
+
+def _command_contains_path(command: str, path: str) -> bool:
+    """Match a registered path only at argument/path-component boundaries.
+
+    A plain substring check associates ``/srv/game-old`` with the registered
+    ``/srv/game`` instance. Paths may be standalone arguments or embedded in
+    JVM properties such as ``-Duser.dir=/srv/game``; both forms are accepted,
+    but adjacent filename/path characters are not.
+    """
+    if not path:
+        return False
+    start = 0
+    while (index := command.find(path, start)) >= 0:
+        end = index + len(path)
+        before_ok = (
+            index == 0
+            or command[index - 1].isspace()
+            or command[index - 1] in _COMMAND_PATH_BEFORE
+        )
+        after_ok = (
+            end == len(command)
+            or command[end].isspace()
+            or command[end] in _COMMAND_PATH_AFTER
+        )
+        if before_ok and after_ok:
+            return True
+        start = index + 1
+    return False
+
+
 class ResourceSampler:
     """Stateful CPU%% sampler. Reuse one instance; call sample_pids() periodically."""
 
@@ -210,7 +243,7 @@ class ResourceSampler:
             command_matches = [
                 instance_id
                 for instance_id, (_marker, path) in configs.items()
-                if path and path in command
+                if _command_contains_path(command, path)
             ]
             if command_matches:
                 for instance_id in command_matches:

@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from crucible.process.resource_monitor import ResourceSampler
 from crucible.data.instance_model import ServerInstance
+from crucible.process.resource_monitor import ResourceSampler
 
 
 class FindInstancePidsTests(unittest.TestCase):
@@ -95,6 +95,47 @@ class FindInstancesPidsTests(unittest.TestCase):
 
         self.assertEqual(inventory, {instances[0].id: [10, 40], instances[1].id: [20, 30]})
         scan.assert_called_once_with()
+
+    def test_sibling_server_paths_do_not_cross_match_command_arguments(self):
+        instances = [
+            ServerInstance("/srv/game", "Short path", tmux_session="old-short"),
+            ServerInstance("/srv/game-old", "Long path", tmux_session="old-long"),
+        ]
+        command = "java -jar /srv/game-old/server.jar"
+        with (
+            patch("crucible.process.resource_monitor._iter_pids", return_value=[4321]),
+            patch("crucible.process.resource_monitor._read_comm", return_value="java"),
+            patch("crucible.process.resource_monitor._read_cmd", return_value=command),
+            patch("crucible.process.resource_monitor._proc_cwd", return_value="/opt/other"),
+        ):
+            inventory = self.sampler.find_instances_pids(instances)
+
+        self.assertEqual(inventory, {instances[0].id: [], instances[1].id: [4321]})
+
+    def test_embedded_jvm_path_property_obeys_path_component_boundaries(self):
+        instances = [
+            ServerInstance("/srv/game", "Short path", tmux_session="old-short"),
+            ServerInstance("/srv/game-old", "Long path", tmux_session="old-long"),
+        ]
+        command = "java -Duser.dir=/srv/game-old -jar server.jar"
+        with (
+            patch("crucible.process.resource_monitor._iter_pids", return_value=[4321]),
+            patch("crucible.process.resource_monitor._read_comm", return_value="java"),
+            patch("crucible.process.resource_monitor._read_cmd", return_value=command),
+            patch("crucible.process.resource_monitor._proc_cwd", return_value="/opt/other"),
+        ):
+            inventory = self.sampler.find_instances_pids(instances)
+
+        self.assertEqual(inventory, {instances[0].id: [], instances[1].id: [4321]})
+
+    def test_standalone_and_descendant_path_arguments_still_match(self):
+        from crucible.process.resource_monitor import _command_contains_path
+
+        self.assertTrue(_command_contains_path("java -jar /srv/game/server.jar", "/srv/game"))
+        self.assertTrue(_command_contains_path("java -Duser.dir=/srv/game", "/srv/game"))
+        self.assertTrue(_command_contains_path("java -Duser.dir='/srv/game dir'", "/srv/game dir"))
+        self.assertFalse(_command_contains_path("java -jar /srv/game-old/server.jar", "/srv/game"))
+        self.assertFalse(_command_contains_path("java -jar /other/srv/game/server.jar", "/srv/game"))
 
     def test_failed_pid_enumeration_is_unknown_not_empty(self):
         instances = [self.inst]
