@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -64,6 +65,7 @@ def test_instance_panel_defers_seven_pages_without_changing_tab_contract(
     tmp_path,
 ) -> None:
     """Build seven secondary pages on demand while retaining fixed tab slots."""
+    from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QWidget
 
     from crucible.data.instance_manager import InstanceManager
@@ -72,6 +74,15 @@ def test_instance_panel_defers_seven_pages_without_changing_tab_contract(
     from crucible.ui.instance_panel import InstancePanel
 
     app = QApplication.instance() or QApplication([])
+
+    def wait_for_history_load(players) -> None:
+        deadline = time.monotonic() + 5.0
+        while getattr(players, "_seen_loading", False) and time.monotonic() < deadline:
+            QTest.qWait(5)
+        assert not getattr(players, "_seen_loading", False), (
+            "Players history worker did not finish"
+        )
+
     manager = InstanceManager(tmp_path / "registry")
     manager.load()
     panel = InstancePanel(manager)
@@ -182,6 +193,7 @@ def test_instance_panel_defers_seven_pages_without_changing_tab_contract(
         players._fetch_avatar = lambda _name: None
         panel._tabs.setCurrentIndex(6)
         app.processEvents()
+        wait_for_history_load(players)
         assert players._instance is instance
         assert players._watcher is None, (
             "Players receives Console's GUI-thread relay, not raw watcher events"
@@ -241,6 +253,7 @@ def test_instance_panel_defers_seven_pages_without_changing_tab_contract(
 
         panel._tabs.setCurrentIndex(6)
         app.processEvents()
+        wait_for_history_load(players)
         assert players._instance is second_instance
         assert "SecondServerPlayer" in players._online
         assert players._seen["SecondServerPlayer"]["sessions"] == 1
