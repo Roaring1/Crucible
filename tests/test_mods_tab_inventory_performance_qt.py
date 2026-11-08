@@ -7,7 +7,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QLabel
 
 from crucible.mods.mod_manager import ModEntry
 from crucible.ui.tabs.mods_tab import ModsTab
@@ -15,6 +15,44 @@ from crucible.ui.tabs.mods_tab import ModsTab
 
 def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+
+
+
+def test_bundled_rows_use_items_not_child_widgets(tmp_path):
+    app = _app()
+    tab = ModsTab()
+    bundled = [
+        ModEntry(
+            f"nested-{index}.jar",
+            tmp_path / f"parent-{index}" / f"nested-{index}.jar",
+            False,
+            50,
+            bundled=True,
+        )
+        for index in range(100)
+    ]
+
+    try:
+        labels_before = len(tab.findChildren(QLabel))
+        tab._populate_table(bundled)
+        labels_after = len(tab.findChildren(QLabel))
+
+        assert tab._table.rowCount() == 100
+        assert labels_after == labels_before
+        for row in range(100):
+            state = tab._table.item(row, tab._COL_ENABLED)
+            assert tab._table.cellWidget(row, tab._COL_ENABLED) is None
+            assert state.text() == "Bundled"
+            assert state.textAlignment() & Qt.AlignmentFlag.AlignHCenter
+            assert "cannot be toggled or removed" in state.toolTip()
+            assert state.flags() & Qt.ItemFlag.ItemIsSelectable
+            name = tab._table.item(row, tab._COL_NAME)
+            assert name.data(Qt.ItemDataRole.UserRole) is bundled[row]
+    finally:
+        tab.close()
+        app.processEvents()
 
 
 def test_inspection_queue_skips_bundled_and_already_inspected_entries(tmp_path):

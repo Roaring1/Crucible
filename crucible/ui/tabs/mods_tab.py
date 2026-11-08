@@ -424,16 +424,21 @@ class ModsTab(QWidget):
             is_bundled = getattr(mod, "bundled", False)
 
             if is_bundled:
-                bundled_label = QLabel("Bundled")
-                bundled_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                bundled_label.setToolTip(
+                # Bundled rows are informational only. A QLabel child widget
+                # per nested library adds thousands of unnecessary QWidget
+                # instances on large modpacks; render the same state as a
+                # lightweight table item instead.
+                bundled_item = QTableWidgetItem("Bundled")
+                bundled_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                bundled_item.setForeground(Qt.GlobalColor.gray)
+                bundled_item.setToolTip(
                     f"Nested library inside mods/{mod.path.parent.name}/. "
                     "It is managed by its parent modpack and cannot be toggled or removed here."
                 )
-                bundled_label.setStyleSheet(
-                    f"color: {theme.SUBTEXT}; font-size: 10px; font-weight: 600;"
+                bundled_item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
                 )
-                self._table.setCellWidget(row, self._COL_ENABLED, bundled_label)
+                self._table.setItem(row, self._COL_ENABLED, bundled_item)
             else:
                 state_btn = QPushButton("Enabled" if mod.enabled else "Disabled")
                 state_btn.setCheckable(True)
