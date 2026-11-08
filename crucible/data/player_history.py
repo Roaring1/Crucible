@@ -110,12 +110,19 @@ class PlayerHistoryTracker:
                 self._cancel_timer_locked()
 
     def close(self) -> bool:
-        """Flush and retire the debounce timer only after a successful write."""
+        """Stop accepting events, then flush; reopen capture if publication fails."""
+        with self._lock:
+            if self._closed:
+                return True
+            # Close the event gate before flushing so a concurrent callback
+            # cannot dirty the snapshot in the gap between flush() and close.
+            self._closed = True
+            self._cancel_timer_locked()
         flushed = self.flush()
-        if flushed:
+        if not flushed:
             with self._lock:
-                self._closed = True
-                self._cancel_timer_locked()
+                self._closed = False
+                self._schedule_save_locked()
         return flushed
 
     def _ensure_loaded(self) -> None:

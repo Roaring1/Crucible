@@ -320,7 +320,10 @@ def test_deferred_player_history_preserves_oversized_source_and_batches_stop(
     assert tracker.dirty
     assert not tracker.flush()
     assert history_path.read_bytes() == oversized_bytes
-    tracker.close()
+    assert not tracker.close()
+    tracker.record_joined("SecondPlayer")
+    assert "SecondPlayer" in tracker.join_times
+    assert history_path.read_bytes() == oversized_bytes
 
     # A valid source is updated once when multiple active sessions stop,
     # rather than rewriting the same JSON once per player.
@@ -346,7 +349,10 @@ def test_deferred_player_history_preserves_oversized_source_and_batches_stop(
     assert valid.seen_snapshot["FirstPlayer"]["seconds_played"] >= 0
     assert valid.seen_snapshot["SecondPlayer"]["seconds_played"] >= 0
     assert valid.flush()
-    valid.close()
+    assert valid.close()
+    valid.record_joined("AfterClose")
+    assert "AfterClose" not in valid.join_times
+    assert not valid.dirty
 
 def test_player_history_retry_merges_unpersisted_session_delta(tmp_path) -> None:
     from crucible.data.player_history import (
@@ -376,3 +382,67 @@ def test_player_history_retry_merges_unpersisted_session_delta(tmp_path) -> None
     assert persisted["KnownPlayer"]["seconds_played"] == 12.5
     assert not tracker.dirty
     assert tracker.close()
+
+
+def test_history_tracker_disconnect_requires_successful_flush() -> None:
+    from types import SimpleNamespace
+
+    from crucible.ui.instance_panel import InstancePanel
+
+    class Signal:
+        def __init__(self) -> None:
+            self.connected = []
+            self.disconnected = []
+
+        def connect(self, slot) -> None:
+            self.connected.append(slot)
+
+        def disconnect(self, slot) -> None:
+            self.disconnected.append(slot)
+
+    class Tracker:
+        def __init__(self) -> None:
+            self.closed = False
+            self.allow_close = False
+
+        def record_joined(self, _name: str) -> None:
+            pass
+
+        def record_left(self, _name: str) -> None:
+            pass
+
+        def record_server_stopped(self) -> None:
+            pass
+
+        def close(self) -> bool:
+            self.closed = True
+            return self.allow_close
+
+    signals = [Signal(), Signal(), Signal()]
+    tracker = Tracker()
+    panel = SimpleNamespace(
+        _console=SimpleNamespace(
+            online_player_joined=signals[0],
+            online_player_left=signals[1],
+            online_players_cleared=signals[2],
+        ),
+        _player_history_tracker=tracker,
+    )
+
+    # A failed flush must leave the tracker attached and restore its signals.
+    assert InstancePanel._disconnect_player_history_tracker(panel) is False
+    assert panel._player_history_tracker is tracker
+    assert signals[0].connected == [tracker.record_joined]
+    assert signals[1].connected == [tracker.record_left]
+    assert signals[2].connected == [tracker.record_server_stopped]
+
+    # Once publication succeeds, retire the tracker and detach every signal.
+    tracker.allow_close = True
+    assert InstancePanel._disconnect_player_history_tracker(panel) is True
+    assert panel._player_history_tracker is None
+    assert signals[0].disconnected == [tracker.record_joined, tracker.record_joined]
+    assert signals[1].disconnected == [tracker.record_left, tracker.record_left]
+    assert signals[2].disconnected == [
+        tracker.record_server_stopped,
+        tracker.record_server_stopped,
+    ]

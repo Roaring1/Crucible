@@ -329,7 +329,6 @@ class InstancePanel(QWidget):
 
     def _attach_player_history_tracker(self, instance: ServerInstance) -> None:
         """Capture player history without importing or constructing PlayersTab."""
-        self._disconnect_player_history_tracker()
         from ..data.player_history import PlayerHistoryTracker
 
         tracker = PlayerHistoryTracker(instance.path)
@@ -338,21 +337,33 @@ class InstancePanel(QWidget):
         self._console.online_player_left.connect(tracker.record_left)
         self._console.online_players_cleared.connect(tracker.record_server_stopped)
 
-    def _disconnect_player_history_tracker(self) -> None:
-        """Stop background-page history capture at an instance/page handoff."""
+    def _disconnect_player_history_tracker(self) -> bool:
+        """Flush and retire history capture before changing its owner or server."""
         tracker = self._player_history_tracker
         if tracker is None:
-            return
-        for signal, slot in (
+            return True
+        connections = (
             (self._console.online_player_joined, tracker.record_joined),
             (self._console.online_player_left, tracker.record_left),
             (self._console.online_players_cleared, tracker.record_server_stopped),
-        ):
+        )
+        for signal, slot in connections:
             try:
                 signal.disconnect(slot)
             except (RuntimeError, TypeError):
                 pass
+        # Do not detach a dirty tracker if persistence failed. Reconnect its
+        # event source so history continues accumulating while the user fixes
+        # the file/permission issue and retries the handoff.
+        if not tracker.close():
+            for signal, slot in connections:
+                try:
+                    signal.connect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+            return False
         self._player_history_tracker = None
+        return True
 
     def _confirm_config_changes(self) -> bool:
         """No Config page means no unsaved Config edits can exist."""
@@ -759,10 +770,20 @@ class InstancePanel(QWidget):
             return False
         if self._instance is not None and not self._confirm_config_changes():
             return False
+        # Flush before changing the selected server. If the sidecar cannot be
+        # published, keep the current view/tracker active and let the user retry.
+        if not self._disconnect_player_history_tracker():
+            QMessageBox.warning(
+                self,
+                "Player history could not be saved",
+                "Crucible could not safely save recent-player history for the "
+                "current server. The server selection was not changed. Resolve "
+                "the file or permission issue and retry.",
+            )
+            return False
         if self._notes is not None:
             self._notes.flush()
         self._disconnect_players_from_console()
-        self._disconnect_player_history_tracker()
         # Do not synchronously stop/wait/recreate the log QThread on every
         # sidebar click. _start_watcher() reuses it and queues a cheap reset.
         self._tps_timer.stop()
@@ -1214,38 +1235,35 @@ class InstancePanel(QWidget):
             # included in the snapshot; a later event is relayed after connect.
             tracker = self._player_history_tracker
             tracker_flushed = tracker.flush() if tracker is not None else True
+            if not tracker_flushed:
+                QMessageBox.warning(
+                    self,
+                    "Player history could not be saved",
+                    "Crucible could not safely save recent-player history. The "
+                    "Players page was not opened, and live history capture remains "
+                    "active. Resolve the file or permission issue and retry.",
+                )
+                self._tabs.setCurrentWidget(self._console)
+                return
+            join_times = tracker.join_times if tracker is not None else {}
             self._players.load(inst)
-            if (
-                tracker is not None
-                and not tracker_flushed
-                and tracker.load_error is not None
-            ):
-                # Keep events captured while the source file was unreadable in
-                # the Players worker's merge overlay. Do not write an empty or
-                # partial replacement over the unavailable history file.
-                snapshot = tracker.seen_snapshot
-                updates = getattr(self._players, "_seen_updates_during_load", None)
-                if isinstance(updates, dict):
-                    for name, record in snapshot.items():
-                        update = updates.setdefault(name, {})
-                        update["first_seen"] = record.get("first_seen")
-                        update["last_seen"] = record.get("last_seen")
-                        update["joined"] = int(record.get("sessions", 0) or 0)
-                        update["seconds_played"] = float(
-                            record.get("seconds_played", 0.0) or 0.0
-                        )
-                else:
-                    self._players._seen.update(snapshot)
             self._players._online = set(self._console._active_players)
-            if tracker is not None:
-                join_times = tracker.join_times
-                self._players._join_times = {
-                    name: joined_at
-                    for name, joined_at in join_times.items()
-                    if name in self._players._online
-                }
+            self._players._join_times = {
+                name: joined_at
+                for name, joined_at in join_times.items()
+                if name in self._players._online
+            }
             self._players._refresh_online_list()
-            self._disconnect_player_history_tracker()
+            if not self._disconnect_player_history_tracker():
+                QMessageBox.warning(
+                    self,
+                    "Player history could not be saved",
+                    "Crucible could not finish saving recent-player history. "
+                    "The Console remains active; retry opening Players after "
+                    "resolving the file or permission issue.",
+                )
+                self._tabs.setCurrentWidget(self._console)
+                return
             self._connect_players_to_console()
         # Console is attached by the watcher lifecycle rather than load().
         # (System performance stats are now loaded as part of Info, above.)
