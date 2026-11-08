@@ -162,6 +162,9 @@ class ConsoleTab(QWidget):
     # lifecycle commands into the same state machine as GUI buttons.
     lifecycle_command_sent = pyqtSignal(str, str)  # instance_id, command
     open_terminal_requested = pyqtSignal()
+    online_player_joined = pyqtSignal(str)
+    online_player_left = pyqtSignal(str)
+    online_players_cleared = pyqtSignal()
 
     """
     Displays the live server log and allows sending commands.
@@ -559,13 +562,21 @@ class ConsoleTab(QWidget):
 
     @pyqtSlot(str)
     def _on_joined(self, name: str) -> None:
+        sender = self.sender()
+        if sender is not None and sender is not self._watcher:
+            return  # Drop a queued event from a watcher detached during a server switch.
         self._active_players.add(name)
         self._update_player_label()
+        self.online_player_joined.emit(name)
 
     @pyqtSlot(str)
     def _on_left(self, name: str) -> None:
+        sender = self.sender()
+        if sender is not None and sender is not self._watcher:
+            return  # Drop a queued event from a watcher detached during a server switch.
         self._active_players.discard(name)
         self._update_player_label()
+        self.online_player_left.emit(name)
 
     @pyqtSlot(float)
     def _on_server_started(self, secs: float) -> None:
@@ -573,15 +584,23 @@ class ConsoleTab(QWidget):
 
     @pyqtSlot()
     def _on_server_stopping(self) -> None:
+        sender = self.sender()
+        if sender is not None and sender is not self._watcher:
+            return  # Drop a queued event from a watcher detached during a server switch.
         self._active_players.clear()
         self._update_player_label()
+        self.online_players_cleared.emit()
         self._set_state("Stopping…", theme.PROGRESS)
 
     @pyqtSlot()
     def _on_log_rotated(self) -> None:
         """Server restarted — wipe stale player list and state."""
+        sender = self.sender()
+        if sender is not None and sender is not self._watcher:
+            return  # Drop a queued event from a watcher detached during a server switch.
         self._active_players.clear()
         self._update_player_label()
+        self.online_players_cleared.emit()
         self._last_tps = None
         self._last_mspt = None
         self._render_tps()

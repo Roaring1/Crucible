@@ -59,7 +59,7 @@ from ..process.startup_patterns import RE_SERVER_DONE, stale_starting_should_pro
 from ..process.tmux_manager import TmuxManager
 from ..process.watchdog import Watchdog
 from . import theme
-from .tabs import ConsoleTab, PlayersTab
+from .tabs import ConsoleTab
 from .thread_lifecycle import connect_thread_cleanup
 
 # Fallback "Done (Xs)!" detector used only while "starting", read straight off
@@ -179,6 +179,7 @@ class InstancePanel(QWidget):
             3: "_setup",
             4: "_info",
             5: "_config",
+            6: "_players",
             7: "_notes",
         }
         self._mods: QWidget | None = None
@@ -186,7 +187,7 @@ class InstancePanel(QWidget):
         self._setup: QWidget | None = None
         self._info: QWidget | None = None
         self._config: QWidget | None = None
-        self._players = PlayersTab()
+        self._players: QWidget | None = None
         self._notes: QWidget | None = None
         self._tps_poll_inflight = False
         self._world_summary_generation = 0
@@ -287,11 +288,43 @@ class InstancePanel(QWidget):
             from .tabs import ConfigTab
 
             return ConfigTab()
+        if index == 6:
+            from .tabs import PlayersTab
+
+            return PlayersTab()
         if index == 7:
             from .tabs import NotesTab
 
             return NotesTab(self._manager)
         raise IndexError(f"Unknown lazy workspace tab index: {index}")
+
+    def _connect_players_to_console(self) -> None:
+        """Relay current-instance player events to an opened Players page."""
+        if self._players is None:
+            return
+        self._disconnect_players_from_console()
+        self._console.online_player_joined.connect(self._players._on_joined)
+        self._console.online_player_left.connect(self._players._on_left)
+        self._console.online_players_cleared.connect(
+            self._players._on_server_stopped
+        )
+
+    def _disconnect_players_from_console(self) -> None:
+        """Stop live events reaching a Players page for the previous server."""
+        if self._players is None:
+            return
+        for signal, slot in (
+            (self._console.online_player_joined, self._players._on_joined),
+            (self._console.online_player_left, self._players._on_left),
+            (
+                self._console.online_players_cleared,
+                self._players._on_server_stopped,
+            ),
+        ):
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
 
     def _confirm_config_changes(self) -> bool:
         """No Config page means no unsaved Config edits can exist."""
@@ -463,8 +496,8 @@ class InstancePanel(QWidget):
         self._tabs.tabBar().setDrawBase(False)
 
         # Console is the normal landing page, so keep its controls ready when
-        # a server is selected. Six secondary pages are built on first
-        # selection; Players remains eager to observe live join/leave events.
+        # a server is selected. The seven secondary pages are built only when
+        # opened; Console owns live player events until Players is selected.
         self._console = ConsoleTab()
         self._tabs.addTab(self._console, "Console")
         for index, label in (
@@ -473,6 +506,7 @@ class InstancePanel(QWidget):
             (3, "Setup"),
             (4, "Diagnostics"),
             (5, "Config"),
+            (6, "Players"),
         ):
             placeholder = QWidget()
             placeholder.setObjectName("LazyWorkspacePage")
@@ -481,7 +515,6 @@ class InstancePanel(QWidget):
             )
             self._tab_placeholders[index] = placeholder
             self._tabs.addTab(placeholder, label)
-        self._tabs.addTab(self._players, "Players")
         notes_placeholder = QWidget()
         notes_placeholder.setObjectName("LazyWorkspacePage")
         notes_placeholder.setAccessibleName("Notes page, created when selected")
@@ -700,6 +733,7 @@ class InstancePanel(QWidget):
             return False
         if self._notes is not None:
             self._notes.flush()
+        self._disconnect_players_from_console()
         # Do not synchronously stop/wait/recreate the log QThread on every
         # sidebar click. _start_watcher() reuses it and queues a cheap reset.
         self._tps_timer.stop()
@@ -789,6 +823,7 @@ class InstancePanel(QWidget):
     def clear(self) -> None:
         if self._instance is not None:
             self.watchdog_unwatch_requested.emit(self._instance.id)
+        self._disconnect_players_from_console()
         if self._notes is not None:
             self._notes.flush()
         self._stop_watcher()
@@ -963,7 +998,6 @@ class InstancePanel(QWidget):
             self._watcher.log_rotated.connect(self._on_log_rotated)
             self._w_thread.started.connect(self._watcher.start)
             self._console.attach(instance, self._watcher)
-            self._players.attach_watcher(self._watcher)
             self._w_thread.start()
             return
 
@@ -971,14 +1005,12 @@ class InstancePanel(QWidget):
         # consumers, reconnect them to the same worker, and queue a reset in
         # that worker's event loop. No BlockingQueuedConnection and no wait().
         self._console.detach()
-        self._players.detach_watcher()
         self._console.attach(instance, self._watcher)
-        self._players.attach_watcher(self._watcher)
         self.watcher_reset_requested.emit(instance)
 
     def _stop_watcher(self) -> None:
         self._console.detach()
-        self._players.detach_watcher()
+        self._disconnect_players_from_console()
         if self._watcher:
             try:
                 self._watcher.server_started.disconnect(self._on_log_server_started)
@@ -1146,7 +1178,13 @@ class InstancePanel(QWidget):
         elif tab is self._world:
             self._world.load(inst)
         elif tab is self._players:
+            # Console receives worker-thread LogWatcher signals first. This
+            # synchronous GUI-thread handoff is race-safe: an earlier event is
+            # included in the snapshot; a later event is relayed after connect.
             self._players.load(inst)
+            self._players._online = set(self._console._active_players)
+            self._players._refresh_online_list()
+            self._connect_players_to_console()
         # Console is attached by the watcher lifecycle rather than load().
         # (System performance stats are now loaded as part of Info, above.)
         self._loaded_tabs.add(tab)

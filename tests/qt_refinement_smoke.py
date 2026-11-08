@@ -702,7 +702,7 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  # secondary pages up front in the test harness; the dedicated lazy-tab tests
  # separately assert that production startup leaves these pages deferred.
  panel=window._panel
- for page_index in (1,2,3,4,5,7):
+ for page_index in (1,2,3,4,5,6,7):
   panel._ensure_tab_created(page_index)
  assert panel._tabs.currentIndex()==0
  # Persisted Reduce Motion is tested against a temporary settings file, not

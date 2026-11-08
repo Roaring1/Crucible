@@ -507,7 +507,7 @@ def capture_previews(output: Path) -> list[Path]:
                     "inventory; the state-control focus boundary was not captured"
                 )
 
-            panel._tabs.setCurrentWidget(panel._players)
+            panel._tabs.setCurrentIndex(6)  # First-use creation mirrors selecting Players in More.
             panel._players._online = {"PreviewPlayer"}
             panel._players._refresh_online_list()
             selected.resize(1440, 900)

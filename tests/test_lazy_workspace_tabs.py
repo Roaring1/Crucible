@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -20,7 +21,7 @@ loaded = {
     for name in sys.modules
     if name.startswith("crucible.ui.tabs.")
 }
-assert loaded == {"console_tab", "players_tab"}, sorted(loaded)
+assert loaded == {"console_tab"}, sorted(loaded)
 
 # User-invoked dialogs and optional tray telemetry are also on demand.
 for name in (
@@ -58,17 +59,16 @@ assert "crucible.ui.tabs.backup_tab" not in sys.modules
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_instance_panel_defers_six_pages_without_changing_tab_contract(
+def test_instance_panel_defers_seven_pages_without_changing_tab_contract(
     tmp_path,
 ) -> None:
-    """Build secondary pages on demand while retaining fixed navigation slots."""
+    """Build seven secondary pages on demand while retaining fixed tab slots."""
     from PyQt6.QtWidgets import QApplication, QWidget
 
     from crucible.data.instance_manager import InstanceManager
     from crucible.data.instance_model import ServerInstance
     from crucible.process.log_watcher import LogWatcher
     from crucible.ui.instance_panel import InstancePanel
-    from crucible.ui.tabs.players_tab import PlayersTab
 
     app = QApplication.instance() or QApplication([])
     manager = InstanceManager(tmp_path / "registry")
@@ -93,9 +93,9 @@ def test_instance_panel_defers_six_pages_without_changing_tab_contract(
         assert panel._info is None
         assert panel._config is None
         assert panel._notes is None
-        assert isinstance(panel._players, PlayersTab)
-        assert panel._tabs.widget(6) is panel._players
-        assert set(panel._tab_placeholders) == {1, 2, 3, 4, 5, 7}
+        assert panel._players is None
+        assert panel._tabs.widget(6).objectName() == "LazyWorkspacePage"
+        assert set(panel._tab_placeholders) == {1, 2, 3, 4, 5, 6, 7}
 
         assert panel._has_mutating_operations() is False
         assert panel._confirm_config_changes() is True
@@ -127,9 +127,10 @@ def test_instance_panel_defers_six_pages_without_changing_tab_contract(
             assert panel._tabs.widget(index) is page
             assert panel._tabs.currentIndex() == 0
 
-        assert panel._tab_placeholders == {}
+        assert set(panel._tab_placeholders) == {6}
         assert panel._tabs.count() == 8
-        assert panel._tabs.widget(6) is panel._players
+        assert panel._players is None
+        assert panel._tabs.widget(6).objectName() == "LazyWorkspacePage"
         assert [panel._tabs.tabText(index) for index in range(8)] == [
             "Console",
             "Mods",
@@ -144,25 +145,82 @@ def test_instance_panel_defers_six_pages_without_changing_tab_contract(
         assert not panel._tabs.tabBar().isTabVisible(6)
         assert not panel._tabs.tabBar().isTabVisible(7)
 
-        # Players is deliberately eager: its live-online state must consume
-        # join/leave signals while Console remains selected. Persistence is
-        # still governed by PlayersTab.load(), a separate lifecycle.
+        # Console owns the live watcher from server selection. Events received
+        # before Players is opened are reflected in its first online snapshot.
         server_root = tmp_path / "server"
         server_root.mkdir()
         instance = ServerInstance(str(server_root), "Synthetic player history")
         watcher = LogWatcher(instance)
         panel._instance = instance
         panel._watcher = watcher
-        panel._players._fetch_avatar = lambda _name: None
-        panel._start_watcher(instance)
-        assert panel._players._watcher is watcher
+        panel._console.attach(instance, watcher)
+        assert panel._players is None
+        watcher.player_joined.emit("AlreadyOnline")
+        assert "AlreadyOnline" in panel._console._active_players
+
+        players_placeholder = panel._tabs.widget(6)
+        assert players_placeholder.objectName() == "LazyWorkspacePage"
+        players = panel._ensure_tab_created(6)
+        assert players is panel._players
+        assert panel._tab_placeholders == {}
         assert panel._tabs.currentIndex() == 0
-        watcher.player_joined.emit("HistoryPlayer")
-        watcher.player_left.emit("HistoryPlayer")
-        record = panel._players._seen["HistoryPlayer"]
-        assert record["sessions"] == 1
-        assert record["last_seen"] >= record["first_seen"]
-        assert "HistoryPlayer" not in panel._players._online
+        assert not panel._tabs.tabBar().isTabVisible(6)
+        players._fetch_avatar = lambda _name: None
+        panel._tabs.setCurrentIndex(6)
+        app.processEvents()
+        assert players._instance is instance
+        assert players._watcher is None, (
+            "Players receives Console's GUI-thread relay, not raw watcher events"
+        )
+        assert "AlreadyOnline" in players._online
+
+        # After the page is open, joins/leaves are relayed and history is
+        # persisted against the currently selected instance.
+        watcher.player_joined.emit("NewJoin")
+        assert "NewJoin" in players._online
+        assert players._seen["NewJoin"]["sessions"] == 1
+        watcher.player_left.emit("NewJoin")
+        assert "NewJoin" not in players._online
+        assert (
+            players._seen["NewJoin"]["last_seen"]
+            >= players._seen["NewJoin"]["first_seen"]
+        )
+
+        # Switch the selected server with Players already open. The old
+        # relay must disconnect before the new Console watcher starts.
+        second_root = tmp_path / "second-server"
+        second_root.mkdir()
+        second_instance = ServerInstance(str(second_root), "Second synthetic server")
+        second_watcher = LogWatcher(second_instance)
+
+        def attach_second_server(selected_instance):
+            assert selected_instance is second_instance
+            panel._watcher = second_watcher
+            panel._console.attach(selected_instance, second_watcher)
+
+        with (
+            patch.object(panel, "_ensure_watchdog", lambda: None),
+            patch.object(panel, "_request_world_start_summary", lambda *a, **k: None),
+            patch.object(panel, "_start_watcher", new=attach_second_server),
+        ):
+            assert panel.load(second_instance, status_hint="stopped")
+
+        watcher.player_joined.emit("LateOldServerEvent")
+        assert "LateOldServerEvent" not in panel._console._active_players
+        assert "LateOldServerEvent" not in players._seen
+        second_watcher.player_joined.emit("SecondServerPlayer")
+        assert "SecondServerPlayer" in panel._console._active_players
+        assert "SecondServerPlayer" not in players._seen, (
+            "Players must remain detached while it still represents the old instance"
+        )
+
+        panel._tabs.setCurrentIndex(6)
+        app.processEvents()
+        assert players._instance is second_instance
+        assert "SecondServerPlayer" in players._online
+        assert "SecondServerPlayer" not in players._seen or (
+            players._seen["SecondServerPlayer"].get("sessions", 0) == 0
+        ), "snapshotting an already-online player must not invent a join timestamp"
 
         # World operations must retain the Config editor's save/discard guard
         # even though the Config page can be constructed later.
