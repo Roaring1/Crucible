@@ -958,7 +958,8 @@ class StartTests(unittest.TestCase):
 
         with (
             patch.object(tm, "tmux_available", return_value=True),
-            patch.object(tm, "is_running", return_value=False),
+            patch.object(tm, "probe_running", return_value=False),
+            patch.object(tm, "_unmanaged_pids", return_value=[]),
             patch.object(tm, "_port_conflict_message", return_value=None),
             patch.object(tm, "_run", side_effect=fake),
             patch.object(tm, "_verify_started", return_value=(True, "")),
@@ -968,6 +969,93 @@ class StartTests(unittest.TestCase):
         command = calls[-1][-1]
         self.assertNotIn("tee ", command)
         self.assertIn("_crucible_code", command)
+
+
+class ProcessSafetyBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.instance = ServerInstance(
+            str(self.root), "GTNH", tmux_session="gtnh-safety-boundary"
+        )
+        self.tm = TmuxManager()
+
+    def test_start_refuses_matching_jvm_outside_tmux_even_without_port_conflict(self):
+        with (
+            patch.object(self.tm, "tmux_available", return_value=True),
+            patch.object(self.tm, "probe_running", return_value=False),
+            patch.object(self.tm, "_unmanaged_pids", return_value=[12345]),
+            patch.object(self.tm, "_port_conflict_message", return_value=None),
+            patch.object(self.tm, "_run") as run,
+        ):
+            ok, reason = self.tm.start(self.instance)
+
+        self.assertFalse(ok)
+        self.assertIn("12345", reason)
+        self.assertIn("outside", reason)
+        run.assert_not_called()
+
+    def test_start_fails_closed_when_procfs_inventory_is_incomplete(self):
+        with (
+            patch.object(self.tm, "tmux_available", return_value=True),
+            patch.object(self.tm, "probe_running", return_value=False),
+            patch.object(self.tm, "_unmanaged_pids", return_value=None),
+            patch.object(self.tm, "_run") as run,
+        ):
+            ok, reason = self.tm.start(self.instance)
+
+        self.assertFalse(ok)
+        self.assertIn("procfs", reason)
+        run.assert_not_called()
+
+    def test_start_fails_closed_when_tmux_session_probe_is_unknown(self):
+        with (
+            patch.object(self.tm, "tmux_available", return_value=True),
+            patch.object(self.tm, "probe_running", return_value=None),
+            patch.object(self.tm, "_unmanaged_pids") as inventory,
+            patch.object(self.tm, "_run") as run,
+        ):
+            ok, reason = self.tm.start(self.instance)
+
+        self.assertFalse(ok)
+        self.assertIn("Could not verify", reason)
+        inventory.assert_not_called()
+        run.assert_not_called()
+
+    def test_removal_with_tmux_missing_still_blocks_matching_jvm(self):
+        with (
+            patch.object(self.tm, "tmux_available", return_value=False),
+            patch.object(self.tm, "_unmanaged_pids", return_value=[4242]),
+            patch.object(self.tm, "_run") as run,
+        ):
+            safe, reason = self.tm.safe_to_remove(self.instance)
+
+        self.assertFalse(safe)
+        self.assertIn("4242", reason)
+        run.assert_not_called()
+
+    def test_removal_with_tmux_missing_fails_closed_on_unknown_procfs(self):
+        with (
+            patch.object(self.tm, "tmux_available", return_value=False),
+            patch.object(self.tm, "_unmanaged_pids", return_value=None),
+            patch.object(self.tm, "_run") as run,
+        ):
+            safe, reason = self.tm.safe_to_remove(self.instance)
+
+        self.assertFalse(safe)
+        self.assertIn("procfs", reason)
+        run.assert_not_called()
+
+    def test_removal_with_tmux_missing_allows_confirmed_absence(self):
+        with (
+            patch.object(self.tm, "tmux_available", return_value=False),
+            patch.object(self.tm, "_unmanaged_pids", return_value=[]),
+            patch.object(self.tm, "_run") as run,
+        ):
+            safe, reason = self.tm.safe_to_remove(self.instance)
+
+        self.assertTrue(safe)
+        self.assertIn("no matching server process", reason)
+        run.assert_not_called()
 
 
 if __name__ == "__main__":
