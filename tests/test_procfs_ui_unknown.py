@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -31,7 +32,14 @@ def test_system_tab_does_not_show_offline_when_procfs_scan_is_unknown():
         return_value=(100.0, 1000.0),
     ):
         tab.load(instance)
+        tab.show()
+        deadline = time.monotonic() + 3.0
+        while tab._thread is not None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+        app.processEvents()
 
+    assert tab._thread is None
     assert tab._server_card["cpu"].text() == "Unavailable"
     assert tab._server_card["mem"].text() == "Unavailable"
     assert tab._server_card["pid"].text() == "Process scan unavailable"
