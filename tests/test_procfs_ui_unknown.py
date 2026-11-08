@@ -43,11 +43,21 @@ def test_system_tab_does_not_show_offline_when_procfs_scan_is_unknown():
 def test_player_list_does_not_send_console_command_when_procfs_is_unknown():
     app = _app()
     widget = _PlayerListWidget("whitelist.json", allow_add=True)
-    widget._instance = SimpleNamespace(
+    instance = SimpleNamespace(
         id="server-a",
         path="/srv/server-a",
         tmux_session="server-a",
     )
+    # The production UI enables mutations only after a valid permission-list
+    # load (a missing file is a valid empty list). Keep this fixture compatible
+    # with the pre-async branch on which PR #69's own CI runs.
+    if hasattr(widget, "begin_async_load"):
+        widget.begin_async_load(instance, "whitelist.json", generation=1)
+        widget.apply_async_data(
+            1, {"exists": False, "data": None, "error": ""}
+        )
+    else:
+        widget._instance = instance
     widget._name_input.setText("ExamplePlayer")
     widget._tmux = Mock()
     widget._tmux.probe_running.return_value = False
