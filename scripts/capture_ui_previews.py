@@ -446,6 +446,10 @@ def capture_previews(output: Path) -> list[Path]:
         ):
             selected = MainWindow(manager)
             panel = selected._panel
+            # The preview driver inspects every page directly. Construct Players
+            # here so its later capture block retains the normal selection path;
+            # production startup leaves the page deferred until More -> Players.
+            panel._ensure_tab_created(6)
             selected._sidebar.update_status(pack_instance.id, "running")
             selected._sidebar.update_status(prism_instance.id, "starting")
             selected._sidebar.update_status(missing_instance.id, "missing")
@@ -507,7 +511,7 @@ def capture_previews(output: Path) -> list[Path]:
                     "inventory; the state-control focus boundary was not captured"
                 )
 
-            panel._tabs.setCurrentIndex(6)  # First-use creation mirrors selecting Players in More.
+            panel._tabs.setCurrentWidget(panel._players)
             panel._players._online = {"PreviewPlayer"}
             panel._players._refresh_online_list()
             selected.resize(1440, 900)
