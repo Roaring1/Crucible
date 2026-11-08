@@ -22,6 +22,15 @@ loaded = {
 }
 assert loaded == {"console_tab", "players_tab"}, sorted(loaded)
 
+# User-invoked dialogs and optional tray telemetry are also on demand.
+for name in (
+    "crucible.ui.add_dialog",
+    "crucible.ui.shortcuts_dialog",
+    "crucible.ui.system_tray",
+    "crucible.process.machine_resources",
+):
+    assert name not in sys.modules, name
+
 # Public package exports still resolve on demand without importing unrelated
 # pages alongside the one requested.
 from crucible.ui import tabs
