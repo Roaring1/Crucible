@@ -19,13 +19,14 @@ from crucible.exporters.client_export import ExportResult
 from crucible.mods import distribution_catalog
 from crucible.sharing.gofile import GofileUploadResult
 from crucible.sharing.history import ShareHistoryStore
+from crucible.ui import share_players_dialog
 from crucible.ui.share_players_dialog import (
     SharePlayersDialog,
-    _PrepareWorker,
-    _UploadWorker,
     _format_transfer_progress,
     _is_redundant_catalog_warning,
     _next_pack_path,
+    _PrepareWorker,
+    _UploadWorker,
     _verified_cached_pack,
 )
 
@@ -132,7 +133,7 @@ class SharePlayersDialogTests(unittest.TestCase):
             archive.writestr("Demo Server/.minecraft/config/test.toml", config)
             archive.writestr("Demo Server/.minecraft/resourcepacks/ExamplePack.zip", resource_pack)
             archive.writestr(manifest_path, json.dumps(manifest))
-        return ExportResult(
+        result = ExportResult(
             path=str(path),
             fmt="prism",
             mod_count=1,
@@ -144,6 +145,131 @@ class SharePlayersDialogTests(unittest.TestCase):
             ],
             archive_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         )
+        # Direct GUI-state tests inject a result that has already crossed the
+        # worker verification boundary. Dedicated worker tests exercise the
+        # actual ZIP/hash/CRC path and its thread affinity.
+        result._validated_review_manifest = manifest
+        return result
+
+    def _prepare_result_through_worker(self, result):
+        if hasattr(result, "_validated_review_manifest"):
+            del result._validated_review_manifest
+        outcomes = []
+        instance = SimpleNamespace(
+            path=str(Path(result.path).parent),
+            name="Demo Server",
+            minecraft_version="1.21.1",
+            loader="neoforge",
+            loader_version="21.1.233",
+        )
+        worker = _PrepareWorker(
+            instance,
+            Path(result.path),
+            "/synthetic/profile",
+            False,
+        )
+        worker.done.connect(outcomes.append)
+        with (
+            patch(
+                "crucible.ui.share_players_dialog.client_export.compute_input_fingerprint",
+                return_value="synthetic-fingerprint",
+            ),
+            patch(
+                "crucible.ui.share_players_dialog._find_reusable_pack",
+                return_value=None,
+            ),
+            patch(
+                "crucible.ui.share_players_dialog.client_export.export",
+                return_value=result,
+            ),
+        ):
+            worker.run()
+        self.assertEqual(len(outcomes), 1)
+        return outcomes[0]
+
+    def test_prepare_worker_verifies_archive_off_gui_thread(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "prepared.zip"
+            result = self._result_archive(output)
+            del result._validated_review_manifest
+            self.assertFalse(hasattr(result, "_validated_review_manifest"))
+            main_thread = threading.get_ident()
+            verifier_threads = []
+            outcomes = []
+
+            real_verify = share_players_dialog._verify_review_archive
+
+            def observe_verifier(*args, **kwargs):
+                verifier_threads.append(threading.get_ident())
+                return real_verify(*args, **kwargs)
+
+            instance = SimpleNamespace(
+                path=str(Path(tmp) / "server"),
+                name="Demo Server",
+                minecraft_version="1.21.1",
+                loader="neoforge",
+                loader_version="21.1.233",
+            )
+            worker = _PrepareWorker(instance, output, "/synthetic/profile", False)
+            worker.done.connect(outcomes.append)
+
+            with (
+                patch(
+                    "crucible.ui.share_players_dialog.client_export.compute_input_fingerprint",
+                    return_value="synthetic-fingerprint",
+                ),
+                patch(
+                    "crucible.ui.share_players_dialog._find_reusable_pack",
+                    return_value=None,
+                ),
+                patch(
+                    "crucible.ui.share_players_dialog.client_export.export",
+                    return_value=result,
+                ),
+                patch(
+                    "crucible.ui.share_players_dialog._verify_review_archive",
+                    side_effect=observe_verifier,
+                ),
+            ):
+                thread = threading.Thread(target=worker.run)
+                thread.start()
+                thread.join(timeout=5.0)
+                self.assertFalse(thread.is_alive(), "archive verification worker did not finish")
+
+            self.app.processEvents()
+            self.assertEqual(len(outcomes), 1)
+            self.assertTrue(outcomes[0].ok, outcomes[0].error)
+            self.assertIsInstance(
+                outcomes[0]._validated_review_manifest,
+                dict,
+            )
+            self.assertEqual(len(verifier_threads), 1)
+            self.assertNotEqual(verifier_threads[0], main_thread)
+
+    def test_gui_review_callback_does_not_reopen_or_rehash_verified_zip(self):
+        dialog = self._dialog()
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._result_archive(Path(tmp) / "pack.zip")
+            with (
+                patch(
+                    "crucible.ui.share_players_dialog.zipfile.ZipFile",
+                    side_effect=AssertionError("GUI callback reopened the ZIP"),
+                ),
+                patch(
+                    "crucible.ui.share_players_dialog._verify_review_archive",
+                    side_effect=AssertionError("GUI callback rehashed the ZIP"),
+                ),
+                patch(
+                    "crucible.exporters.client_export._sha256_file",
+                    side_effect=AssertionError("GUI callback recalculated archive SHA-256"),
+                ),
+            ):
+                dialog._on_pack_ready(result)
+
+            self.assertEqual(dialog._phase, "review")
+            self.assertIn("EXACT INCLUDED PAYLOAD FILES", dialog._review.toPlainText())
+            self.assertFalse(dialog._upload_btn.isEnabled())
+        dialog.close()
 
     def test_local_player_pack_name_is_clear_and_never_overwrites(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -697,7 +823,7 @@ class SharePlayersDialogTests(unittest.TestCase):
                         payload = b"changed after build = true\\n"
                     archive.writestr(name, payload)
 
-            dialog._on_pack_ready(result)
+            dialog._on_pack_ready(self._prepare_result_through_worker(result))
 
             self.assertEqual(dialog._phase, "error")
             self.assertIsNone(dialog._result)
@@ -732,7 +858,7 @@ class SharePlayersDialogTests(unittest.TestCase):
                     archive.writestr(name, payload)
             result.archive_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
 
-            dialog._on_pack_ready(result)
+            dialog._on_pack_ready(self._prepare_result_through_worker(result))
 
             self.assertEqual(dialog._phase, "error")
             self.assertIsNone(dialog._result)
@@ -767,7 +893,7 @@ class SharePlayersDialogTests(unittest.TestCase):
                     archive.writestr(name, payload)
             result.archive_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
 
-            dialog._on_pack_ready(result)
+            dialog._on_pack_ready(self._prepare_result_through_worker(result))
 
             self.assertEqual(dialog._phase, "error")
             self.assertIsNone(dialog._result)
@@ -795,7 +921,7 @@ class SharePlayersDialogTests(unittest.TestCase):
                     archive.writestr(name, payload)
             result.archive_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
 
-            dialog._on_pack_ready(result)
+            dialog._on_pack_ready(self._prepare_result_through_worker(result))
 
             self.assertEqual(dialog._phase, "error")
             self.assertIsNone(dialog._result)
@@ -819,10 +945,14 @@ class SharePlayersDialogTests(unittest.TestCase):
                     archive.writestr(name, payload)
             result.archive_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
 
-            dialog._on_pack_ready(result)
+            dialog._on_pack_ready(self._prepare_result_through_worker(result))
 
             self.assertEqual(dialog._phase, "error")
             self.assertIsNone(dialog._result)
+            self.assertFalse(
+                share_players_dialog._cache_metadata_path(archive_path).exists(),
+                "an invalid archive must never receive a reusable cache sidecar",
+            )
             self.assertIn("manifest root is not a JSON object", dialog._status.text())
             self.assertFalse(dialog._upload_btn.isEnabled())
             self.assertEqual(dialog._history_store.load()[-1]["event"], "build-failed")
@@ -873,7 +1003,9 @@ class SharePlayersDialogTests(unittest.TestCase):
             with patch.object(distribution_catalog, "load_catalog", side_effect=load_test_catalog):
                 result = client_export.export(instance, output, fmt="prism")
                 self.assertTrue(result.ok, result.error)
-                dialog._on_pack_ready(result)
+                prepared = self._prepare_result_through_worker(result)
+                self.assertTrue(prepared.ok, prepared.error)
+                dialog._on_pack_ready(prepared)
 
             report = dialog._review.toPlainText()
             self.assertIn("NOT BUNDLED — REQUIRED MANUAL MOD DOWNLOADS", report)

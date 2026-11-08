@@ -360,6 +360,26 @@ def _verify_review_archive(archive_path: Path, expected_archive_sha256: str, man
     # Reading each entry to EOF above also checks its ZIP CRC.
 
 
+def _load_and_verify_review_archive(
+    archive_path: Path,
+    expected_archive_sha256: str,
+    manifest_path: str,
+) -> dict:
+    """Read and fully verify the review manifest before the GUI sees a pack."""
+    if not isinstance(manifest_path, str) or not manifest_path:
+        raise ValueError("manifest path is missing")
+    with zipfile.ZipFile(archive_path, "r") as archive:
+        manifest = json.loads(archive.read(manifest_path).decode("utf-8"))
+    manifest = _validate_review_manifest(manifest)
+    _verify_review_archive(
+        archive_path,
+        expected_archive_sha256,
+        manifest_path,
+        manifest,
+    )
+    return manifest
+
+
 def _next_pack_path(directory: Path, name: str) -> Path:
     """Choose a clear, non-overwriting vN filename for a local player ZIP."""
     stem = _safe_stem(name)
@@ -554,7 +574,7 @@ def _verified_cached_pack(archive_path: Path, expected_fingerprint: str):
         privacy_review = manifest.get("privacyReview")
         if not isinstance(privacy_review, dict):
             return None
-        return client_export.ExportResult(
+        result = client_export.ExportResult(
             path=str(archive_path),
             fmt="prism",
             mod_count=mod_count,
@@ -565,6 +585,11 @@ def _verified_cached_pack(archive_path: Path, expected_fingerprint: str):
             archive_sha256=actual_archive_sha,
             input_fingerprint=expected_fingerprint,
         )
+        # The cache validator has already checked exact member membership,
+        # paths, sizes, SHA-256, CRC, and current review policy. Carry that
+        # validated manifest to the GUI instead of hashing the same ZIP again.
+        result._validated_review_manifest = manifest
+        return result
     except (OSError, ValueError, TypeError, KeyError, zipfile.BadZipFile, RuntimeError):
         return None
 
@@ -610,6 +635,7 @@ class _PrepareWorker(QObject):
                 fmt="prism",
             )
             result = _find_reusable_pack(self._output.parent, fingerprint)
+            reused_pack = result is not None
             if result is not None:
                 # This reservation was created before the worker started. A
                 # cache hit should reuse the existing immutable ZIP instead.
@@ -636,8 +662,6 @@ class _PrepareWorker(QObject):
                     include_resourcepacks=self._include_resourcepacks,
                     expected_input_fingerprint=fingerprint,
                 )
-                if result.ok:
-                    _write_cache_metadata(result)
         except OSError as exc:
             result = client_export.ExportResult(error=str(exc))
         except Exception as exc:
@@ -659,6 +683,32 @@ class _PrepareWorker(QObject):
                         "The player ZIP was built, but Crucible could not restrict "
                         f"its local file permissions ({exc}). The unprotected artifact "
                         "was removed where possible and no upload is allowed."
+                    )
+                )
+        if result.ok:
+            try:
+                manifest = getattr(result, "_validated_review_manifest", None)
+                if not isinstance(manifest, dict):
+                    manifest = _load_and_verify_review_archive(
+                        Path(result.path),
+                        result.archive_sha256,
+                        result.manifest_path,
+                    )
+                result._validated_review_manifest = manifest
+                if not reused_pack:
+                    _write_cache_metadata(result)
+            except (
+                OSError,
+                zipfile.BadZipFile,
+                KeyError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+            ) as exc:
+                result = client_export.ExportResult(
+                    error=(
+                        "Manifest verification failed; nothing can be uploaded: "
+                        f"{exc}"
                     )
                 )
         self.done.emit(result)
@@ -1233,7 +1283,9 @@ class SharePlayersDialog(QDialog):
             self._archive_sha256 = ""
             self._phase = "error"
             self._record_history("build-failed", error_code="build-failed")
-            self._status.setText("Pack preparation failed. No upload was started.")
+            self._status.setText(
+                result.error or "Pack preparation failed. No upload was started."
+            )
             self._review.setPlainText(result.error or "Pack preparation failed.")
             self._prepare_btn.setEnabled(True)
             self._browse_source.setEnabled(True)
@@ -1248,27 +1300,21 @@ class SharePlayersDialog(QDialog):
         self._phase = "review"
         self._open_local_btn.setEnabled(True)
 
-        try:
-            if not isinstance(result.manifest_path, str) or not result.manifest_path:
-                raise ValueError("manifest path is missing")
-            with zipfile.ZipFile(self._archive_path, "r") as archive:
-                manifest = json.loads(archive.read(result.manifest_path).decode("utf-8"))
-            manifest = _validate_review_manifest(manifest)
-            _verify_review_archive(
-                self._archive_path,
-                result.archive_sha256,
-                result.manifest_path,
-                manifest,
-            )
-        except (OSError, zipfile.BadZipFile, KeyError, TypeError, ValueError) as exc:
+        manifest = getattr(result, "_validated_review_manifest", None)
+        if not isinstance(manifest, dict):
+            # The worker is the only place allowed to perform full archive I/O.
+            # A result without its verified manifest is never reviewable.
             self._record_history("build-failed", error_code="build-failed")
             self._result = None
             self._phase = "error"
-            self._status.setText(f"Manifest verification failed; nothing can be uploaded: {exc}")
+            self._status.setText(
+                "Manifest verification did not complete in the preparation worker; nothing can be uploaded."
+            )
             self._prepare_btn.setEnabled(True)
             self._browse_source.setEnabled(True)
             self._source.setEnabled(True)
             self._resourcepacks.setEnabled(True)
+            self._open_local_btn.setEnabled(False)
             return
 
         lines = [
