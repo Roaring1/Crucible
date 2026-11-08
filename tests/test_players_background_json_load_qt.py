@@ -287,3 +287,108 @@ def test_missing_player_file_keeps_not_found_state_and_does_not_enable_early(tmp
     finally:
         widget.close()
         app.processEvents()
+
+
+def test_unavailable_seen_file_with_live_event_is_never_replaced(tmp_path, monkeypatch):
+    app = _app()
+    instance = _server(tmp_path / "server")
+    seen_path = Path(instance.path) / ".crucible" / "players_seen.json"
+    original_bytes = b'{"Prior": {"sessions": 4}}'
+    seen_path.write_bytes(original_bytes)
+    tab = players_tab.PlayersTab()
+    original = players_tab._read_json_file
+    read_started = threading.Event()
+    release_read = threading.Event()
+
+    def unavailable_seen_read(path: Path):
+        if path.name == "players_seen.json":
+            read_started.set()
+            release_read.wait(2.0)
+            raise PermissionError("simulated read denial")
+        return original(path)
+
+    monkeypatch.setattr(players_tab, "_read_json_file", unavailable_seen_read)
+
+    try:
+        tab.load(instance)
+        assert read_started.wait(1.0)
+        tab._record_seen("LiveDuringFailure", joined=True)
+        release_read.set()
+        assert _wait(
+            lambda: not tab._seen_loading and not tab._player_data_threads
+        )
+
+        assert tab._seen_persistence_blocked
+        assert not tab._history_status.isHidden()
+        assert tab._seen["LiveDuringFailure"]["sessions"] == 1
+        assert tab._seen_updates_during_load["LiveDuringFailure"]["joined"] == 1
+        tab._save_seen()
+        assert seen_path.read_bytes() == original_bytes
+    finally:
+        release_read.set()
+        _wait(lambda: not tab._player_data_threads)
+        tab.close()
+        app.processEvents()
+
+
+def test_worker_marks_oversized_and_malformed_history_unavailable(tmp_path):
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b" " * (players_tab._MAX_PLAYER_JSON_BYTES + 1))
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{not-json", encoding="utf-8")
+
+    oversized_result = players_tab._PlayerDataLoadWorker._read(oversized)
+    malformed_result = players_tab._PlayerDataLoadWorker._read(malformed)
+
+    assert oversized_result["exists"]
+    assert oversized_result["data"] is None
+    assert oversized_result["error"]
+    assert malformed_result["exists"]
+    assert malformed_result["data"] is None
+    assert malformed_result["error"]
+
+
+def test_permission_list_read_errors_and_invalid_roots_remain_non_editable(tmp_path):
+    app = _app()
+    instance = SimpleNamespace(path=str(tmp_path))
+    widget = players_tab._PlayerListWidget("whitelist.json", allow_add=True)
+
+    try:
+        source = tmp_path / "whitelist.json"
+        original_bytes = b'{"existing": "source bytes"}'
+        for payload in (
+            {"exists": True, "data": None, "error": "permission denied"},
+            {"exists": True, "data": {"name": "not-a-list"}, "error": ""},
+            {"exists": True, "data": [{"name": "valid"}, "invalid-row"], "error": ""},
+        ):
+            source.write_bytes(original_bytes)
+            widget.begin_async_load(instance, "whitelist.json", generation=7)
+            widget.apply_async_data(7, payload)
+            assert not widget._loading
+            assert not widget._editable
+            assert not widget._table.isEnabled()
+            assert not widget._add_btn.isEnabled()
+            assert "editing disabled" in widget._status.text()
+            widget._save()
+            assert source.read_bytes() == original_bytes
+    finally:
+        widget.close()
+        app.processEvents()
+
+
+def test_missing_permission_file_remains_creatable(tmp_path):
+    app = _app()
+    instance = SimpleNamespace(path=str(tmp_path))
+    widget = players_tab._PlayerListWidget("whitelist.json", allow_add=True)
+
+    try:
+        widget.begin_async_load(instance, "whitelist.json", generation=8)
+        widget.apply_async_data(
+            8, {"exists": False, "data": None, "error": ""}
+        )
+        assert not widget._loading
+        assert widget._editable
+        assert widget._add_btn.isEnabled()
+    finally:
+        widget.close()
+        app.processEvents()

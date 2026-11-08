@@ -88,8 +88,12 @@ class _PlayerDataLoadWorker(QObject):
     @staticmethod
     def _read(path: Path) -> dict:
         try:
-            if not path.exists():
-                return {"exists": False, "data": None, "error": ""}
+            path.stat()
+        except FileNotFoundError:
+            return {"exists": False, "data": None, "error": ""}
+        except OSError as exc:
+            return {"exists": True, "data": None, "error": str(exc)}
+        try:
             return {"exists": True, "data": _read_json_file(path), "error": ""}
         except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             return {"exists": True, "data": None, "error": str(exc)}
@@ -330,6 +334,7 @@ class PlayersTab(QWidget):
         self._player_data_threads: list[QThread] = []
         self._player_data_workers: list[_PlayerDataLoadWorker] = []
         self._seen_loading = False
+        self._seen_persistence_blocked = False
         self._seen_updates_during_load: dict[str, dict] = {}
         self._seen_deleted_during_load: set[str] = set()
         self._tmux = TmuxManager()
@@ -382,6 +387,14 @@ class PlayersTab(QWidget):
         hint.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 10px;")
         layout.addWidget(hint)
 
+        self._history_status = QLabel("")
+        self._history_status.setObjectName("PlayerHistoryLoadStatus")
+        self._history_status.setWordWrap(True)
+        self._history_status.setAccessibleName("Player history persistence status")
+        self._history_status.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 10px;")
+        self._history_status.hide()
+        layout.addWidget(self._history_status)
+
         sub = QTabWidget()
         sub.setAccessibleName("Whitelist, operator and banned player lists")
         sub.setDocumentMode(True)
@@ -409,6 +422,9 @@ class PlayersTab(QWidget):
         self._seen = {}
         self._seen_path = Path(instance.path) / ".crucible" / "players_seen.json"
         self._seen_loading = True
+        self._seen_persistence_blocked = False
+        self._history_status.clear()
+        self._history_status.hide()
         self._seen_updates_during_load = {}
         self._seen_deleted_during_load = set()
         self._refresh_online_list()
@@ -451,56 +467,96 @@ class PlayersTab(QWidget):
 
     @pyqtSlot(int, object)
     def _on_player_data_loaded(self, generation: int, result: object) -> None:
-        if generation != self._player_data_generation or not isinstance(result, dict):
+        if generation != self._player_data_generation:
+            return
+        if not isinstance(result, dict):
+            self._seen_loading = False
+            self._seen_persistence_blocked = True
+            self._history_status.setText(
+                "Player history could not be read. Live changes are held in memory; "
+                "the existing file is protected. Reselect this server to retry."
+            )
+            self._history_status.show()
             return
 
-        seen_payload = result.get("seen", {})
-        loaded_seen = seen_payload.get("data") if isinstance(seen_payload, dict) else None
-        if isinstance(loaded_seen, dict):
-            seen = {
-                name: record
-                for name, record in loaded_seen.items()
-                if isinstance(name, str) and isinstance(record, dict)
-            }
-        else:
-            seen = {}
-
-        # Log-watcher join/leave events may arrive while JSON is being read.
-        # Merge those deltas over the disk snapshot instead of losing them.
-        pending_history_changes = bool(
-            self._seen_updates_during_load or self._seen_deleted_during_load
+        seen_payload = result.get("seen")
+        loaded_seen = (
+            seen_payload.get("data") if isinstance(seen_payload, dict) else None
         )
-        for name, update in self._seen_updates_during_load.items():
-            record = dict(seen.get(name, {}))
-            if record.get("first_seen") is None:
-                record["first_seen"] = update.get("first_seen")
-            record["last_seen"] = update.get("last_seen")
-            if update.get("joined"):
-                try:
-                    sessions = int(record.get("sessions", 0))
-                except (TypeError, ValueError, OverflowError):
-                    sessions = 0
-                record["sessions"] = sessions + int(update["joined"])
-            if update.get("seconds_played"):
-                try:
-                    seconds_played = float(record.get("seconds_played", 0.0))
-                except (TypeError, ValueError, OverflowError):
-                    seconds_played = 0.0
-                record["seconds_played"] = (
-                    seconds_played + float(update["seconds_played"])
-                )
-            seen[name] = record
-        for name in self._seen_deleted_during_load:
-            seen.pop(name, None)
+        seen_exists = (
+            bool(seen_payload.get("exists", False))
+            if isinstance(seen_payload, dict) else True
+        )
+        seen_error = (
+            not isinstance(seen_payload, dict)
+            or bool(seen_payload.get("error"))
+            or (seen_exists and not isinstance(loaded_seen, dict))
+            or (
+                isinstance(loaded_seen, dict)
+                and any(not isinstance(record, dict) for record in loaded_seen.values())
+            )
+        )
 
-        self._seen = seen
-        self._seen_loading = False
-        self._seen_updates_during_load = {}
-        self._seen_deleted_during_load = set()
-        # Do not create/rewrite players_seen.json just because it was read.
-        # Persist only live watcher/forget changes that arrived during loading.
-        if pending_history_changes:
-            self._save_seen()
+        if seen_error:
+            # Do not reinterpret an unreadable, malformed, oversized, or
+            # wrong-schema existing file as an empty history. Keep watcher
+            # deltas in memory and prevent _save_seen() from replacing it.
+            self._seen_loading = False
+            self._seen_persistence_blocked = True
+            self._history_status.setText(
+                "Player history could not be read. Live changes are held in memory; "
+                "the existing file is protected. Reselect this server to retry."
+            )
+            self._history_status.show()
+        else:
+            seen = (
+                {
+                    name: record
+                    for name, record in loaded_seen.items()
+                    if isinstance(name, str)
+                }
+                if isinstance(loaded_seen, dict) else {}
+            )
+
+            # Log-watcher join/leave events may arrive while JSON is being read.
+            # Merge those deltas over the disk snapshot instead of losing them.
+            pending_history_changes = bool(
+                self._seen_updates_during_load or self._seen_deleted_during_load
+            )
+            for name, update in self._seen_updates_during_load.items():
+                record = dict(seen.get(name, {}))
+                if record.get("first_seen") is None:
+                    record["first_seen"] = update.get("first_seen")
+                record["last_seen"] = update.get("last_seen")
+                if update.get("joined"):
+                    try:
+                        sessions = int(record.get("sessions", 0))
+                    except (TypeError, ValueError, OverflowError):
+                        sessions = 0
+                    record["sessions"] = sessions + int(update["joined"])
+                if update.get("seconds_played"):
+                    try:
+                        seconds_played = float(record.get("seconds_played", 0.0))
+                    except (TypeError, ValueError, OverflowError):
+                        seconds_played = 0.0
+                    record["seconds_played"] = (
+                        seconds_played + float(update["seconds_played"])
+                    )
+                seen[name] = record
+            for name in self._seen_deleted_during_load:
+                seen.pop(name, None)
+
+            self._seen = seen
+            self._seen_loading = False
+            self._seen_persistence_blocked = False
+            self._seen_updates_during_load = {}
+            self._seen_deleted_during_load = set()
+            self._history_status.clear()
+            self._history_status.hide()
+            # Do not create/rewrite players_seen.json just because it was read.
+            # Persist only live watcher/forget changes that arrived during loading.
+            if pending_history_changes:
+                self._save_seen()
 
         list_payloads = result.get("lists", {})
         if isinstance(list_payloads, dict):
@@ -565,6 +621,7 @@ class PlayersTab(QWidget):
     def _load_seen(self) -> None:
         self._seen = {}
         self._seen_loading = False
+        self._seen_persistence_blocked = False
         self._seen_updates_during_load = {}
         self._seen_deleted_during_load = set()
         if self._instance is None:
@@ -572,15 +629,33 @@ class PlayersTab(QWidget):
             return
         self._seen_path = Path(self._instance.path) / ".crucible" / "players_seen.json"
         try:
-            if self._seen_path.exists():
+            try:
+                self._seen_path.stat()
+            except FileNotFoundError:
+                pass
+            else:
                 data = _read_json_file(self._seen_path)
-                if isinstance(data, dict):
-                    self._seen = {k: v for k, v in data.items() if isinstance(v, dict)}
-        except (json.JSONDecodeError, OSError):
-            self._seen = {}
+                if not isinstance(data, dict) or any(
+                    not isinstance(record, dict) for record in data.values()
+                ):
+                    raise ValueError("player history has an invalid JSON schema")
+                self._seen = data
+            self._history_status.clear()
+            self._history_status.hide()
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError, ValueError):
+            self._seen_persistence_blocked = True
+            self._history_status.setText(
+                "Player history could not be read. Live changes are held in memory; "
+                "the existing file is protected. Reselect this server to retry."
+            )
+            self._history_status.show()
 
     def _save_seen(self) -> None:
-        if self._seen_path is None or self._seen_loading:
+        if (
+            self._seen_path is None
+            or self._seen_loading
+            or self._seen_persistence_blocked
+        ):
             return
         try:
             self._seen_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1025,6 +1100,7 @@ class _PlayerListWidget(QWidget):
         self._render_generation = 0
         self._render_cursor = 0
         self._loading = False
+        self._editable = False
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -1081,6 +1157,7 @@ class _PlayerListWidget(QWidget):
         self._load_generation = generation
         self._render_generation += 1
         self._loading = True
+        self._editable = False
         self._instance = instance
         self._path = Path(instance.path) / filename
         self._data = []
@@ -1092,7 +1169,24 @@ class _PlayerListWidget(QWidget):
         self._status.setText(f"{filename} loading…")
 
     def apply_async_data(self, generation: int, payload: object) -> None:
-        if generation != self._load_generation or not isinstance(payload, dict):
+        if generation != self._load_generation:
+            return
+        if not isinstance(payload, dict):
+            self._data = []
+            self._table.setRowCount(0)
+            self._finish_async_load(
+                f"{self._filename} could not be read; editing disabled",
+                editable=False,
+            )
+            return
+        if payload.get("error"):
+            self._data = []
+            self._table.setRowCount(0)
+            self._finish_async_load(
+                f"{self._filename} could not be read safely; editing disabled. "
+                "Reselect the server to retry.",
+                editable=False,
+            )
             return
         if not payload.get("exists", False):
             self._data = []
@@ -1101,11 +1195,21 @@ class _PlayerListWidget(QWidget):
             return
 
         data = payload.get("data")
-        self._data = (
-            [entry for entry in data if isinstance(entry, dict)]
-            if isinstance(data, list)
-            else []
-        )
+        if not isinstance(data, list) or any(
+            not isinstance(entry, dict) for entry in data
+        ):
+            # Never convert an unreadable, malformed, or wrong-schema file into
+            # an editable empty list: a later mutation could erase server data.
+            self._data = []
+            self._table.setRowCount(0)
+            self._finish_async_load(
+                f"{self._filename} could not be read safely; editing disabled. "
+                "Reselect the server to retry.",
+                editable=False,
+            )
+            return
+
+        self._data = data
         self._render_generation += 1
         render_generation = self._render_generation
         self._render_cursor = 0
@@ -1118,12 +1222,13 @@ class _PlayerListWidget(QWidget):
             0, lambda g=render_generation: self._render_async_chunk(g)
         )
 
-    def _finish_async_load(self, status: str) -> None:
+    def _finish_async_load(self, status: str, *, editable: bool = True) -> None:
         self._loading = False
-        self._table.setEnabled(True)
+        self._editable = editable
+        self._table.setEnabled(editable)
         if self._allow_add:
-            self._name_input.setEnabled(True)
-            self._add_btn.setEnabled(True)
+            self._name_input.setEnabled(editable)
+            self._add_btn.setEnabled(editable)
         self._status.setText(status)
 
     def _render_async_chunk(self, generation: int) -> None:
@@ -1155,17 +1260,48 @@ class _PlayerListWidget(QWidget):
         self._load_generation += 1
         self._render_generation += 1
         self._loading = False
+        self._editable = False
         self._instance = instance
         self._path = Path(instance.path) / filename
-        if not self._path.exists():
+        try:
+            self._path.stat()
+        except FileNotFoundError:
             self._data = []
             self._table.setRowCount(0)
             self._finish_async_load(f"{filename} not found")
             return
-        try:
-            self._data = _read_json_file(self._path)
-        except (json.JSONDecodeError, OSError):
+        except OSError:
             self._data = []
+            self._table.setRowCount(0)
+            self._finish_async_load(
+                f"{filename} could not be read safely; editing disabled. "
+                "Reselect the server to retry.",
+                editable=False,
+            )
+            return
+        try:
+            data = _read_json_file(self._path)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            self._data = []
+            self._table.setRowCount(0)
+            self._finish_async_load(
+                f"{filename} could not be read safely; editing disabled. "
+                "Reselect the server to retry.",
+                editable=False,
+            )
+            return
+        if not isinstance(data, list) or any(
+            not isinstance(entry, dict) for entry in data
+        ):
+            self._data = []
+            self._table.setRowCount(0)
+            self._finish_async_load(
+                f"{filename} has an invalid JSON structure; editing disabled.",
+                editable=False,
+            )
+            return
+        self._data = data
+        self._editable = True
         self._refresh_table()
 
     def _render_row(self, row: int, entry: dict) -> None:
@@ -1185,12 +1321,14 @@ class _PlayerListWidget(QWidget):
 
     def _refresh_table(self) -> None:
         # Immediate compatibility renderer for direct calls and post-edit UI.
+        # Callers reaching this renderer own a validated in-memory snapshot.
         self._render_generation += 1
         self._loading = False
-        self._table.setEnabled(True)
+        self._editable = True
+        self._table.setEnabled(self._editable)
         if self._allow_add:
-            self._name_input.setEnabled(True)
-            self._add_btn.setEnabled(True)
+            self._name_input.setEnabled(self._editable)
+            self._add_btn.setEnabled(self._editable)
         self._table.setRowCount(len(self._data))
         for row, entry in enumerate(self._data):
             self._render_row(row, entry)
@@ -1198,7 +1336,7 @@ class _PlayerListWidget(QWidget):
         self._status.setText(f"{n} entr{'y' if n == 1 else 'ies'}")
 
     def _add_player(self) -> None:
-        if self._loading:
+        if self._loading or not self._editable:
             return
         name = self._name_input.text().strip()
         if not name:
@@ -1254,7 +1392,7 @@ class _PlayerListWidget(QWidget):
             self.load(instance, filename)
 
     def _remove_player(self, row: int) -> None:
-        if self._loading:
+        if self._loading or not self._editable:
             return
         if 0 <= row < len(self._data):
             name = self._data[row].get("name", "?")
@@ -1269,7 +1407,7 @@ class _PlayerListWidget(QWidget):
                 self._refresh_table()
 
     def _save(self) -> None:
-        if self._path:
+        if self._path and self._editable:
             tmp = self._path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
             tmp.replace(self._path)
