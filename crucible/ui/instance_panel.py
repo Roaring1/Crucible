@@ -1212,9 +1212,31 @@ class InstancePanel(QWidget):
             # Console receives worker-thread LogWatcher signals first. This
             # synchronous GUI-thread handoff is race-safe: an earlier event is
             # included in the snapshot; a later event is relayed after connect.
-            self._players.load(inst)
-            self._players._online = set(self._console._active_players)
             tracker = self._player_history_tracker
+            tracker_flushed = tracker.flush() if tracker is not None else True
+            self._players.load(inst)
+            if (
+                tracker is not None
+                and not tracker_flushed
+                and tracker.load_error is not None
+            ):
+                # Keep events captured while the source file was unreadable in
+                # the Players worker's merge overlay. Do not write an empty or
+                # partial replacement over the unavailable history file.
+                snapshot = tracker.seen_snapshot
+                updates = getattr(self._players, "_seen_updates_during_load", None)
+                if isinstance(updates, dict):
+                    for name, record in snapshot.items():
+                        update = updates.setdefault(name, {})
+                        update["first_seen"] = record.get("first_seen")
+                        update["last_seen"] = record.get("last_seen")
+                        update["joined"] = int(record.get("sessions", 0) or 0)
+                        update["seconds_played"] = float(
+                            record.get("seconds_played", 0.0) or 0.0
+                        )
+                else:
+                    self._players._seen.update(snapshot)
+            self._players._online = set(self._console._active_players)
             if tracker is not None:
                 join_times = tracker.join_times
                 self._players._join_times = {

@@ -177,7 +177,22 @@ def test_instance_panel_defers_seven_pages_without_changing_tab_contract(
         assert not panel._console._active_players
         watcher.player_joined.emit("AlreadyOnline")
         history_path = server_root / ".crucible" / "players_seen.json"
-        persisted_before_open = json.loads(history_path.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if history_path.exists():
+                try:
+                    persisted_before_open = json.loads(
+                        history_path.read_text(encoding="utf-8")
+                    )
+                    if persisted_before_open.get("AlreadyOnline", {}).get(
+                        "sessions"
+                    ) == 2:
+                        break
+                except (OSError, json.JSONDecodeError):
+                    pass
+            QTest.qWait(10)
+        else:
+            raise AssertionError("coalesced player history was not persisted")
         assert persisted_before_open["AlreadyOnline"]["sessions"] == 2
         assert persisted_before_open["FinishedBeforeOpen"]["sessions"] == 1
         assert persisted_before_open["StoppedBeforeOpen"]["sessions"] == 1
@@ -280,9 +295,60 @@ def test_instance_panel_defers_seven_pages_without_changing_tab_contract(
         app.processEvents()
 
 
-def test_deferred_player_history_keeps_json_size_limit_and_batches_server_stop(
+def test_deferred_player_history_preserves_oversized_source_and_batches_stop(
     tmp_path,
 ) -> None:
+    from crucible.data.player_history import (
+        PlayerHistoryTracker,
+        _MAX_PLAYER_JSON_BYTES,
+    )
+
+    server_root = tmp_path / "server"
+    history_path = server_root / ".crucible" / "players_seen.json"
+    history_path.parent.mkdir(parents=True)
+    oversized_bytes = b" " * (_MAX_PLAYER_JSON_BYTES + 1)
+    history_path.write_bytes(oversized_bytes)
+
+    tracker = PlayerHistoryTracker(server_root)
+    tracker.record_joined("FirstPlayer")
+    assert tracker._seen is not None
+    assert tracker._seen["FirstPlayer"]["sessions"] == 1
+    assert tracker.load_error
+    assert tracker.dirty
+    tracker.record_server_stopped()
+    assert history_path.read_bytes() == oversized_bytes
+    assert tracker.dirty
+    assert not tracker.flush()
+    assert history_path.read_bytes() == oversized_bytes
+    tracker.close()
+
+    # A valid source is updated once when multiple active sessions stop,
+    # rather than rewriting the same JSON once per player.
+    valid_root = tmp_path / "valid-server"
+    valid_path = valid_root / ".crucible" / "players_seen.json"
+    valid_path.parent.mkdir(parents=True)
+    valid_path.write_text('{"PriorPlayer": {"sessions": 3}}', encoding="utf-8")
+    valid = PlayerHistoryTracker(valid_root)
+    valid.record_joined("FirstPlayer")
+    valid.record_joined("SecondPlayer")
+    saves = 0
+    original_save = valid._save
+
+    def count_save() -> bool:
+        nonlocal saves
+        saves += 1
+        return original_save()
+
+    valid._save = count_save
+    valid.record_server_stopped()
+    assert saves == 1
+    assert valid.join_times == {}
+    assert valid.seen_snapshot["FirstPlayer"]["seconds_played"] >= 0
+    assert valid.seen_snapshot["SecondPlayer"]["seconds_played"] >= 0
+    assert valid.flush()
+    valid.close()
+
+def test_player_history_retry_merges_unpersisted_session_delta(tmp_path) -> None:
     from crucible.data.player_history import (
         PlayerHistoryTracker,
         _MAX_PLAYER_JSON_BYTES,
@@ -294,23 +360,19 @@ def test_deferred_player_history_keeps_json_size_limit_and_batches_server_stop(
     history_path.write_bytes(b" " * (_MAX_PLAYER_JSON_BYTES + 1))
 
     tracker = PlayerHistoryTracker(server_root)
-    tracker.record_joined("FirstPlayer")
-    assert tracker._seen is not None
-    assert tracker._seen["FirstPlayer"]["sessions"] == 1
-    assert history_path.stat().st_size < 1024
+    tracker.record_joined("KnownPlayer")
+    assert tracker.load_error
+    assert tracker.dirty
 
-    tracker.record_joined("SecondPlayer")
-    saves = 0
-    original_save = tracker._save
-
-    def count_save() -> None:
-        nonlocal saves
-        saves += 1
-        original_save()
-
-    tracker._save = count_save
-    tracker.record_server_stopped()
-    assert saves == 1
-    assert tracker.join_times == {}
-    assert tracker._seen["FirstPlayer"]["seconds_played"] >= 0
-    assert tracker._seen["SecondPlayer"]["seconds_played"] >= 0
+    # Simulate the file becoming readable after the original bounded-read
+    # failure. The session observed in memory must be added to disk's old total.
+    history_path.write_text(
+        '{"KnownPlayer": {"sessions": 4, "seconds_played": 12.5}}',
+        encoding="utf-8",
+    )
+    assert tracker.flush()
+    persisted = json.loads(history_path.read_text(encoding="utf-8"))
+    assert persisted["KnownPlayer"]["sessions"] == 5
+    assert persisted["KnownPlayer"]["seconds_played"] == 12.5
+    assert not tracker.dirty
+    assert tracker.close()
