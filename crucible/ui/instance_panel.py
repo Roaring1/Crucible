@@ -59,16 +59,7 @@ from ..process.startup_patterns import RE_SERVER_DONE, stale_starting_should_pro
 from ..process.tmux_manager import TmuxManager
 from ..process.watchdog import Watchdog
 from . import theme
-from .tabs import (
-    ConfigTab,
-    ConsoleTab,
-    InfoTab,
-    ModsTab,
-    NotesTab,
-    PlayersTab,
-    SetupTab,
-    WorldTab,
-)
+from .tabs import ConsoleTab, PlayersTab
 from .thread_lifecycle import connect_thread_cleanup
 
 # Fallback "Done (Xs)!" detector used only while "starting", read straight off
@@ -179,6 +170,24 @@ class InstancePanel(QWidget):
         # Expensive tabs are loaded on first view per instance, not all at once
         # during every sidebar selection.
         self._loaded_tabs: set[QWidget] = set()
+        # Non-primary pages start as light placeholders. Their module imports
+        # and widget trees are created only when the user first opens them.
+        self._tab_placeholders: dict[int, QWidget] = {}
+        self._lazy_tab_attributes = {
+            1: "_mods",
+            2: "_world",
+            3: "_setup",
+            4: "_info",
+            5: "_config",
+            7: "_notes",
+        }
+        self._mods: QWidget | None = None
+        self._world: QWidget | None = None
+        self._setup: QWidget | None = None
+        self._info: QWidget | None = None
+        self._config: QWidget | None = None
+        self._players = PlayersTab()
+        self._notes: QWidget | None = None
         self._tps_poll_inflight = False
         self._world_summary_generation = 0
         self._world_summary_threads: list[QThread] = []
@@ -206,6 +215,96 @@ class InstancePanel(QWidget):
         self._transition_timer.setInterval(_TRANSITION_POLL_MS)
         self._transition_timer.timeout.connect(self._poll_transition)
         self._transition_polling = False  # a check is currently in flight
+
+    # Lazy workspace pages
+
+    def _ensure_tab_created(self, index: int) -> QWidget | None:
+        """Replace a tab placeholder with its real page on first selection."""
+        attribute = self._lazy_tab_attributes.get(index)
+        if attribute is None:
+            return self._tabs.widget(index)
+
+        existing = getattr(self, attribute)
+        if existing is not None:
+            return existing
+
+        placeholder = self._tab_placeholders.get(index)
+        if placeholder is None:
+            return None
+
+        # Construct first. If a module/widget fails to initialize, the visible
+        # placeholder and tab index remain intact rather than losing the page.
+        page = self._construct_lazy_tab(index)
+        title = self._tabs.tabText(index)
+        icon = self._tabs.tabIcon(index)
+        tooltip = self._tabs.tabToolTip(index)
+        whats_this = self._tabs.tabWhatsThis(index)
+        was_visible = self._tabs.tabBar().isTabVisible(index)
+        was_enabled = self._tabs.isTabEnabled(index)
+        selected_index = self._tabs.currentIndex()
+        previous_block_state = self._tabs.blockSignals(True)
+        try:
+            self._tabs.removeTab(index)
+            self._tabs.insertTab(index, page, icon, title)
+            self._tabs.setTabToolTip(index, tooltip)
+            self._tabs.setTabWhatsThis(index, whats_this)
+            self._tabs.setTabEnabled(index, was_enabled)
+            self._tabs.tabBar().setTabVisible(index, was_visible)
+            self._tabs.setCurrentIndex(selected_index)
+        finally:
+            self._tabs.blockSignals(previous_block_state)
+
+        setattr(self, attribute, page)
+        self._tab_placeholders.pop(index, None)
+        placeholder.deleteLater()
+        return page
+
+    def _construct_lazy_tab(self, index: int) -> QWidget:
+        """Import and construct precisely the requested secondary page."""
+        if index == 1:
+            from .tabs import ModsTab
+
+            return ModsTab(self._manager)
+        if index == 2:
+            from .tabs import WorldTab
+
+            page = WorldTab(self._manager)
+            page.set_config_guard(self._confirm_config_changes)
+            page.set_config_reload(self._reload_config_from_disk)
+            return page
+        if index == 3:
+            from .tabs import SetupTab
+
+            return SetupTab(self._manager)
+        if index == 4:
+            from .tabs import InfoTab
+
+            page = InfoTab()
+            page.fix_loading_requested.connect(self.fix_loading_requested)
+            page.inspect_logs_requested.connect(self.inspect_logs_requested)
+            return page
+        if index == 5:
+            from .tabs import ConfigTab
+
+            return ConfigTab()
+        if index == 7:
+            from .tabs import NotesTab
+
+            return NotesTab(self._manager)
+        raise IndexError(f"Unknown lazy workspace tab index: {index}")
+
+    def _confirm_config_changes(self) -> bool:
+        """No Config page means no unsaved Config edits can exist."""
+        return (
+            self._config.confirm_discard_or_save()
+            if self._config is not None
+            else True
+        )
+
+    def _reload_config_from_disk(self) -> None:
+        """Refresh an already-open Config editor after a World operation."""
+        if self._config is not None:
+            self._config.reload_from_disk()
 
     # Off-thread helper
 
@@ -363,26 +462,31 @@ class InstancePanel(QWidget):
         # through the tab-bar stylesheet instead.
         self._tabs.tabBar().setDrawBase(False)
 
-        self._setup   = SetupTab(self._manager)
+        # Console is the normal landing page, so keep its controls ready when
+        # a server is selected. Six secondary pages are built on first
+        # selection; Players remains eager to observe live join/leave events.
         self._console = ConsoleTab()
-        self._mods    = ModsTab(self._manager)
-        self._notes   = NotesTab(self._manager)
-        self._info    = InfoTab()
-        self._config  = ConfigTab()
-        self._world   = WorldTab(self._manager)
-        self._players = PlayersTab()
-
-        # Order the workspace around the normal session:
-        # Console first, then server content, with Setup and Diagnostics still
-        # visible rather than hidden behind a secondary menu.
         self._tabs.addTab(self._console, "Console")
-        self._tabs.addTab(self._mods,    "Mods")
-        self._tabs.addTab(self._world,   "Worlds")
-        self._tabs.addTab(self._setup,   "Setup")
-        self._tabs.addTab(self._info,    "Diagnostics")
-        self._tabs.addTab(self._config,  "Config")
+        for index, label in (
+            (1, "Mods"),
+            (2, "Worlds"),
+            (3, "Setup"),
+            (4, "Diagnostics"),
+            (5, "Config"),
+        ):
+            placeholder = QWidget()
+            placeholder.setObjectName("LazyWorkspacePage")
+            placeholder.setAccessibleName(
+                f"{label} page, created when selected"
+            )
+            self._tab_placeholders[index] = placeholder
+            self._tabs.addTab(placeholder, label)
         self._tabs.addTab(self._players, "Players")
-        self._tabs.addTab(self._notes,   "Notes")
+        notes_placeholder = QWidget()
+        notes_placeholder.setObjectName("LazyWorkspacePage")
+        notes_placeholder.setAccessibleName("Notes page, created when selected")
+        self._tab_placeholders[7] = notes_placeholder
+        self._tabs.addTab(notes_placeholder, "Notes")
         # Only secondary configuration/reference pages live under More.
         self._more_tab_labels = {
             5: "Config & settings",
@@ -430,9 +534,6 @@ class InstancePanel(QWidget):
         # server.properties edits in flight -- reuse ConfigTab's own
         # save/discard guard rather than duplicating that logic, and let
         # WorldTab refresh ConfigTab's buffer after it writes the seed directly.
-        self._world.set_config_guard(self._config.confirm_discard_or_save)
-        self._world.set_config_reload(self._config.reload_from_disk)
-
         # Console is the primary workspace. Its optional external tmux
         # terminal action stays inside the Console page, not in the global header.
         self._tabs.currentChanged.connect(self._on_tab_changed)
@@ -440,8 +541,6 @@ class InstancePanel(QWidget):
             self._on_console_lifecycle_command
         )
         self._console.open_terminal_requested.connect(self._do_attach)
-        self._info.fix_loading_requested.connect(self.fix_loading_requested)
-        self._info.inspect_logs_requested.connect(self.inspect_logs_requested)
 
         layout.addWidget(self._tabs, stretch=1)
 
@@ -597,9 +696,10 @@ class InstancePanel(QWidget):
                 "operation to finish before switching servers.",
             )
             return False
-        if self._instance is not None and not self._config.confirm_discard_or_save():
+        if self._instance is not None and not self._confirm_config_changes():
             return False
-        self._notes.flush()
+        if self._notes is not None:
+            self._notes.flush()
         # Do not synchronously stop/wait/recreate the log QThread on every
         # sidebar click. _start_watcher() reuses it and queues a cheap reset.
         self._tps_timer.stop()
@@ -680,15 +780,17 @@ class InstancePanel(QWidget):
                 "Wait for the current operation to finish before removing this server.",
             )
             return False
-        if not self._config.confirm_discard_or_save():
+        if not self._confirm_config_changes():
             return False
-        self._notes.flush()
+        if self._notes is not None:
+            self._notes.flush()
         return True
 
     def clear(self) -> None:
         if self._instance is not None:
             self.watchdog_unwatch_requested.emit(self._instance.id)
-        self._notes.flush()
+        if self._notes is not None:
+            self._notes.flush()
         self._stop_watcher()
         self._tps_timer.stop()
         self._ip_request_generation += 1
@@ -1024,8 +1126,11 @@ class InstancePanel(QWidget):
 
     def _load_current_tab(self) -> None:
         inst = self._instance
+        if inst is None:
+            return
+        self._ensure_tab_created(self._tabs.currentIndex())
         tab = self._tabs.currentWidget()
-        if inst is None or tab is None or tab in self._loaded_tabs:
+        if tab is None or tab in self._loaded_tabs:
             return
         status = self._current_status
         if tab is self._setup:
@@ -1047,6 +1152,7 @@ class InstancePanel(QWidget):
         self._loaded_tabs.add(tab)
 
     def _on_tab_changed(self, index: int) -> None:
+        self._ensure_tab_created(index)
         self._update_more_tabs_button(index)
         self._load_current_tab()
         self._update_tps_polling()
@@ -1512,7 +1618,9 @@ class InstancePanel(QWidget):
                 "Start is available only after the server is confirmed stopped."
             )
             return
-        if self._mods.has_active_operation() or self._setup.has_active_operation():
+        mods_busy = self._mods is not None and self._mods.has_active_operation()
+        setup_busy = self._setup is not None and self._setup.has_active_operation()
+        if mods_busy or setup_busy:
             QMessageBox.information(
                 self,
                 "Operation in progress",
@@ -1727,9 +1835,9 @@ class InstancePanel(QWidget):
     def _has_mutating_operations(self) -> bool:
         """True while a server or user-data operation is in progress."""
         tmux_busy = any(t.isRunning() for t in self._worker_threads)
-        world_busy = self._world.has_active_operation()
-        setup_busy = self._setup.has_active_operation()
-        mods_busy = self._mods.has_active_operation()
+        world_busy = self._world is not None and self._world.has_active_operation()
+        setup_busy = self._setup is not None and self._setup.has_active_operation()
+        mods_busy = self._mods is not None and self._mods.has_active_operation()
         return tmux_busy or world_busy or setup_busy or mods_busy
 
     def has_active_operations(self) -> bool:
@@ -1738,7 +1846,8 @@ class InstancePanel(QWidget):
 
     def shutdown(self) -> None:
         """Stop worker-owned timers and safely join read-only summary scans."""
-        self._notes.flush()
+        if self._notes is not None:
+            self._notes.flush()
         # World summaries are read-only and should never veto a close event.
         # Invalidate queued results, then join their workers before the panel is
         # destroyed so Qt cannot see a live QThread whose owner was collected.
