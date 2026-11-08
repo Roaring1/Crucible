@@ -508,6 +508,27 @@ def capture_previews(output: Path) -> list[Path]:
                 )
 
             panel._tabs.setCurrentWidget(panel._players)
+            # Player permission/history JSON now loads on a worker and large
+            # tables render in chunks. Wait for that initial read/render before
+            # asserting focus on a control that is deliberately disabled while
+            # its source list is incomplete.
+            player_load_deadline = time.monotonic() + 5.0
+            while (
+                panel._players._seen_loading
+                or panel._players._player_data_threads
+                or any(
+                    widget._loading
+                    for widget in (
+                        panel._players._whitelist_w,
+                        panel._players._ops_w,
+                        panel._players._banned_w,
+                    )
+                )
+            ):
+                app.processEvents()
+                if time.monotonic() >= player_load_deadline:
+                    raise RuntimeError("Players JSON baseline did not finish loading")
+                QTest.qWait(10)
             panel._players._online = {"PreviewPlayer"}
             panel._players._refresh_online_list()
             selected.resize(1440, 900)
