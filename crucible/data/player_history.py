@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import Any
 
 
+_MAX_PLAYER_JSON_BYTES = 16 * 1024 * 1024
+
+
 class PlayerHistoryTracker:
     """Persist recent-player history while the Players page remains unopened."""
 
@@ -34,23 +37,41 @@ class PlayerHistoryTracker:
         self._record(name, joined=False)
 
     def record_server_stopped(self) -> None:
-        for name in tuple(self._join_times):
-            self._record(name, joined=False)
+        if not self._join_times:
+            return
+        self._ensure_loaded()
+        assert self._seen is not None
+        now = time.time()
+        for name, joined_at in tuple(self._join_times.items()):
+            record = self._seen.get(name) or {}
+            record.setdefault("first_seen", now)
+            record["last_seen"] = now
+            record["seconds_played"] = float(
+                record.get("seconds_played", 0.0)
+            ) + max(0.0, now - joined_at)
+            self._seen[name] = record
+        self._join_times.clear()
+        self._save()
 
     def _ensure_loaded(self) -> None:
         if self._seen is not None:
             return
         seen: dict[str, dict[str, Any]] = {}
         try:
-            raw = self._path.read_text(encoding="utf-8")
-            payload = json.loads(raw)
+            if self._path.stat().st_size > _MAX_PLAYER_JSON_BYTES:
+                raise OSError("Player history exceeds 16 MiB safety limit")
+            with self._path.open("rb") as stream:
+                raw = stream.read(_MAX_PLAYER_JSON_BYTES + 1)
+            if len(raw) > _MAX_PLAYER_JSON_BYTES:
+                raise OSError("Player history exceeds 16 MiB safety limit")
+            payload = json.loads(raw.decode("utf-8"))
             if isinstance(payload, dict):
                 seen = {
                     name: record
                     for name, record in payload.items()
                     if isinstance(name, str) and isinstance(record, dict)
                 }
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             pass
         self._seen = seen
 

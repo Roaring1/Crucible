@@ -265,3 +265,39 @@ def test_instance_panel_defers_seven_pages_without_changing_tab_contract(
         panel.close()
         panel.deleteLater()
         app.processEvents()
+
+
+def test_deferred_player_history_keeps_json_size_limit_and_batches_server_stop(
+    tmp_path,
+) -> None:
+    from crucible.data.player_history import (
+        PlayerHistoryTracker,
+        _MAX_PLAYER_JSON_BYTES,
+    )
+
+    server_root = tmp_path / "server"
+    history_path = server_root / ".crucible" / "players_seen.json"
+    history_path.parent.mkdir(parents=True)
+    history_path.write_bytes(b" " * (_MAX_PLAYER_JSON_BYTES + 1))
+
+    tracker = PlayerHistoryTracker(server_root)
+    tracker.record_joined("FirstPlayer")
+    assert tracker._seen is not None
+    assert tracker._seen["FirstPlayer"]["sessions"] == 1
+    assert history_path.stat().st_size < 1024
+
+    tracker.record_joined("SecondPlayer")
+    saves = 0
+    original_save = tracker._save
+
+    def count_save() -> None:
+        nonlocal saves
+        saves += 1
+        original_save()
+
+    tracker._save = count_save
+    tracker.record_server_stopped()
+    assert saves == 1
+    assert tracker.join_times == {}
+    assert tracker._seen["FirstPlayer"]["seconds_played"] >= 0
+    assert tracker._seen["SecondPlayer"]["seconds_played"] >= 0
