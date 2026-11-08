@@ -425,6 +425,92 @@ def test_toggle_refresh_restores_selected_mod_after_async_population(
         app.processEvents()
 
 
+
+
+
+def test_mod_file_operations_wait_for_inventory_before_touching_the_mod_folder(
+    tmp_path, monkeypatch
+):
+    app = _app()
+    tab = ModsTab()
+    tab._instance = SimpleNamespace(path=str(tmp_path))
+    tab._manager = object()
+    mod = ModEntry("pending.jar", tmp_path / "pending.jar", True, 10)
+    tab._mods = [mod]
+    tab._populate_table([mod])
+    tab._added_mod_snapshot = {
+        "pending.jar": {"project_id": "stale-project"}
+    }
+    # Simulate an in-flight background inventory scan. It is not a global
+    # mutating operation, but file-dependent mod actions must wait for it.
+    tab._inventory_thread = object()
+    notices = []
+    refresh_calls = []
+    tab.refresh = lambda: refresh_calls.append(True)
+    monkeypatch.setattr(
+        "PyQt6.QtWidgets.QMessageBox.information",
+        lambda *args: notices.append(args[1:3]),
+    )
+    monkeypatch.setattr(
+        "PyQt6.QtWidgets.QMessageBox.question",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("confirmation must not open during inventory loading")
+        ),
+    )
+    monkeypatch.setattr(
+        "PyQt6.QtWidgets.QFileDialog.getOpenFileNames",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("file picker must not open during inventory loading")
+        ),
+    )
+    monkeypatch.setattr(
+        "crucible.process.tmux_manager.TmuxManager.get_status",
+        lambda _self, _instance: (_ for _ in ()).throw(
+            AssertionError("status probe should not run while inventory is loading")
+        ),
+    )
+    monkeypatch.setattr(
+        "crucible.ui.pack_update_dialog.PackUpdateDialog",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("pack updater must not open during inventory loading")
+        ),
+    )
+    monkeypatch.setattr(
+        "crucible.mods.versions.identify_files",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("identity scan must not start during inventory loading")
+        ),
+    )
+
+    try:
+        tab.refresh = ModsTab.refresh.__get__(tab, ModsTab)
+        # Keep a synthetic worker reference so the refresh clears the old
+        # table/snapshot but cannot launch another worker in this test.
+        tab.refresh()
+        assert tab._table.rowCount() == 0
+        assert tab._added_mod_snapshot == {}
+        assert "not linked" not in tab._detail_summary.text()
+
+        tab.refresh = lambda: refresh_calls.append(True)
+        assert not tab._require_stopped()
+        tab._set_enabled(mod, False)
+        tab._delete_mod(mod, 0)
+        tab._open_add_mod()
+        tab._pick_file()
+        tab._download_from_pack()
+        tab._verify_deps()
+        tab._open_pack_update()
+        tab._identify_online()
+
+        assert refresh_calls == []
+        assert len(notices) == 9
+        assert all(title == "Inventory loading" for title, _message in notices)
+    finally:
+        tab._inventory_thread = None
+        tab.close()
+        app.processEvents()
+
+
 def test_mod_identity_record_is_read_once_per_refresh_on_inventory_worker(
     tmp_path, monkeypatch
 ):

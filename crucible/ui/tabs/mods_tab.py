@@ -427,6 +427,8 @@ class ModsTab(QWidget):
         self.refresh()
 
     def _open_pack_update(self) -> None:
+        if not self._require_inventory_ready():
+            return
         inst = getattr(self, "_instance", None)
         if inst is None:
             return
@@ -470,11 +472,13 @@ class ModsTab(QWidget):
         self._table_render_mods = []
         self._table_render_cursor = 0
         self._mods = []
+        self._added_mod_snapshot = {}
         self._mod_name_items.clear()
         self._table.setSortingEnabled(False)
         self._table.setRowCount(0)
         self._table.setEnabled(False)
         self._count_label.setText("Reading installed mod files…")
+        self._on_selection_changed()
         self._start_inventory_worker()
 
     def _start_inventory_worker(self) -> None:
@@ -747,6 +751,8 @@ class ModsTab(QWidget):
         self._set_enabled(mod, enable)
 
     def _set_enabled(self, mod: ModEntry, enable: bool) -> None:
+        if not self._require_inventory_ready():
+            return
         if not self._require_stopped():
             self.refresh()
             return
@@ -915,7 +921,27 @@ class ModsTab(QWidget):
             return
         self._delete_mod(mod, row)
 
+    def _inventory_read_pending(self) -> bool:
+        return (
+            self._inventory_thread is not None
+            or self._inventory_refresh_pending
+            or self._table_rendering
+        )
+
+    def _require_inventory_ready(self) -> bool:
+        if not self._inventory_read_pending():
+            return True
+        QMessageBox.information(
+            self,
+            "Inventory loading",
+            "Wait for the installed mod inventory to finish loading before "
+            "starting another mod operation.",
+        )
+        return False
+
     def _require_stopped(self):
+        if not self._require_inventory_ready():
+            return False
         from ...process.tmux_manager import TmuxManager
         inst = getattr(self, "_instance", None)
         if inst is None:
@@ -927,6 +953,8 @@ class ModsTab(QWidget):
         return True
 
     def _identify_online(self):
+        if not self._require_inventory_ready():
+            return
         inst = getattr(self, "_instance", None)
         if inst is None:
             return
