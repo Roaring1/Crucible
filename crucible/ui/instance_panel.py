@@ -188,6 +188,7 @@ class InstancePanel(QWidget):
         self._info: QWidget | None = None
         self._config: QWidget | None = None
         self._players: QWidget | None = None
+        self._player_history_tracker = None
         self._notes: QWidget | None = None
         self._tps_poll_inflight = False
         self._world_summary_generation = 0
@@ -325,6 +326,33 @@ class InstancePanel(QWidget):
                 signal.disconnect(slot)
             except (RuntimeError, TypeError):
                 pass
+
+    def _attach_player_history_tracker(self, instance: ServerInstance) -> None:
+        """Capture player history without importing or constructing PlayersTab."""
+        self._disconnect_player_history_tracker()
+        from ..data.player_history import PlayerHistoryTracker
+
+        tracker = PlayerHistoryTracker(instance.path)
+        self._player_history_tracker = tracker
+        self._console.online_player_joined.connect(tracker.record_joined)
+        self._console.online_player_left.connect(tracker.record_left)
+        self._console.online_players_cleared.connect(tracker.record_server_stopped)
+
+    def _disconnect_player_history_tracker(self) -> None:
+        """Stop background-page history capture at an instance/page handoff."""
+        tracker = self._player_history_tracker
+        if tracker is None:
+            return
+        for signal, slot in (
+            (self._console.online_player_joined, tracker.record_joined),
+            (self._console.online_player_left, tracker.record_left),
+            (self._console.online_players_cleared, tracker.record_server_stopped),
+        ):
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        self._player_history_tracker = None
 
     def _confirm_config_changes(self) -> bool:
         """No Config page means no unsaved Config edits can exist."""
@@ -734,6 +762,7 @@ class InstancePanel(QWidget):
         if self._notes is not None:
             self._notes.flush()
         self._disconnect_players_from_console()
+        self._disconnect_player_history_tracker()
         # Do not synchronously stop/wait/recreate the log QThread on every
         # sidebar click. _start_watcher() reuses it and queues a cheap reset.
         self._tps_timer.stop()
@@ -743,6 +772,7 @@ class InstancePanel(QWidget):
 
         self._world_start_pending_instance_id = None
         self._instance = instance
+        self._attach_player_history_tracker(instance)
         self._set_identity_icon(instance)
         # Changing server selection always lands on the live console workspace.
         # Block the tab signal here; the new instance's selected page is loaded
@@ -1011,6 +1041,7 @@ class InstancePanel(QWidget):
     def _stop_watcher(self) -> None:
         self._console.detach()
         self._disconnect_players_from_console()
+        self._disconnect_player_history_tracker()
         if self._watcher:
             try:
                 self._watcher.server_started.disconnect(self._on_log_server_started)
@@ -1183,7 +1214,16 @@ class InstancePanel(QWidget):
             # included in the snapshot; a later event is relayed after connect.
             self._players.load(inst)
             self._players._online = set(self._console._active_players)
+            tracker = self._player_history_tracker
+            if tracker is not None:
+                join_times = tracker.join_times
+                self._players._join_times = {
+                    name: joined_at
+                    for name, joined_at in join_times.items()
+                    if name in self._players._online
+                }
             self._players._refresh_online_list()
+            self._disconnect_player_history_tracker()
             self._connect_players_to_console()
         # Console is attached by the watcher lifecycle rather than load().
         # (System performance stats are now loaded as part of Info, above.)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -11,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_main_window_import_only_loads_console_and_players_tab_modules() -> None:
+def test_main_window_import_only_loads_console_tab_module() -> None:
     """MainWindow import must not eagerly pull in every secondary page."""
     script = r"""
 import sys
@@ -153,10 +154,23 @@ def test_instance_panel_defers_seven_pages_without_changing_tab_contract(
         watcher = LogWatcher(instance)
         panel._instance = instance
         panel._watcher = watcher
+        panel._attach_player_history_tracker(instance)
         panel._console.attach(instance, watcher)
         assert panel._players is None
         watcher.player_joined.emit("AlreadyOnline")
         assert "AlreadyOnline" in panel._console._active_players
+        watcher.player_joined.emit("FinishedBeforeOpen")
+        watcher.player_left.emit("FinishedBeforeOpen")
+        watcher.player_joined.emit("StoppedBeforeOpen")
+        watcher.server_stopping.emit()
+        assert not panel._console._active_players
+        watcher.player_joined.emit("AlreadyOnline")
+        history_path = server_root / ".crucible" / "players_seen.json"
+        persisted_before_open = json.loads(history_path.read_text(encoding="utf-8"))
+        assert persisted_before_open["AlreadyOnline"]["sessions"] == 2
+        assert persisted_before_open["FinishedBeforeOpen"]["sessions"] == 1
+        assert persisted_before_open["StoppedBeforeOpen"]["sessions"] == 1
+        assert set(panel._player_history_tracker.join_times) == {"AlreadyOnline"}
 
         players_placeholder = panel._tabs.widget(6)
         assert players_placeholder.objectName() == "LazyWorkspacePage"
@@ -172,7 +186,13 @@ def test_instance_panel_defers_seven_pages_without_changing_tab_contract(
         assert players._watcher is None, (
             "Players receives Console's GUI-thread relay, not raw watcher events"
         )
+        assert panel._player_history_tracker is None
         assert "AlreadyOnline" in players._online
+        assert players._seen["AlreadyOnline"]["sessions"] == 2
+        assert players._seen["FinishedBeforeOpen"]["sessions"] == 1
+        assert players._seen["StoppedBeforeOpen"]["sessions"] == 1
+        assert "AlreadyOnline" in players._join_times
+        assert "FinishedBeforeOpen" not in players._join_times
 
         # After the page is open, joins/leaves are relayed and history is
         # persisted against the currently selected instance.
@@ -191,12 +211,13 @@ def test_instance_panel_defers_seven_pages_without_changing_tab_contract(
         second_root = tmp_path / "second-server"
         second_root.mkdir()
         second_instance = ServerInstance(str(second_root), "Second synthetic server")
-        second_watcher = LogWatcher(second_instance)
+        old_player_relay = panel._console._player_event_relay
+        reused_watcher = watcher  # InstancePanel intentionally reuses this QObject.
 
         def attach_second_server(selected_instance):
             assert selected_instance is second_instance
-            panel._watcher = second_watcher
-            panel._console.attach(selected_instance, second_watcher)
+            panel._watcher = reused_watcher
+            panel._console.attach(selected_instance, reused_watcher)
 
         with (
             patch.object(panel, "_ensure_watchdog", lambda: None),
@@ -205,10 +226,14 @@ def test_instance_panel_defers_seven_pages_without_changing_tab_contract(
         ):
             assert panel.load(second_instance, status_hint="stopped")
 
-        watcher.player_joined.emit("LateOldServerEvent")
+        # Simulate an event that had already been queued to the prior relay
+        # before detach. The same LogWatcher object is now attached to server 2,
+        # so sender identity alone cannot distinguish these two generations.
+        assert old_player_relay is not None
+        old_player_relay.player_joined("LateOldServerEvent")
         assert "LateOldServerEvent" not in panel._console._active_players
-        assert "LateOldServerEvent" not in players._seen
-        second_watcher.player_joined.emit("SecondServerPlayer")
+        assert "LateOldServerEvent" not in panel._player_history_tracker.join_times
+        reused_watcher.player_joined.emit("SecondServerPlayer")
         assert "SecondServerPlayer" in panel._console._active_players
         assert "SecondServerPlayer" not in players._seen, (
             "Players must remain detached while it still represents the old instance"
@@ -218,9 +243,10 @@ def test_instance_panel_defers_seven_pages_without_changing_tab_contract(
         app.processEvents()
         assert players._instance is second_instance
         assert "SecondServerPlayer" in players._online
-        assert "SecondServerPlayer" not in players._seen or (
-            players._seen["SecondServerPlayer"].get("sessions", 0) == 0
-        ), "snapshotting an already-online player must not invent a join timestamp"
+        assert players._seen["SecondServerPlayer"]["sessions"] == 1
+        assert "SecondServerPlayer" in players._join_times, (
+            "the background history tracker must transfer the real join time"
+        )
 
         # World operations must retain the Config editor's save/discard guard
         # even though the Config page can be constructed later.

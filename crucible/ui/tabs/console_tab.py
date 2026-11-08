@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from collections import deque
 
-from PyQt6.QtCore import QEvent, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, QEvent, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -157,6 +157,38 @@ class _CommandLineEdit(QLineEdit):
         super().keyPressEvent(e)
 
 
+class _ConsolePlayerEventRelay(QObject):
+    """GUI-thread bridge that rejects queued events from an old attachment."""
+
+    def __init__(self, console: "ConsoleTab", generation: int) -> None:
+        super().__init__(console)
+        self._console = console
+        self._generation = generation
+
+    def _is_current(self) -> bool:
+        return self._generation == self._console._watcher_generation
+
+    @pyqtSlot(str)
+    def player_joined(self, name: str) -> None:
+        if self._is_current():
+            self._console._on_joined(name)
+
+    @pyqtSlot(str)
+    def player_left(self, name: str) -> None:
+        if self._is_current():
+            self._console._on_left(name)
+
+    @pyqtSlot()
+    def server_stopping(self) -> None:
+        if self._is_current():
+            self._console._on_server_stopping()
+
+    @pyqtSlot()
+    def log_rotated(self) -> None:
+        if self._is_current():
+            self._console._on_log_rotated()
+
+
 class ConsoleTab(QWidget):
     # Emitted only after tmux accepted a command. The panel uses this to fold
     # lifecycle commands into the same state machine as GUI buttons.
@@ -178,6 +210,8 @@ class ConsoleTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._watcher:  LogWatcher | None = None
+        self._watcher_generation = 0
+        self._player_event_relay: _ConsolePlayerEventRelay | None = None
         self._instance: ServerInstance | None = None
         self._auto_scroll = True
         self._history: deque[str] = deque(maxlen=HISTORY_SIZE)
@@ -464,33 +498,45 @@ class ConsoleTab(QWidget):
         watcher.new_lines.connect(self._on_new_lines)
         watcher.tps_update.connect(self._on_tps)
         watcher.mspt_update.connect(self._on_mspt)
-        watcher.player_joined.connect(self._on_joined)
-        watcher.player_left.connect(self._on_left)
         watcher.server_started.connect(self._on_server_started)
-        watcher.server_stopping.connect(self._on_server_stopping)
-        watcher.log_rotated.connect(self._on_log_rotated)
         watcher.log_missing.connect(self._on_log_missing)
+
+        # Disconnecting a queued connection does not cancel events already
+        # posted to the GUI thread. This receiver's generation check rejects
+        # those after a switch, even when InstancePanel reuses the same watcher.
+        self._watcher_generation += 1
+        relay = _ConsolePlayerEventRelay(self, self._watcher_generation)
+        self._player_event_relay = relay
+        watcher.player_joined.connect(relay.player_joined)
+        watcher.player_left.connect(relay.player_left)
+        watcher.server_stopping.connect(relay.server_stopping)
+        watcher.log_rotated.connect(relay.log_rotated)
 
         self._append_system(f"Attached to {instance.name}")
         self._set_state("Waiting for log file…", theme.SURFACE2)
 
     def detach(self) -> None:
-        """Disconnect the current watcher."""
+        """Disconnect the watcher and invalidate queued player events."""
+        self._watcher_generation += 1
         if self._watcher is not None:
             try:
                 self._watcher.new_lines.disconnect(self._on_new_lines)
                 self._watcher.tps_update.disconnect(self._on_tps)
                 self._watcher.mspt_update.disconnect(self._on_mspt)
-                self._watcher.player_joined.disconnect(self._on_joined)
-                self._watcher.player_left.disconnect(self._on_left)
                 self._watcher.server_started.disconnect(self._on_server_started)
-                self._watcher.server_stopping.disconnect(self._on_server_stopping)
-                self._watcher.log_rotated.disconnect(self._on_log_rotated)
                 self._watcher.log_missing.disconnect(self._on_log_missing)
+                if self._player_event_relay is not None:
+                    self._watcher.player_joined.disconnect(self._player_event_relay.player_joined)
+                    self._watcher.player_left.disconnect(self._player_event_relay.player_left)
+                    self._watcher.server_stopping.disconnect(self._player_event_relay.server_stopping)
+                    self._watcher.log_rotated.disconnect(self._player_event_relay.log_rotated)
             except (RuntimeError, TypeError):
                 pass
             self._watcher  = None
             self._instance = None
+        if self._player_event_relay is not None:
+            self._player_event_relay.deleteLater()
+            self._player_event_relay = None
 
     def clear_console(self) -> None:
         self._view.clear()
@@ -562,18 +608,12 @@ class ConsoleTab(QWidget):
 
     @pyqtSlot(str)
     def _on_joined(self, name: str) -> None:
-        sender = self.sender()
-        if sender is not None and sender is not self._watcher:
-            return  # Drop a queued event from a watcher detached during a server switch.
         self._active_players.add(name)
         self._update_player_label()
         self.online_player_joined.emit(name)
 
     @pyqtSlot(str)
     def _on_left(self, name: str) -> None:
-        sender = self.sender()
-        if sender is not None and sender is not self._watcher:
-            return  # Drop a queued event from a watcher detached during a server switch.
         self._active_players.discard(name)
         self._update_player_label()
         self.online_player_left.emit(name)
@@ -584,9 +624,6 @@ class ConsoleTab(QWidget):
 
     @pyqtSlot()
     def _on_server_stopping(self) -> None:
-        sender = self.sender()
-        if sender is not None and sender is not self._watcher:
-            return  # Drop a queued event from a watcher detached during a server switch.
         self._active_players.clear()
         self._update_player_label()
         self.online_players_cleared.emit()
@@ -595,9 +632,6 @@ class ConsoleTab(QWidget):
     @pyqtSlot()
     def _on_log_rotated(self) -> None:
         """Server restarted — wipe stale player list and state."""
-        sender = self.sender()
-        if sender is not None and sender is not self._watcher:
-            return  # Drop a queued event from a watcher detached during a server switch.
         self._active_players.clear()
         self._update_player_label()
         self.online_players_cleared.emit()
