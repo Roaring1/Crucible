@@ -827,6 +827,20 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  assert panel._more_tabs_button.accessibleName()=='More workspace tabs'
  assert 'QToolButton#MoreTabsButton:focus' in panel._more_tabs_button.styleSheet()
  mods=panel._mods
+ # MainWindow loads the selected server's mod inventory asynchronously. Wait
+ # for that initial read and chunked render before replacing it with the
+ # synthetic rows used by the rest of this interaction smoke.
+ mods_load_deadline=time.monotonic()+5.0
+ while (
+  mods._inventory_thread is not None
+  or mods._inventory_refresh_pending
+  or mods._table_rendering
+ ):
+  app.processEvents()
+  if time.monotonic()>=mods_load_deadline:
+   raise AssertionError('initial Mods inventory did not settle before interaction smoke')
+  QTest.qWait(5)
+ assert not mods.has_active_operation()
  assert mods._filter.accessibleName()=='Filter installed mods by name, ID or filename'
  assert mods._table.accessibleName()=='Installed mods for the selected server'
  assert mods._table.accessibleDescription()
@@ -1003,6 +1017,20 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  assert app.focusWidget() is bar, 'Tab from Start should reach the workspace tab bar'
  QTest.keyClick(bar,Qt.Key.Key_Right)
  assert tabs.currentWidget() is panel._mods, 'Right arrow should advance workspace tabs'
+ # Entering Mods lazily loads the selected server's real inventory. Wait for
+ # that read and incremental render before later lifecycle checks attempt Start.
+ mods_load_deadline=time.monotonic()+5.0
+ while (
+  panel._mods._inventory_thread is not None
+  or panel._mods._inventory_refresh_pending
+  or panel._mods._table_rendering
+  or panel._mods._thread is not None
+ ):
+  app.processEvents()
+  if time.monotonic()>=mods_load_deadline:
+   raise AssertionError('lazy Mods inventory did not settle after workspace navigation')
+  QTest.qWait(5)
+ assert not panel._mods.has_active_operation()
  QTest.keyClick(bar,Qt.Key.Key_Left)
  assert tabs.currentWidget() is panel._console, 'Left arrow should return to the Console tab'
  QTest.keyClick(bar,Qt.Key.Key_Tab)

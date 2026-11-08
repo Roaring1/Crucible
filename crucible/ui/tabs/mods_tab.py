@@ -7,9 +7,10 @@ and add-from-file support (drag-and-drop + file picker).
 
 from __future__ import annotations
 
+import weakref
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
@@ -32,6 +33,41 @@ from ...data.instance_model import ServerInstance
 from ...mods.mod_manager import ModEntry, ModManager
 from .. import theme
 from ..thread_lifecycle import connect_thread_cleanup
+
+# Background inventory scan worker
+
+class _InventoryWorker(QObject):
+    """Enumerate mod files and read saved identity metadata off the GUI thread."""
+
+    completed = pyqtSignal(int, object)
+
+    def __init__(
+        self, manager: ModManager, instance_path: str, generation: int
+    ):
+        super().__init__()
+        self._manager = manager
+        self._instance_path = instance_path
+        self._generation = generation
+
+    def run(self) -> None:
+        try:
+            mods = self._manager.list_mods()
+            from ...mods.modrinth import added_mods
+
+            result = {
+                "mods": mods,
+                "identity": added_mods(self._instance_path),
+                "error": "",
+            }
+        except Exception as exc:  # noqa: BLE001 - worker boundary reports filesystem failures
+            result = {"mods": [], "identity": {}, "error": str(exc)}
+        self.completed.emit(self._generation, result)
+        self.thread().quit()
+
+
+# Keep the QThread and worker alive until native thread shutdown has completed.
+_ACTIVE_MOD_INVENTORY_WORKERS: dict[QThread, _InventoryWorker] = {}
+
 
 # Background inspection worker
 
@@ -84,15 +120,34 @@ class ModsTab(QWidget):
         # write the new version back. Distinct from self._manager, which is
         # this tab's ModManager.
         self._instance_manager = instance_manager
+        self._instance = None
         self._manager: ModManager | None  = None
         self._mods:    list[ModEntry]     = []
+        self._select_after_refresh_filename: str | None = None
         self._thread:  QThread | None     = None
         self._worker:  _InspectWorker | None = None
         self._net_thread: QThread | None     = None
         self._net_worker: _NetWorker | None  = None
         self._inspect_generation = 0
         self._inspect_pending = False
+        self._inventory_generation = 0
+        self._inventory_refresh_pending = False
+        self._inventory_thread: QThread | None = None
+        self._inventory_worker: _InventoryWorker | None = None
+        self._inventory_lifecycle_state = {"destroyed": False}
+        lifecycle_state = self._inventory_lifecycle_state
+        self.destroyed.connect(
+            lambda *_args, state=lifecycle_state: state.__setitem__(
+                "destroyed", True
+            )
+        )
         self._added_mod_snapshot: dict[str, dict] = {}
+        self._table_rendering = False
+        self._table_render_mods: list[ModEntry] = []
+        self._table_render_cursor = 0
+        self._table_render_timer = QTimer(self)
+        self._table_render_timer.setInterval(1)
+        self._table_render_timer.timeout.connect(self._render_table_chunk)
         # Keep direct identity-to-item lookup for asynchronous metadata results.
         # QTableWidgetItem.row() tracks sorting, avoiding a full table scan for
         # every inspected JAR while preserving object-identity checks.
@@ -356,6 +411,11 @@ class ModsTab(QWidget):
 
     def load(self, instance: ServerInstance) -> None:
         """Switch to displaying mods for the given instance."""
+        if (
+            self._instance is None
+            or getattr(self._instance, "id", None) != getattr(instance, "id", None)
+        ):
+            self._select_after_refresh_filename = None
         self._manager = ModManager(instance)
         self._instance = instance
         # Reveal the download button only when a pack index is present.
@@ -399,101 +459,245 @@ class ModsTab(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        if self._manager is None:
+        """Refresh the file inventory in a worker and render rows incrementally."""
+        if self._manager is None or self._instance is None:
             return
         self._inspect_generation += 1
-        self._mods = self._manager.list_mods()
-        # Worker callbacks and selection changes share this request-scoped
-        # identity snapshot. Do not reread added-mods.json once per JAR.
-        from ...mods.modrinth import added_mods
-        self._added_mod_snapshot = added_mods(self._instance.path)
-        self._populate_table(self._mods)
-        self._apply_filter(self._filter.text())
-        self._update_count()
-        self._start_inspect_pass()
+        self._inventory_generation += 1
+        self._inventory_refresh_pending = True
+        self._table_render_timer.stop()
+        self._table_rendering = False
+        self._table_render_mods = []
+        self._table_render_cursor = 0
+        self._mods = []
+        self._mod_name_items.clear()
+        self._table.setSortingEnabled(False)
+        self._table.setRowCount(0)
+        self._table.setEnabled(False)
+        self._count_label.setText("Reading installed mod files…")
+        self._start_inventory_worker()
+
+    def _start_inventory_worker(self) -> None:
+        if (
+            not self._inventory_refresh_pending
+            or self._manager is None
+            or self._instance is None
+            or self._inventory_thread is not None
+        ):
+            return
+        self._inventory_refresh_pending = False
+        generation = self._inventory_generation
+        thread = QThread()
+        worker = _InventoryWorker(
+            self._manager, self._instance.path, generation
+        )
+        self._inventory_thread = thread
+        self._inventory_worker = worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.completed.connect(self._on_inventory_loaded)
+        thread.finished.connect(worker.deleteLater)
+
+        tab_ref = weakref.ref(self)
+        lifecycle_state = self._inventory_lifecycle_state
+
+        def _cleanup():
+            _ACTIVE_MOD_INVENTORY_WORKERS.pop(thread, None)
+            tab = tab_ref()
+            if tab is None:
+                return
+            if tab._inventory_thread is thread:
+                tab._inventory_thread = None
+                tab._inventory_worker = None
+            if lifecycle_state["destroyed"]:
+                return
+            # A refresh/server switch may have arrived while the previous
+            # read was running. Only one filesystem inventory worker is live
+            # at a time; start the latest request after native shutdown.
+            if tab._inventory_refresh_pending:
+                tab._start_inventory_worker()
+
+        connect_thread_cleanup(thread, _cleanup)
+        _ACTIVE_MOD_INVENTORY_WORKERS[thread] = worker
+        thread.start()
+
+    def _on_inventory_loaded(self, generation: int, payload: object) -> None:
+        if generation != self._inventory_generation or not isinstance(payload, dict):
+            return
+        error = str(payload.get("error") or "")
+        if error:
+            self._mods = []
+            self._added_mod_snapshot = {}
+            self._mod_name_items.clear()
+            self._table.setRowCount(0)
+            self._table.setSortingEnabled(True)
+            self._table.setEnabled(True)
+            self._select_after_refresh_filename = None
+            self._count_label.setText(f"Could not read mod inventory: {error}")
+            self._on_selection_changed()
+            return
+
+        mods = payload.get("mods")
+        snapshot = payload.get("identity")
+        self._mods = mods if isinstance(mods, list) else []
+        self._added_mod_snapshot = (
+            snapshot if isinstance(snapshot, dict) else {}
+        )
+        self._begin_chunked_table_population(self._mods)
 
     # Table population
 
+    def _render_mod_row(self, row: int, mod: ModEntry) -> None:
+        is_bundled = getattr(mod, "bundled", False)
+
+        if is_bundled:
+            # Bundled rows are informational only. A QLabel child widget per
+            # nested library adds thousands of unnecessary QWidget instances.
+            bundled_item = QTableWidgetItem("Bundled")
+            bundled_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            bundled_item.setForeground(Qt.GlobalColor.gray)
+            bundled_item.setToolTip(
+                f"Nested library inside mods/{mod.path.parent.name}/. "
+                "It is managed by its parent modpack and cannot be toggled or removed here."
+            )
+            bundled_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+            )
+            self._table.setItem(row, self._COL_ENABLED, bundled_item)
+        else:
+            state_btn = QPushButton("Enabled" if mod.enabled else "Disabled")
+            state_btn.setCheckable(True)
+            state_btn.setChecked(mod.enabled)
+            state_btn.setFixedHeight(25)
+            state_btn.setObjectName("ModEnabledButton")
+            state_btn.setStyleSheet(
+                f"QPushButton {{ color: {theme.GREEN if mod.enabled else theme.SUBTEXT}; "
+                f"background: {theme.SURFACE0}; border: 1px solid "
+                f"{theme.GREEN if mod.enabled else theme.SURFACE1}; "
+                "border-radius: 4px; padding: 2px 5px; font-size: 10px; font-weight: 600; }"
+                f"QPushButton:checked {{ color: {theme.GREEN}; }}"
+                f"QPushButton#ModEnabledButton:focus {{ border: 2px solid {theme.ACCENT}; }}"
+            )
+            state_btn.setAccessibleName(
+                f"{'Disable' if mod.enabled else 'Enable'} {mod.display_name}"
+            )
+            state_btn.setToolTip(
+                f"Click to {'disable' if mod.enabled else 'enable'} this mod. "
+                "Changes require the server to be stopped."
+            )
+            state_btn.toggled.connect(
+                lambda checked, selected=mod: self._set_enabled(selected, checked)
+            )
+            self._table.setCellWidget(row, self._COL_ENABLED, state_btn)
+
+        name_item = QTableWidgetItem(mod.display_name)
+        name_item.setToolTip(f"{mod.filename}\n{mod.path}")
+        name_item.setData(Qt.ItemDataRole.UserRole, mod)
+        if is_bundled:
+            name_item.setForeground(Qt.GlobalColor.darkCyan)
+        elif not mod.enabled:
+            name_item.setForeground(Qt.GlobalColor.gray)
+        self._table.setItem(row, self._COL_NAME, name_item)
+        self._mod_name_items[id(mod)] = name_item
+
+        ver_item = QTableWidgetItem(mod.version or "—")
+        ver_item.setForeground(Qt.GlobalColor.gray)
+        ver_item.setToolTip(mod.version or "Version not declared in JAR metadata.")
+        self._table.setItem(row, self._COL_VERSION, ver_item)
+
+        side_item = QTableWidgetItem("Not declared")
+        side_item.setToolTip(
+            "Execution side is shown only when the JAR explicitly declares it. "
+            "Unknown does not imply compatibility."
+        )
+        self._table.setItem(row, self._COL_SIDE, side_item)
+        self._render_side(row, mod)
+        self._table.setRowHeight(row, 33)
+
     def _populate_table(self, mods: list[ModEntry]) -> None:
+        """Synchronous compatibility renderer for direct widget callers."""
+        self._table_render_timer.stop()
+        self._table_rendering = False
+        self._table_render_mods = []
+        self._table_render_cursor = 0
+        self._table.setEnabled(True)
+        self._table.setSortingEnabled(False)
+        self._mod_name_items.clear()
+        # Drop old cell widgets/items even when the replacement inventory has
+        # the same number of rows (e.g. an enabled mod became a bundled row).
+        self._table.setRowCount(0)
+        self._table.setRowCount(len(mods))
+        for row, mod in enumerate(mods):
+            self._render_mod_row(row, mod)
+        self._table.setSortingEnabled(True)
+        self._table.sortItems(
+            self._COL_NAME, Qt.SortOrder.AscendingOrder
+        )
+        self._select_initial_row()
+        self._on_selection_changed()
+
+    def _select_initial_row(self) -> None:
+        selected_filename = self._select_after_refresh_filename
+        self._select_after_refresh_filename = None
+        if selected_filename:
+            for row in range(self._table.rowCount()):
+                item = self._table.item(row, self._COL_NAME)
+                mod = item.data(Qt.ItemDataRole.UserRole) if item else None
+                if mod is not None and mod.filename == selected_filename:
+                    self._table.selectRow(row)
+                    return
+        if self._table.rowCount():
+            self._table.selectRow(0)
+
+    def _begin_chunked_table_population(self, mods: list[ModEntry]) -> None:
+        self._table_render_mods = list(mods)
+        self._table_render_cursor = 0
+        self._table_rendering = True
         self._table.setSortingEnabled(False)
         self._mod_name_items.clear()
         self._table.setRowCount(0)
-        self._table.setRowCount(len(mods))
+        self._table.setEnabled(False)
+        if not self._table_render_mods:
+            self._finish_chunked_table_population()
+            return
+        self._count_label.setText(
+            f"Loading installed mods… 0 / {len(self._table_render_mods):,}"
+        )
+        self._table_render_timer.start()
 
-        for row, mod in enumerate(mods):
-            is_bundled = getattr(mod, "bundled", False)
-
-            if is_bundled:
-                # Bundled rows are informational only. A QLabel child widget
-                # per nested library adds thousands of unnecessary QWidget
-                # instances on large modpacks; render the same state as a
-                # lightweight table item instead.
-                bundled_item = QTableWidgetItem("Bundled")
-                bundled_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                bundled_item.setForeground(Qt.GlobalColor.gray)
-                bundled_item.setToolTip(
-                    f"Nested library inside mods/{mod.path.parent.name}/. "
-                    "It is managed by its parent modpack and cannot be toggled or removed here."
-                )
-                bundled_item.setFlags(
-                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-                )
-                self._table.setItem(row, self._COL_ENABLED, bundled_item)
-            else:
-                state_btn = QPushButton("Enabled" if mod.enabled else "Disabled")
-                state_btn.setCheckable(True)
-                state_btn.setChecked(mod.enabled)
-                state_btn.setFixedHeight(25)
-                state_btn.setObjectName("ModEnabledButton")
-                state_btn.setStyleSheet(
-                    f"QPushButton {{ color: {theme.GREEN if mod.enabled else theme.SUBTEXT}; "
-                    f"background: {theme.SURFACE0}; border: 1px solid "
-                    f"{theme.GREEN if mod.enabled else theme.SURFACE1}; "
-                    "border-radius: 4px; padding: 2px 5px; font-size: 10px; font-weight: 600; }"
-                    f"QPushButton:checked {{ color: {theme.GREEN}; }}"
-                    f"QPushButton#ModEnabledButton:focus {{ border: 2px solid {theme.ACCENT}; }}"
-                )
-                state_btn.setAccessibleName(
-                    f"{'Disable' if mod.enabled else 'Enable'} {mod.display_name}"
-                )
-                state_btn.setToolTip(
-                    f"Click to {'disable' if mod.enabled else 'enable'} this mod. "
-                    "Changes require the server to be stopped."
-                )
-                state_btn.toggled.connect(
-                    lambda checked, selected=mod: self._set_enabled(selected, checked)
-                )
-                self._table.setCellWidget(row, self._COL_ENABLED, state_btn)
-
-            display = mod.display_name
-            name_item = QTableWidgetItem(display)
-            name_item.setToolTip(f"{mod.filename}\n{mod.path}")
-            name_item.setData(Qt.ItemDataRole.UserRole, mod)
-            if is_bundled:
-                name_item.setForeground(Qt.GlobalColor.darkCyan)
-            elif not mod.enabled:
-                name_item.setForeground(Qt.GlobalColor.gray)
-            self._table.setItem(row, self._COL_NAME, name_item)
-            self._mod_name_items[id(mod)] = name_item
-
-            ver_item = QTableWidgetItem(mod.version or "—")
-            ver_item.setForeground(Qt.GlobalColor.gray)
-            ver_item.setToolTip(mod.version or "Version not declared in JAR metadata.")
-            self._table.setItem(row, self._COL_VERSION, ver_item)
-
-            side_item = QTableWidgetItem("Not declared")
-            side_item.setToolTip(
-                "Execution side is shown only when the JAR explicitly declares it. "
-                "Unknown does not imply compatibility."
+    def _render_table_chunk(self) -> None:
+        if not self._table_rendering:
+            self._table_render_timer.stop()
+            return
+        start = self._table_render_cursor
+        end = min(start + 100, len(self._table_render_mods))
+        if self._table.rowCount() < end:
+            self._table.setRowCount(end)
+        for row in range(start, end):
+            self._render_mod_row(row, self._table_render_mods[row])
+        self._table_render_cursor = end
+        if end < len(self._table_render_mods):
+            self._count_label.setText(
+                f"Loading installed mods… {end:,} / {len(self._table_render_mods):,}"
             )
-            self._table.setItem(row, self._COL_SIDE, side_item)
-            self._render_side(row, mod)
-            self._table.setRowHeight(row, 33)
+            return
+        self._finish_chunked_table_population()
 
+    def _finish_chunked_table_population(self) -> None:
+        self._table_render_timer.stop()
+        self._table_rendering = False
+        self._table_render_mods = []
+        self._table_render_cursor = 0
         self._table.setSortingEnabled(True)
-        if self._table.rowCount():
-            self._table.selectRow(0)
+        self._table.sortItems(
+            self._COL_NAME, Qt.SortOrder.AscendingOrder
+        )
+        self._table.setEnabled(True)
+        self._apply_filter(self._filter.text())
+        self._update_count()
+        self._select_initial_row()
         self._on_selection_changed()
+        self._start_inspect_pass()
 
     def _render_side(self, row, mod):
         item = self._table.item(row, self._COL_SIDE)
@@ -553,14 +757,10 @@ class ModsTab(QWidget):
                 self._manager.enable(mod)
             else:
                 self._manager.disable(mod)
-            selected_name = mod.filename
+            # Refresh is asynchronous; restore selection only after the
+            # replacement inventory and its table rows are fully available.
+            self._select_after_refresh_filename = mod.filename
             self.refresh()
-            for row in range(self._table.rowCount()):
-                item = self._table.item(row, self._COL_NAME)
-                current = item.data(Qt.ItemDataRole.UserRole) if item else None
-                if current is not None and current.filename == selected_name:
-                    self._table.selectRow(row)
-                    break
         except OSError as exc:
             QMessageBox.critical(self, "Mod state", f"Could not change mod state:\n{exc}")
             self.refresh()
@@ -607,21 +807,6 @@ class ModsTab(QWidget):
         menu.addAction("Open on Modrinth").triggered.connect(
             lambda: self._open_mod_page(mod))
         menu.exec(self._table.viewport().mapToGlobal(pos))
-
-    def _set_enabled(self, mod: ModEntry, enable: bool) -> None:
-        if not self._require_stopped():
-            return
-        if self._manager is None:
-            return
-        try:
-            if enable:
-                self._manager.enable(mod)
-            else:
-                self._manager.disable(mod)
-        except OSError as exc:
-            QMessageBox.critical(self, "Error", f"Could not toggle mod:\n{exc}")
-            return
-        self.refresh()
 
     def _edit_platform(self):
         if self._instance_manager is None or not self._require_stopped():
@@ -939,6 +1124,9 @@ class ModsTab(QWidget):
             self.refresh()
 
     def has_active_operation(self) -> bool:
+        # Inventory scans and row rendering are read-only. Their generations
+        # reject stale results, and their workers are retained safely through
+        # shutdown, so they must not block server Start or selection changes.
         net_busy = bool(self._net_thread and self._net_thread.isRunning())
         inspect_busy = bool(self._thread and self._thread.isRunning())
         return net_busy or inspect_busy
