@@ -446,6 +446,10 @@ def capture_previews(output: Path) -> list[Path]:
         ):
             selected = MainWindow(manager)
             panel = selected._panel
+            # The preview driver inspects every page directly. Construct Players
+            # here so its later capture block retains the normal selection path;
+            # production startup leaves the page deferred until More -> Players.
+            panel._ensure_tab_created(6)
             selected._sidebar.update_status(pack_instance.id, "running")
             selected._sidebar.update_status(prism_instance.id, "starting")
             selected._sidebar.update_status(missing_instance.id, "missing")
@@ -459,7 +463,7 @@ def capture_previews(output: Path) -> list[Path]:
             panel._tabs.setCurrentWidget(panel._console)
             save(selected, "workspace-console.png", 1440, 900)
 
-            panel._tabs.setCurrentWidget(panel._mods)
+            panel._tabs.setCurrentIndex(1)  # First-use creation mirrors selecting Mods in the UI.
             QTest.qWait(350)  # deterministic local JAR inspection
             # Use the inventory filter as the normal keyboard-focus baseline;
             # Qt otherwise initially focuses the first per-mod state button.
@@ -562,7 +566,7 @@ def capture_previews(output: Path) -> list[Path]:
                     "normal Players page; the online-list focus boundary was not captured"
                 )
 
-            panel._tabs.setCurrentWidget(panel._world)
+            panel._tabs.setCurrentIndex(2)  # First-use creation mirrors selecting Worlds in the UI.
             QTest.qWait(80)
             world_page = panel._world
             if world_page._table.rowCount() != 3:
@@ -601,7 +605,11 @@ def capture_previews(output: Path) -> list[Path]:
             save(selected, "workspace-world-recovery.png", 1440, 900)
             save(selected, "workspace-world-recovery-compact.png", 900, 600)
 
-            panel._tabs.setCurrentWidget(panel._info)
+            panel._tabs.setCurrentIndex(4)  # First-use creation mirrors selecting Diagnostics in the UI.
+            panel._info._inspect_logs_btn.setFocus(Qt.FocusReason.OtherFocusReason)
+            app.processEvents()
+            if app.focusWidget() is not panel._info._inspect_logs_btn:
+                raise RuntimeError("Could not focus the Diagnostics baseline control")
             save(selected, "workspace-diagnostics.png", 1440, 900)
 
             # Capture a real keyboard focus state so reviewers can inspect

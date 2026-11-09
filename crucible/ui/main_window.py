@@ -52,6 +52,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QSplitter,
+    QSystemTrayIcon,
 )
 
 from ..data.instance_manager import InstanceManager, validate_delete_target
@@ -59,11 +60,8 @@ from ..data.instance_model import ServerInstance
 from ..process.crash_recovery import reconcile as reconcile_crash_recovery
 from ..process.tmux_manager import TmuxManager
 from . import theme
-from .add_dialog import AddInstanceDialog
 from .instance_panel import InstancePanel
-from .shortcuts_dialog import ShortcutsDialog
 from .sidebar import Sidebar
-from .system_tray import SystemTrayController
 
 HEALTH_CHECK_INTERVAL_MS = 5_000
 
@@ -96,7 +94,7 @@ class MainWindow(QMainWindow):
         self._tmux = TmuxManager()
         self._settings = QSettings("Crucible", "Crucible")
         self._keep_in_tray = self._settings.value("ui/keep_in_tray", False, type=bool)
-        self._tray_controller: SystemTrayController | None = None
+        self._tray_controller = None
         self._tray_action = None
         self._quit_requested = False
         self._status_map: dict[str, str] = {}
@@ -228,10 +226,10 @@ class MainWindow(QMainWindow):
                     self._tray_action.setChecked(False)
                     self._tray_action.blockSignals(False)
                     self._tray_action.setEnabled(
-                        SystemTrayController.is_available()
+                        QSystemTrayIcon.isSystemTrayAvailable()
                     )
         elif self._tray_action is not None:
-            available = SystemTrayController.is_available()
+            available = QSystemTrayIcon.isSystemTrayAvailable()
             self._tray_action.setEnabled(available)
             if not available:
                 self._tray_action.setToolTip(
@@ -264,10 +262,12 @@ class MainWindow(QMainWindow):
             app.setQuitOnLastWindowClosed(True)
 
     def _enable_system_tray(self, *, initial: bool) -> bool:
+        from .system_tray import SystemTrayController
+
         if self._tray_controller is not None:
             self._tray_controller.show()
             return True
-        if not SystemTrayController.is_available():
+        if not QSystemTrayIcon.isSystemTrayAvailable():
             if self._tray_action is not None:
                 self._tray_action.setEnabled(False)
                 self._tray_action.setToolTip(
@@ -419,6 +419,8 @@ class MainWindow(QMainWindow):
             self._quit_requested = False
 
     def _on_shortcuts_requested(self, instance: ServerInstance) -> None:
+        from .shortcuts_dialog import ShortcutsDialog
+
         saved_directory = str(
             self._settings.value("shortcuts/desktop_directory", "") or ""
         )
@@ -806,6 +808,8 @@ class MainWindow(QMainWindow):
             from .modpack_dialog import ModpackDialog
             dlg = ModpackDialog(self._manager, self)
         else:
+            from .add_dialog import AddInstanceDialog
+
             dlg = AddInstanceDialog(self._manager, self)
 
         if dlg.exec() and dlg.result_instance is not None:
@@ -1116,6 +1120,8 @@ class MainWindow(QMainWindow):
         )
 
         if archive or is_prism:
+            from .add_dialog import AddInstanceDialog
+
             dlg = AddInstanceDialog(self._manager, self)
             QTimer.singleShot(0, lambda: dlg.begin_import_source(str(path)))
             if dlg.exec() and dlg.result_instance is not None:
@@ -1162,7 +1168,7 @@ class MainWindow(QMainWindow):
             not self._quit_requested
             and self._tray_controller is not None
             and self._tray_controller.visible
-            and SystemTrayController.is_available()
+            and QSystemTrayIcon.isSystemTrayAvailable()
         ):
             # A normal window close hides the UI only. The same window,
             # status worker and tray controller remain alive; Minecraft
