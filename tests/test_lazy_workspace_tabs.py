@@ -488,3 +488,50 @@ def test_instance_selection_never_runs_synchronous_tmux_status_probe(tmp_path) -
         panel.shutdown()
         panel.deleteLater()
         app.processEvents()
+
+
+def test_registered_instance_uses_cached_status_and_health_worker() -> None:
+    """Post-import UI registration must not synchronously probe tmux."""
+    from types import SimpleNamespace
+
+    from crucible.data.instance_model import ServerInstance
+    from crucible.ui.main_window import MainWindow
+
+    class Sidebar:
+        def __init__(self):
+            self._items = {}
+            self.added = []
+            self.updated = []
+            self.selected = []
+
+        def add_instance(self, instance, status):
+            self.added.append((instance, status))
+            self._items[instance.id] = object()
+
+        def update_status(self, instance_id, status):
+            self.updated.append((instance_id, status))
+
+        def select_by_id(self, instance_id):
+            self.selected.append(instance_id)
+
+    sidebar = Sidebar()
+    health_checks = []
+    fake_window = SimpleNamespace(
+        _sidebar=sidebar,
+        _status_map={},
+        _health_check=lambda: health_checks.append("queued"),
+    )
+    instance = ServerInstance("/tmp/synthetic-registered", "Imported")
+
+    already_listed = MainWindow._show_registered_instance(fake_window, instance)
+    assert not already_listed
+    assert sidebar.added == [(instance, "checking")]
+    assert sidebar.selected == [instance.id]
+    assert health_checks == ["queued"]
+
+    fake_window._status_map[instance.id] = "unknown"
+    already_listed = MainWindow._show_registered_instance(fake_window, instance)
+    assert already_listed
+    assert sidebar.updated == [(instance.id, "unknown")]
+    assert sidebar.added == [(instance, "checking")]
+    assert health_checks == ["queued", "queued"]
