@@ -52,6 +52,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QSplitter,
+    QSystemTrayIcon,
 )
 
 from ..data.instance_manager import InstanceManager, validate_delete_target
@@ -59,11 +60,8 @@ from ..data.instance_model import ServerInstance
 from ..process.crash_recovery import reconcile as reconcile_crash_recovery
 from ..process.tmux_manager import TmuxManager
 from . import theme
-from .add_dialog import AddInstanceDialog
 from .instance_panel import InstancePanel
-from .shortcuts_dialog import ShortcutsDialog
 from .sidebar import Sidebar
-from .system_tray import SystemTrayController
 
 HEALTH_CHECK_INTERVAL_MS = 5_000
 
@@ -96,7 +94,7 @@ class MainWindow(QMainWindow):
         self._tmux = TmuxManager()
         self._settings = QSettings("Crucible", "Crucible")
         self._keep_in_tray = self._settings.value("ui/keep_in_tray", False, type=bool)
-        self._tray_controller: SystemTrayController | None = None
+        self._tray_controller = None
         self._tray_action = None
         self._quit_requested = False
         self._status_map: dict[str, str] = {}
@@ -121,6 +119,9 @@ class MainWindow(QMainWindow):
         self._health_busy = False
         self._health_thread.start()
         self._external_registry_warning_shown = False
+        self._drop_validation_thread: QThread | None = None
+        self._drop_validation_worker: ServerValidationWorker | None = None
+        self._drop_validation_result: tuple[ServerInstance, list[str]] | None = None
 
         self.setWindowTitle("Crucible — Minecraft Server Manager")
         self.resize(1200, 760)
@@ -228,10 +229,10 @@ class MainWindow(QMainWindow):
                     self._tray_action.setChecked(False)
                     self._tray_action.blockSignals(False)
                     self._tray_action.setEnabled(
-                        SystemTrayController.is_available()
+                        QSystemTrayIcon.isSystemTrayAvailable()
                     )
         elif self._tray_action is not None:
-            available = SystemTrayController.is_available()
+            available = QSystemTrayIcon.isSystemTrayAvailable()
             self._tray_action.setEnabled(available)
             if not available:
                 self._tray_action.setToolTip(
@@ -264,10 +265,12 @@ class MainWindow(QMainWindow):
             app.setQuitOnLastWindowClosed(True)
 
     def _enable_system_tray(self, *, initial: bool) -> bool:
+        from .system_tray import SystemTrayController
+
         if self._tray_controller is not None:
             self._tray_controller.show()
             return True
-        if not SystemTrayController.is_available():
+        if not QSystemTrayIcon.isSystemTrayAvailable():
             if self._tray_action is not None:
                 self._tray_action.setEnabled(False)
                 self._tray_action.setToolTip(
@@ -419,6 +422,8 @@ class MainWindow(QMainWindow):
             self._quit_requested = False
 
     def _on_shortcuts_requested(self, instance: ServerInstance) -> None:
+        from .shortcuts_dialog import ShortcutsDialog
+
         saved_directory = str(
             self._settings.value("shortcuts/desktop_directory", "") or ""
         )
@@ -806,6 +811,8 @@ class MainWindow(QMainWindow):
             from .modpack_dialog import ModpackDialog
             dlg = ModpackDialog(self._manager, self)
         else:
+            from .add_dialog import AddInstanceDialog
+
             dlg = AddInstanceDialog(self._manager, self)
 
         if dlg.exec() and dlg.result_instance is not None:
@@ -1116,6 +1123,8 @@ class MainWindow(QMainWindow):
         )
 
         if archive or is_prism:
+            from .add_dialog import AddInstanceDialog
+
             dlg = AddInstanceDialog(self._manager, self)
             QTimer.singleShot(0, lambda: dlg.begin_import_source(str(path)))
             if dlg.exec() and dlg.result_instance is not None:
@@ -1133,11 +1142,60 @@ class MainWindow(QMainWindow):
                 "or a Minecraft server folder to import it.",
             )
             return
+        # A dropped server can contain a very large nested mods/ tree. Keep its
+        # validation off the GUI thread, then commit the already-checked result.
+        self._start_dropped_server_validation(path)
+
+    def _start_dropped_server_validation(self, path: Path) -> None:
+        from .instance_validation import ServerValidationWorker
+        from .thread_lifecycle import connect_thread_cleanup
+
+        if self._drop_validation_thread is not None:
+            self.statusBar().showMessage(
+                "A dropped server folder is already being checked.", 5000
+            )
+            return
+
+        candidate = ServerInstance(
+            str(path), path.name or "Imported server"
+        )
+        thread = QThread(self)
+        thread.setObjectName("CrucibleDroppedServerValidation")
+        worker = ServerValidationWorker(candidate)
+        self._drop_validation_thread = thread
+        self._drop_validation_worker = worker
+        self._drop_validation_result = None
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_dropped_server_validated)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        connect_thread_cleanup(
+            thread, lambda: self._dropped_server_validation_thread_finished(thread)
+        )
+        self.statusBar().showMessage("Checking dropped server folder…")
+        thread.start()
+
+    @pyqtSlot(object, object)
+    def _on_dropped_server_validated(self, candidate, problems) -> None:
+        self._drop_validation_result = (candidate, list(problems))
+
+    def _dropped_server_validation_thread_finished(self, thread: QThread) -> None:
+        if self._drop_validation_thread is not thread:
+            return
+        result = self._drop_validation_result
+        self._drop_validation_thread = None
+        self._drop_validation_worker = None
+        self._drop_validation_result = None
+        if result is None:
+            self.statusBar().showMessage("Dropped server validation returned no result.", 8000)
+            return
+
+        candidate, problems = result
         try:
-            # The source folder already gives a useful default name. The user can
-            # rename it from the sidebar later, so don't interrupt a drag-and-drop
-            # import with a second pop-up.
-            inst = self._manager.add_instance(str(path), path.name or "Imported server")
+            inst = self._manager.add_instance(
+                candidate.path, candidate.name, validation_problems=problems
+            )
         except ValueError as exc:
             QMessageBox.warning(self, "Import failed", str(exc))
             return
@@ -1145,10 +1203,22 @@ class MainWindow(QMainWindow):
         self._sidebar.add_instance(inst, status)
         self._sidebar.select_by_id(inst.id)
         self._update_status_bar()
+        message = (
+            f"Added {inst.name}. Review Diagnostics for folder warnings."
+            if problems
+            else f"Added {inst.name}."
+        )
+        self.statusBar().showMessage(message, 8000)
 
     # Close
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._drop_validation_thread is not None:
+            self.statusBar().showMessage(
+                "Wait for the dropped server folder check to finish before closing."
+            )
+            event.ignore()
+            return
         if self._panel.has_active_operations():
             QMessageBox.information(
                 self, "Operation in progress",
@@ -1162,7 +1232,7 @@ class MainWindow(QMainWindow):
             not self._quit_requested
             and self._tray_controller is not None
             and self._tray_controller.visible
-            and SystemTrayController.is_available()
+            and QSystemTrayIcon.isSystemTrayAvailable()
         ):
             # A normal window close hides the UI only. The same window,
             # status worker and tray controller remain alive; Minecraft

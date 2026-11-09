@@ -401,21 +401,22 @@ race_target=root/'raced-modpack';race_target.mkdir()
 race_marker=race_target/'keep.txt';race_marker.write_text('keep this file')
 worker_logs=[];worker_results=[]
 worker=_PackInstallWorker('test-pack-id',str(race_target),True,threading.Event())
-worker.log.connect(worker_logs.append);worker.finished.connect(worker_results.append)
+worker.log.connect(worker_logs.append);worker.finished.connect(lambda result, problems: worker_results.append((result, problems)))
 with patch('crucible.ui.modpack_dialog.modpack_auto.install_modpack_from_modrinth') as install_call:
  worker.run()
-assert not install_call.called and worker_results==[None]
+assert not install_call.called and worker_results==[(None, [])]
 assert any('Refusing to install into an existing folder' in line for line in worker_logs)
 assert race_marker.read_text()=='keep this file'
 
 fresh_worker_target=root/'fresh-worker-target'
 fresh_worker= _PackInstallWorker('test-pack-id',str(fresh_worker_target),True,threading.Event())
-fresh_worker_results=[];fresh_worker.finished.connect(fresh_worker_results.append)
-fake_install_result=SimpleNamespace(ok=True)
+fresh_worker_results=[];fresh_worker.finished.connect(lambda result, problems: fresh_worker_results.append((result, problems)))
+fake_install_result=SimpleNamespace(ok=True,path=str(fresh_worker_target))
 with patch('crucible.ui.modpack_dialog.modpack_auto.install_modpack_from_modrinth',return_value=fake_install_result) as install_call:
  fresh_worker.run()
 assert install_call.call_args.kwargs['target_must_not_exist'] is True
-assert fresh_worker_results==[fake_install_result]
+assert len(fresh_worker_results)==1 and fresh_worker_results[0][0] is fake_install_result
+assert isinstance(fresh_worker_results[0][1],list)
 
 # Completion is communicated in the existing status/log UI, not a second popup.
 success_target=root/'installed-modpack';success_target.mkdir()
@@ -425,7 +426,7 @@ ok_result=SimpleNamespace(
  minecraft_version='1.21.1',loader='fabric',loader_version='0.16.10',
  summary=lambda:'Installed test pack'
 )
-pack_ui._on_installed(ok_result)
+pack_ui._on_installed(ok_result, [])
 assert pack_ui.result_instance is not None and pack_ui._accept_requested
 assert 'added it to your server list' in pack_ui._status.text()
 
@@ -437,7 +438,7 @@ duplicate_result=SimpleNamespace(
  summary=lambda:'Existing server'
 )
 pack_ui._accept_requested=False
-pack_ui._on_installed(duplicate_result)
+pack_ui._on_installed(duplicate_result, [])
 assert pack_ui.result_instance.id==inst.id and pack_ui._accept_requested
 pack_ui.close();pack_ui.deleteLater();QTest.qWait(20)
 
@@ -1186,8 +1187,22 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(dropdir))])
  event=QDragEnterEvent(QPoint(3,3),Qt.DropAction.CopyAction,mime,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
  assert window.eventFilter(window._panel._console._view,event) and event.isAccepted()
- with patch.object(QInputDialog,'getText',return_value=('Dropped name',True)):
+ drop_validation_threads=[]
+ original_validate=ServerInstance.validate
+ def record_drop_validation(instance, **kwargs):
+  drop_validation_threads.append(threading.get_ident())
+  return original_validate(instance, **kwargs)
+ with patch.object(ServerInstance,'validate',record_drop_validation):
   window._import_dropped_path(dropdir)
+  assert window._drop_validation_thread is not None
+  drop_deadline=time.monotonic()+3.0
+  while window._drop_validation_thread is not None and time.monotonic()<drop_deadline:
+   app.processEvents();QTest.qWait(5)
+  app.processEvents()
+ assert window._drop_validation_thread is None
+ assert drop_validation_threads and all(
+  thread_id != threading.main_thread().ident for thread_id in drop_validation_threads
+ )
  assert m.instances[-1].name==dropdir.name
  # Compact header keeps its action controls inside the panel.
  for btn in (window._panel._btn_start,window._panel._btn_stop):

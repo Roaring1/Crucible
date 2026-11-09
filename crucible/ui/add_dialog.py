@@ -36,6 +36,7 @@ from ..data.instance_manager import InstanceManager
 from ..data.instance_model import ServerInstance
 from ..importers.prism import import_prism_source
 from . import theme
+from .instance_validation import ServerValidationWorker
 from .thread_lifecycle import connect_thread_cleanup
 
 
@@ -88,23 +89,6 @@ class _PrismImportWorker(QObject):
             self.finished.emit(None, str(exc))
 
 
-class _ServerValidationWorker(QObject):
-    """Run read-only instance validation outside the dialog's GUI thread."""
-
-    finished = pyqtSignal(object, object)
-
-    def __init__(self, candidate: ServerInstance):
-        super().__init__()
-        self._candidate = candidate
-
-    def run(self) -> None:
-        try:
-            problems = self._candidate.validate()
-        except Exception as exc:  # noqa: BLE001 - filesystem failures cross the worker boundary
-            problems = [f"Validation could not complete: {exc}"]
-        self.finished.emit(self._candidate, problems)
-
-
 class AddInstanceDialog(QDialog):
     """
     Modal dialog that lets the user import or register a server directory.
@@ -125,7 +109,7 @@ class AddInstanceDialog(QDialog):
         self._pending_manual_registration = False
         self._manual_validation_problems: list[str] | None = None
         self._validation_thread: QThread | None = None
-        self._validation_worker: _ServerValidationWorker | None = None
+        self._validation_worker: ServerValidationWorker | None = None
         self._validation_result: tuple[ServerInstance, list[str]] | None = None
         self._validation_origin = ""
         self._validation_extra_warnings: list[str] = []
@@ -595,7 +579,7 @@ class AddInstanceDialog(QDialog):
         self._set_validation_controls_enabled(False)
 
         thread = QThread()
-        worker = _ServerValidationWorker(candidate)
+        worker = ServerValidationWorker(candidate)
         self._validation_thread = thread
         self._validation_worker = worker
         worker.moveToThread(thread)
