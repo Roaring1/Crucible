@@ -82,6 +82,37 @@ class _HealthWorker(QObject):
         self.finished.emit(self._tmux.status_map(list(instances)))
 
 
+class _LoadingRepairWorker(QObject):
+    """Run loading diagnosis and quarantine work away from the Qt GUI thread."""
+
+    finished = pyqtSignal(str, str, object, str)
+
+    def __init__(self, instance: ServerInstance, phase: str, tmux: TmuxManager):
+        super().__init__()
+        self._instance = instance
+        self._phase = phase
+        self._tmux = tmux
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            status = self._tmux.get_status(self._instance)
+            if status != "stopped":
+                self.finished.emit(
+                    self._instance.id, self._phase, {"status": status}, ""
+                )
+                return
+
+            from ..diagnostics import loadcheck as lc
+
+            result = lc.autofix_loading(
+                self._instance.path, apply=self._phase == "apply"
+            )
+            self.finished.emit(self._instance.id, self._phase, result, "")
+        except Exception as exc:  # noqa: BLE001 - report failures at the GUI boundary.
+            self.finished.emit(self._instance.id, self._phase, None, str(exc))
+
+
 class MainWindow(QMainWindow):
     """Crucible main window."""
 
@@ -121,6 +152,10 @@ class MainWindow(QMainWindow):
         self._drop_validation_thread: QThread | None = None
         self._drop_validation_worker: ServerValidationWorker | None = None
         self._drop_validation_result: tuple[ServerInstance, list[str]] | None = None
+        self._loading_repair_thread: QThread | None = None
+        self._loading_repair_worker: _LoadingRepairWorker | None = None
+        self._loading_repair_instance: ServerInstance | None = None
+        self._loading_repair_pending_apply: ServerInstance | None = None
 
         self.setWindowTitle("Crucible — Minecraft Server Manager")
         self.resize(1200, 760)
@@ -894,30 +929,127 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _on_fix_loading_requested(self, instance: ServerInstance) -> None:
-        """Diagnose a start/loading crash and offer to quarantine client-only mods."""
-        status = self._tmux.get_status(instance)
-        if status != "stopped":
-            QMessageBox.warning(self, "Stop the server first", "Loading repairs require a confirmed stopped server. Current status: " + status)
+        """Start a background, read-only diagnosis of a server loading crash."""
+        if self._loading_repair_thread is not None:
+            self.statusBar().showMessage(
+                "A loading diagnosis or repair is already in progress."
+            )
             return
-        from ..diagnostics import loadcheck as lc
-        res = lc.autofix_loading(instance.path, apply=False)
-        diag = res.diagnosis
+        self._start_loading_repair(instance, "diagnose")
 
+    def _start_loading_repair(self, instance: ServerInstance, phase: str) -> None:
+        thread = QThread(self)
+        thread.setObjectName("CrucibleLoadingRepairThread")
+        worker = _LoadingRepairWorker(instance, phase, self._tmux)
+        worker.moveToThread(thread)
+        self._loading_repair_thread = thread
+        self._loading_repair_worker = worker
+        self._loading_repair_instance = instance
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_loading_repair_finished)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        from .thread_lifecycle import connect_thread_cleanup
+
+        def clear_worker() -> None:
+            if self._loading_repair_thread is not thread:
+                return
+            self._loading_repair_thread = None
+            self._loading_repair_worker = None
+            self._loading_repair_instance = None
+            self._start_pending_loading_repair_if_idle()
+
+        connect_thread_cleanup(thread, clear_worker)
+        thread.start()
+        self.statusBar().showMessage(
+            "Checking server logs and mod archives in the background..."
+        )
+
+    def _start_pending_loading_repair_if_idle(self) -> None:
+        """Start a confirmed apply phase after any previous QThread has stopped."""
+        if self._loading_repair_thread is not None:
+            return
+        pending = self._loading_repair_pending_apply
+        if pending is None:
+            return
+        self._loading_repair_pending_apply = None
+        current = next(
+            (item for item in self._manager.instances if item.id == pending.id),
+            None,
+        )
+        if current is not None and current.path == pending.path:
+            self._start_loading_repair(current, "apply")
+
+    def _on_loading_repair_finished(
+        self, instance_id: str, phase: str, result, error: str
+    ) -> None:
+        """Handle a completed worker result without trusting stale instance state."""
+        instance = next(
+            (item for item in self._manager.instances if item.id == instance_id),
+            None,
+        )
+        worker_instance = self._loading_repair_instance
+        if (
+            instance is None
+            or worker_instance is None
+            or instance.path != worker_instance.path
+        ):
+            self.statusBar().showMessage(
+                "Loading repair cancelled because the server entry changed."
+            )
+            return
+
+        if error:
+            self._show_loading_details(
+                instance, "Loading diagnosis or repair failed: " + error
+            )
+            return
+        if isinstance(result, dict) and "status" in result:
+            if phase == "diagnose":
+                QMessageBox.warning(
+                    self,
+                    "Stop the server first",
+                    "Loading repairs require a confirmed stopped server. "
+                    "Current status: " + str(result["status"]),
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Status changed",
+                    "The server is no longer confirmed stopped. No repair was applied.",
+                )
+            return
+
+        if phase == "diagnose":
+            self._present_loading_diagnosis(instance, result)
+        elif phase == "apply":
+            self._present_loading_repair_result(instance, result)
+
+    def _present_loading_diagnosis(self, instance: ServerInstance, res) -> None:
+        diag = res.diagnosis
         if not diag.found_crash:
-            self._show_loading_details(instance, "No server log was found. Start once to collect one, then re-check Setup and this diagnosis.")
+            self._show_loading_details(
+                instance,
+                "No server log was found. Start once to collect one, then re-check Setup and this diagnosis.",
+            )
             return
         if diag.is_clean:
-            self._show_loading_details(instance, "No safe automatic repair was identified. Review the latest log below; no files have been changed.")
+            self._show_loading_details(
+                instance,
+                "No safe automatic repair was identified. Review the latest log below; no files have been changed.",
+            )
             return
 
         summary = diag.human_summary()
-        culprits = res.quarantined  # filenames we would disable (dry run)
+        culprits = res.quarantined
         if not culprits:
             extra = ""
             if res.unresolved:
-                extra = ("\n\nCould not locate jars for: "
-                         + ", ".join(res.unresolved))
-            self._show_loading_details(instance, summary + extra + "\nNo safe automatic repair is available; no files were changed.")
+                extra = "\n\nCould not locate jars for: " + ", ".join(res.unresolved)
+            self._show_loading_details(
+                instance,
+                summary + extra + "\nNo safe automatic repair is available; no files were changed.",
+            )
             return
 
         msg = QMessageBox(self)
@@ -928,32 +1060,44 @@ class MainWindow(QMainWindow):
             "Disable (quarantine) these client-only mod(s) so the server can "
             "start?\n\n  • " + "\n  • ".join(culprits)
             + "\n\nThey will be renamed to *.jar.disabled and can be re-enabled "
-            "from the Mods tab at any time.")
+            "from the Mods tab at any time."
+        )
         msg.setStandardButtons(
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
         msg.setDefaultButton(QMessageBox.StandardButton.Yes)
         if msg.exec() != QMessageBox.StandardButton.Yes:
             return
 
-        if self._tmux.get_status(instance) != "stopped":
-            QMessageBox.warning(self, "Status changed", "The server is no longer confirmed stopped. No repair was applied.")
-            return
-        try:
-            applied = lc.autofix_loading(instance.path, apply=True)
-        except OSError as exc:
-            self._show_loading_details(instance, "Repair could not complete: " + str(exc))
-            return
+        # Wait until this diagnosis thread has fully stopped before starting
+        # the apply worker. A modal confirmation can run a nested Qt event
+        # loop, so starting a replacement QThread directly here races cleanup.
+        self._loading_repair_pending_apply = instance
+        self.statusBar().showMessage(
+            "Confirmation received. Rechecking server state before applying..."
+        )
+        # The modal confirmation runs a nested event loop. The diagnosis
+        # thread may already have stopped and cleaned itself up while the
+        # prompt was open, so handle both the already-idle and still-busy case.
+        self._start_pending_loading_repair_if_idle()
+
+    def _present_loading_repair_result(self, instance: ServerInstance, applied) -> None:
         done = applied.quarantined
         tail = ""
         if applied.unresolved:
-            tail = ("\n\nCould not find jars for: "
-                    + ", ".join(applied.unresolved)
-                    + "\nRemove these from mods/ manually.")
+            tail = (
+                "\n\nCould not find jars for: "
+                + ", ".join(applied.unresolved)
+                + "\nRemove these from mods/ manually."
+            )
         QMessageBox.information(
-            self, "Fix loading errors",
+            self,
+            "Fix loading errors",
             f"Disabled {len(done)} client-only mod(s):\n  • "
-            + "\n  • ".join(done) + tail
-            + "\n\nYou can start the server again now.")
+            + "\n  • ".join(done)
+            + tail
+            + "\n\nYou can start the server again now.",
+        )
 
     def _on_export_requested(self, instance: ServerInstance) -> None:
         """Open the review-first player-sharing flow for this server."""
@@ -1229,6 +1373,15 @@ class MainWindow(QMainWindow):
         if self._drop_validation_thread is not None:
             self.statusBar().showMessage(
                 "Wait for the dropped server folder check to finish before closing."
+            )
+            event.ignore()
+            return
+        if (
+            self._loading_repair_thread is not None
+            or self._loading_repair_pending_apply is not None
+        ):
+            self.statusBar().showMessage(
+                "Wait for the loading diagnosis or repair to finish before closing."
             )
             event.ignore()
             return
