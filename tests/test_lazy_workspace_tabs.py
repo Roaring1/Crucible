@@ -446,3 +446,45 @@ def test_history_tracker_disconnect_requires_successful_flush() -> None:
         tracker.record_server_stopped,
         tracker.record_server_stopped,
     ]
+
+
+def test_instance_selection_never_runs_synchronous_tmux_status_probe(tmp_path) -> None:
+    """Unknown or absent health hints must not block selection on tmux/procfs."""
+    from PyQt6.QtWidgets import QApplication
+
+    from crucible.data.instance_manager import InstanceManager
+    from crucible.data.instance_model import ServerInstance
+    from crucible.ui.instance_panel import InstancePanel
+
+    app = QApplication.instance() or QApplication([])
+    manager = InstanceManager(tmp_path / "registry")
+    manager.load()
+    root = tmp_path / "server"
+    root.mkdir()
+    instance = ServerInstance(str(root), "Synthetic server")
+    panel = InstancePanel(manager)
+
+    try:
+        with (
+            patch.object(
+                panel._tmux,
+                "get_status",
+                side_effect=AssertionError("GUI selection must not run tmux/procfs"),
+            ),
+            patch.object(panel, "_start_watcher", lambda _instance: None),
+            patch.object(panel, "_set_identity_icon", lambda _instance: None),
+        ):
+            assert panel.load(instance, status_hint="unknown")
+            assert panel._current_status == "unknown"
+
+            # An absent hint is not permission to synchronously probe either.
+            second_root = tmp_path / "second-server"
+            second_root.mkdir()
+            second = ServerInstance(str(second_root), "Second synthetic server")
+            assert panel.load(second, status_hint=None)
+            assert panel._current_status == "checking"
+    finally:
+        panel._disconnect_player_history_tracker()
+        panel.shutdown()
+        panel.deleteLater()
+        app.processEvents()
