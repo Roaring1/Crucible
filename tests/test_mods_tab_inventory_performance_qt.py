@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QCoreApplication, QEvent, Qt
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication, QLabel
 
 from crucible.mods.mod_manager import ModEntry
 from crucible.ui.tabs.mods_tab import ModsTab
@@ -15,6 +18,76 @@ from crucible.ui.tabs.mods_tab import ModsTab
 
 def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _wait_until(predicate, timeout: float = 5.0) -> bool:
+    app = _app()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            app.processEvents()
+            return True
+        QTest.qWait(5)
+    app.processEvents()
+    return bool(predicate())
+
+
+def _inventory_idle(tab: ModsTab) -> bool:
+    return (
+        tab._inventory_thread is None
+        and not tab._inventory_refresh_pending
+        and not tab._table_rendering
+    )
+
+
+def test_bundled_rows_use_items_not_child_widgets(tmp_path):
+    app = _app()
+    tab = ModsTab()
+    bundled = [
+        ModEntry(
+            f"nested-{index}.jar",
+            tmp_path / f"parent-{index}" / f"nested-{index}.jar",
+            False,
+            50,
+            bundled=True,
+        )
+        for index in range(100)
+    ]
+
+    try:
+        # Populate a manageable row first so the replacement proves an old
+        # Enabled/Disabled QPushButton is not retained in the same row slot.
+        managed = ModEntry("managed.jar", tmp_path / "managed.jar", True, 25)
+        tab._populate_table([managed])
+        labels_before = len(tab.findChildren(QLabel))
+        tab._populate_table(bundled)
+        labels_after = len(tab.findChildren(QLabel))
+
+        assert tab._table.rowCount() == 100
+        assert labels_after == labels_before
+        for row in range(100):
+            state = tab._table.item(row, tab._COL_ENABLED)
+            assert tab._table.cellWidget(row, tab._COL_ENABLED) is None
+            assert state.text() == "Bundled"
+            assert state.textAlignment() & Qt.AlignmentFlag.AlignHCenter
+            assert "cannot be toggled or removed" in state.toolTip()
+            assert state.flags() & Qt.ItemFlag.ItemIsSelectable
+            name = tab._table.item(row, tab._COL_NAME)
+            mod = name.data(Qt.ItemDataRole.UserRole)
+            assert mod in bundled
+        rendered_mods = {
+            id(
+                tab._table.item(row, tab._COL_NAME).data(
+                    Qt.ItemDataRole.UserRole
+                )
+            )
+            for row in range(100)
+        }
+        assert rendered_mods == {id(mod) for mod in bundled}
+    finally:
+        tab.close()
+        app.processEvents()
 
 
 def test_inspection_queue_skips_bundled_and_already_inspected_entries(tmp_path):
@@ -108,7 +181,337 @@ def test_inspection_result_ignores_replaced_or_stale_mod_items(tmp_path, monkeyp
         app.processEvents()
 
 
-def test_mod_identity_record_is_read_once_per_refresh_for_all_rows(
+
+
+
+def test_refresh_scans_inventory_off_thread_and_latest_server_wins(
+    tmp_path, monkeypatch
+):
+    app = _app()
+    tab = ModsTab()
+    old_mod = ModEntry(
+        "old.jar", tmp_path / "server-a" / "mods" / "old.jar", True, 10
+    )
+    new_mod = ModEntry(
+        "new.jar", tmp_path / "server-b" / "mods" / "new.jar", True, 10
+    )
+    old_instance = SimpleNamespace(path=str(tmp_path / "server-a"))
+    new_instance = SimpleNamespace(path=str(tmp_path / "server-b"))
+    old_started = threading.Event()
+    release_old = threading.Event()
+    identity_paths: list[tuple[str, int]] = []
+    main_thread = threading.get_ident()
+
+    class SlowOldManager:
+        def list_mods(self):
+            old_started.set()
+            release_old.wait(3.0)
+            return [old_mod]
+
+    class NewManager:
+        def list_mods(self):
+            return [new_mod]
+
+    def read_identity(path):
+        identity_paths.append((path, threading.get_ident()))
+        return {Path(path).name: {"project_id": f"project-{Path(path).name}"}}
+
+    tab._start_inspect_pass = lambda: None
+    monkeypatch.setattr("crucible.mods.modrinth.added_mods", read_identity)
+
+    try:
+        tab._instance = old_instance
+        tab._manager = SlowOldManager()
+        tab.refresh()
+        assert old_started.wait(1.0)
+        assert not tab._table.isEnabled()
+        assert not tab.has_active_operation()
+
+        # Replace the in-flight request. The old result must be discarded,
+        # then the one pending worker must read the newly selected server.
+        tab._instance = new_instance
+        tab._manager = NewManager()
+        tab.refresh()
+        assert tab._inventory_refresh_pending
+        assert not tab.has_active_operation()
+        release_old.set()
+
+        assert _wait_until(lambda: _inventory_idle(tab))
+        assert tab._table.rowCount() == 1
+        assert tab._table.item(0, tab._COL_NAME).data(
+            Qt.ItemDataRole.UserRole
+        ) is new_mod
+        assert tab._table.item(0, tab._COL_NAME).text() == "new"
+        assert tab._instance is new_instance
+        assert len(identity_paths) == 2
+        assert all(thread != main_thread for _path, thread in identity_paths)
+        assert any(path == str(old_instance.path) for path, _thread in identity_paths)
+        assert any(path == str(new_instance.path) for path, _thread in identity_paths)
+    finally:
+        release_old.set()
+        _wait_until(lambda: _inventory_idle(tab))
+        tab.close()
+        app.processEvents()
+
+
+def test_chunked_mod_table_yields_in_hundred_row_batches_and_replaces_stale_render(
+    tmp_path
+):
+    app = _app()
+    tab = ModsTab()
+    old_mods = [
+        ModEntry(
+            f"old-{index}.jar",
+            tmp_path / f"old-{index}.jar",
+            False,
+            5,
+            bundled=True,
+        )
+        for index in range(250)
+    ]
+    new_mods = [
+        ModEntry(
+            f"new-{index}.jar",
+            tmp_path / f"new-{index}.jar",
+            False,
+            5,
+            bundled=True,
+        )
+        for index in range(3)
+    ]
+
+    try:
+        tab._begin_chunked_table_population(old_mods)
+        tab._table_render_timer.stop()
+        tab._render_table_chunk()
+        assert tab._table.rowCount() == 100
+        assert tab._table_rendering
+        assert not tab.has_active_operation()
+        assert not tab._table.isEnabled()
+        assert tab._table.item(99, tab._COL_NAME).text() == "old-99"
+
+        # A new refresh invalidates the remaining 150-row batch schedule.
+        tab._begin_chunked_table_population(new_mods)
+        tab._table_render_timer.stop()
+        tab._render_table_chunk()
+        assert not tab._table_rendering
+        assert tab._table.isEnabled()
+        assert tab._table.rowCount() == 3
+        assert tab._table.item(0, tab._COL_NAME).text() == "new-0"
+        assert tab._table.item(2, tab._COL_NAME).text() == "new-2"
+        assert not tab.has_active_operation()
+
+        # A stale timer event after completion is inert.
+        tab._render_table_chunk()
+        assert tab._table.rowCount() == 3
+        assert tab._table.item(0, tab._COL_NAME).text() == "new-0"
+    finally:
+        tab.close()
+        app.processEvents()
+
+
+def test_inventory_worker_failure_reenables_table_and_reports_read_error(
+    tmp_path
+):
+    app = _app()
+    tab = ModsTab()
+    tab._instance = SimpleNamespace(path=str(tmp_path))
+
+    class BrokenManager:
+        def list_mods(self):
+            raise OSError("mods directory became unavailable")
+
+    tab._manager = BrokenManager()
+
+    try:
+        tab.refresh()
+        assert _wait_until(lambda: _inventory_idle(tab))
+        assert tab._table.isEnabled()
+        assert tab._table.rowCount() == 0
+        assert "mods directory became unavailable" in tab._count_label.text()
+    finally:
+        _wait_until(lambda: _inventory_idle(tab))
+        tab.close()
+        app.processEvents()
+
+
+
+
+
+def test_destroyed_tab_does_not_start_queued_inventory_refresh(tmp_path):
+    app = _app()
+    from crucible.ui.tabs import mods_tab
+
+    tab = ModsTab()
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class SlowManager:
+        def list_mods(self):
+            calls.append(threading.get_ident())
+            started.set()
+            release.wait(3.0)
+            return []
+
+    tab._instance = SimpleNamespace(path=str(tmp_path))
+    tab._manager = SlowManager()
+    lifecycle_state = tab._inventory_lifecycle_state
+
+    try:
+        tab.refresh()
+        assert started.wait(1.0)
+        tab.refresh()
+        assert tab._inventory_refresh_pending
+        tab.deleteLater()
+        QCoreApplication.sendPostedEvents(tab, QEvent.Type.DeferredDelete)
+        app.processEvents()
+        assert lifecycle_state["destroyed"]
+
+        release.set()
+        assert _wait_until(lambda: not mods_tab._ACTIVE_MOD_INVENTORY_WORKERS)
+        assert len(calls) == 1
+    finally:
+        release.set()
+        app.processEvents()
+
+
+
+
+
+def test_toggle_refresh_restores_selected_mod_after_async_population(
+    tmp_path, monkeypatch
+):
+    app = _app()
+    tab = ModsTab()
+    original = ModEntry("z-mod.jar", tmp_path / "z-mod.jar", True, 10)
+    other = ModEntry("a-mod.jar", tmp_path / "a-mod.jar", False, 10)
+    replacement = ModEntry("z-mod.jar", tmp_path / "z-mod.jar", False, 10)
+    instance = SimpleNamespace(path=str(tmp_path), id="server-a")
+
+    class FakeManager:
+        def disable(self, mod):
+            assert mod is original
+            mod.enabled = False
+
+        def list_mods(self):
+            return [other, replacement]
+
+    tab._instance = instance
+    tab._manager = FakeManager()
+    tab._require_stopped = lambda: True
+    tab._start_inspect_pass = lambda: None
+    monkeypatch.setattr("crucible.mods.modrinth.added_mods", lambda _path: {})
+
+    try:
+        tab._populate_table([original])
+        tab._set_enabled(original, False)
+
+        # The inventory worker may finish quickly; assert the stable result
+        # rather than assuming an intermediate pending state is observable.
+        assert _wait_until(lambda: _inventory_idle(tab))
+
+        selected = tab._selected_mod()
+        assert selected is replacement
+        assert tab._table.currentRow() == 1
+        assert tab._table.item(1, tab._COL_NAME).data(
+            Qt.ItemDataRole.UserRole
+        ) is replacement
+        assert tab._detail_title.text() == replacement.display_name
+        assert tab._select_after_refresh_filename is None
+    finally:
+        _wait_until(lambda: _inventory_idle(tab))
+        tab.close()
+        app.processEvents()
+
+
+
+
+
+def test_mod_file_operations_wait_for_inventory_before_touching_the_mod_folder(
+    tmp_path, monkeypatch
+):
+    app = _app()
+    tab = ModsTab()
+    tab._instance = SimpleNamespace(path=str(tmp_path))
+    tab._manager = object()
+    mod = ModEntry("pending.jar", tmp_path / "pending.jar", True, 10)
+    tab._mods = [mod]
+    tab._populate_table([mod])
+    tab._added_mod_snapshot = {
+        "pending.jar": {"project_id": "stale-project"}
+    }
+    # Simulate an in-flight background inventory scan. It is not a global
+    # mutating operation, but file-dependent mod actions must wait for it.
+    tab._inventory_thread = object()
+    notices = []
+    refresh_calls = []
+    tab.refresh = lambda: refresh_calls.append(True)
+    monkeypatch.setattr(
+        "PyQt6.QtWidgets.QMessageBox.information",
+        lambda *args: notices.append(args[1:3]),
+    )
+    monkeypatch.setattr(
+        "PyQt6.QtWidgets.QMessageBox.question",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("confirmation must not open during inventory loading")
+        ),
+    )
+    monkeypatch.setattr(
+        "PyQt6.QtWidgets.QFileDialog.getOpenFileNames",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("file picker must not open during inventory loading")
+        ),
+    )
+    monkeypatch.setattr(
+        "crucible.process.tmux_manager.TmuxManager.get_status",
+        lambda _self, _instance: (_ for _ in ()).throw(
+            AssertionError("status probe should not run while inventory is loading")
+        ),
+    )
+    monkeypatch.setattr(
+        "crucible.ui.pack_update_dialog.PackUpdateDialog",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("pack updater must not open during inventory loading")
+        ),
+    )
+    monkeypatch.setattr(
+        "crucible.mods.versions.identify_files",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("identity scan must not start during inventory loading")
+        ),
+    )
+
+    try:
+        tab.refresh = ModsTab.refresh.__get__(tab, ModsTab)
+        # Keep a synthetic worker reference so the refresh clears the old
+        # table/snapshot but cannot launch another worker in this test.
+        tab.refresh()
+        assert tab._table.rowCount() == 0
+        assert tab._added_mod_snapshot == {}
+        assert "not linked" not in tab._detail_summary.text()
+
+        tab.refresh = lambda: refresh_calls.append(True)
+        assert not tab._require_stopped()
+        tab._set_enabled(mod, False)
+        tab._delete_mod(mod, 0)
+        tab._open_add_mod()
+        tab._pick_file()
+        tab._download_from_pack()
+        tab._verify_deps()
+        tab._open_pack_update()
+        tab._identify_online()
+
+        assert refresh_calls == []
+        assert len(notices) == 9
+        assert all(title == "Inventory loading" for title, _message in notices)
+    finally:
+        tab._inventory_thread = None
+        tab.close()
+        app.processEvents()
+
+
+def test_mod_identity_record_is_read_once_per_refresh_on_inventory_worker(
     tmp_path, monkeypatch
 ):
     app = _app()
@@ -116,31 +519,42 @@ def test_mod_identity_record_is_read_once_per_refresh_for_all_rows(
     first = ModEntry("first.jar", tmp_path / "first.jar", True, 10)
     second = ModEntry("second.jar", tmp_path / "second.jar", True, 10)
     tab._instance = SimpleNamespace(path=str(tmp_path))
+    main_thread = threading.get_ident()
+    calls: list[tuple[str, int]] = []
+    list_threads: list[int] = []
 
     class FakeManager:
         def list_mods(self):
+            list_threads.append(threading.get_ident())
             return [first, second]
 
     tab._manager = FakeManager()
     tab._start_inspect_pass = lambda: None
-    calls = []
 
     def read_identity(path):
-        calls.append(path)
+        calls.append((path, threading.get_ident()))
         return {"first.jar": {"project_id": "project-123"}}
 
     monkeypatch.setattr("crucible.mods.modrinth.added_mods", read_identity)
 
     try:
         tab.refresh()
-        assert calls == [str(tmp_path)]
+        assert calls == []
+        assert not tab._table.isEnabled()
+        assert _wait_until(lambda: _inventory_idle(tab))
+
+        assert len(calls) == 1
+        assert calls[0][0] == str(tmp_path)
+        assert list_threads and list_threads[0] != main_thread
+        assert calls[0][1] != main_thread
+        assert tab._table.rowCount() == 2
         first.name = "First"
         first.version = "1.0"
         tab._on_inspect_result(tab._inspect_generation, 0, first)
         assert "Exact online match" in tab._mod_name_items[id(first)].toolTip()
 
-        # Selection changes and separate worker completions reuse the same
-        # snapshot rather than reopening and reparsing added-mods.json.
+        # Selection changes and worker callbacks reuse the same in-memory
+        # snapshot rather than reopening added-mods.json.
         tab._table.selectRow(1)
         first.name = "First"
         first.version = "1.0"
@@ -149,17 +563,21 @@ def test_mod_identity_record_is_read_once_per_refresh_for_all_rows(
         monkeypatch.setattr(
             "crucible.mods.modrinth.added_mods",
             lambda _path: (_ for _ in ()).throw(
-                AssertionError("selection/worker callback reread added-mods.json")
+                AssertionError("selection/inspection reread added-mods.json")
             ),
         )
         tab._on_inspect_result(tab._inspect_generation, 0, first)
         tab._on_inspect_result(tab._inspect_generation, 1, second)
-        assert calls == [str(tmp_path)]
+        assert len(calls) == 1
 
-        # A new refresh intentionally takes a new disk snapshot.
+        # A new refresh intentionally takes one new background snapshot.
         monkeypatch.setattr("crucible.mods.modrinth.added_mods", read_identity)
         tab.refresh()
-        assert calls == [str(tmp_path), str(tmp_path)]
+        assert _wait_until(lambda: _inventory_idle(tab))
+        assert len(calls) == 2
+        assert all(path == str(tmp_path) for path, _thread in calls)
+        assert all(thread != main_thread for _path, thread in calls)
     finally:
+        _wait_until(lambda: _inventory_idle(tab))
         tab.close()
         app.processEvents()
