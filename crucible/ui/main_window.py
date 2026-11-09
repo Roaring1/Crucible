@@ -782,6 +782,23 @@ class MainWindow(QMainWindow):
         if self._panel.current_instance_id() == updated.id:
             self._panel.show_feedback(f'Renamed to “{name}” · files and session unchanged')
 
+    def _show_registered_instance(self, instance: ServerInstance) -> bool:
+        """Show a newly registered server without probing tmux on the GUI thread."""
+        already_listed = instance.id in self._sidebar._items
+        if already_listed:
+            if instance.id in self._status_map:
+                self._sidebar.update_status(
+                    instance.id, self._status_map[instance.id]
+                )
+        else:
+            self._sidebar.add_instance(instance, "checking")
+        self._sidebar.select_by_id(instance.id)
+        # A registration result may refer to a live imported server. Let the
+        # existing health worker establish its real state instead of performing
+        # a synchronous tmux/procfs scan after the dialog closes.
+        self._health_check()
+        return already_listed
+
     def _on_add_requested(self) -> None:
         """Offer the three common server setup routes without a stacked chooser dialog."""
         menu = QMenu(self)
@@ -815,13 +832,7 @@ class MainWindow(QMainWindow):
 
         if dlg.exec() and dlg.result_instance is not None:
             inst = dlg.result_instance
-            status = self._tmux.get_status(inst)
-            already_listed = inst.id in self._sidebar._items
-            if already_listed:
-                self._sidebar.update_status(inst.id, status)
-            else:
-                self._sidebar.add_instance(inst, status)
-            self._sidebar.select_by_id(inst.id)
+            already_listed = self._show_registered_instance(inst)
             message = (
                 f'Selected existing server "{inst.name}"'
                 if already_listed
@@ -1126,10 +1137,7 @@ class MainWindow(QMainWindow):
             dlg = AddInstanceDialog(self._manager, self)
             QTimer.singleShot(0, lambda: dlg.begin_import_source(str(path)))
             if dlg.exec() and dlg.result_instance is not None:
-                inst = dlg.result_instance
-                status = self._tmux.get_status(inst)
-                self._sidebar.add_instance(inst, status)
-                self._sidebar.select_by_id(inst.id)
+                self._show_registered_instance(dlg.result_instance)
                 self._update_status_bar()
             return
 
