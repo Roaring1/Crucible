@@ -192,7 +192,11 @@ class InfoTab(QWidget):
             "unmanaged":    theme.YELLOW,
         }.get(status, theme.YELLOW)
 
-        problems    = instance.validate()
+        # Both the validation warning and the Diagnostics count use the
+        # same nested-JAR inventory. Avoid walking mods/ recursively twice
+        # during every Info-tab load.
+        bundled     = instance.get_bundled_jars()
+        problems    = instance.validate(bundled_jars=bundled)
         state_label = {
             "running": "Running",
             "stopped": "Stopped",
@@ -218,7 +222,6 @@ class InfoTab(QWidget):
         log         = instance.get_log_path()
         worlds      = instance.get_world_names()
         mod_count   = instance.get_mod_count()
-        bundled     = instance.get_bundled_jars()
 
         # Build a human-readable log label that flags the FML log situation
         if log is None:
