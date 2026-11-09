@@ -276,6 +276,8 @@ class InstanceManager:
         loader: str = "",
         loader_version: str = "",
         prism_source: str = "",
+        *,
+        validation_problems: list[str] | None = None,
     ) -> ServerInstance:
         """
         Register a new server directory.
@@ -316,7 +318,13 @@ class InstanceManager:
             tmux_session = requested_session,
         )
 
-        problems = inst.validate()
+        # A GUI caller may already have validated this candidate on a worker.
+        # Reuse that result so registration does not repeat a recursive mods/ scan.
+        problems = (
+            inst.validate()
+            if validation_problems is None
+            else list(validation_problems)
+        )
         if problems:
             for p in problems:
                 print(f"[crucible] Warning: {p}")

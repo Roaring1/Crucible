@@ -266,10 +266,14 @@ class ServerInstance:
             else self.get_bundled_jars()
         )
         if bundled:
-            names = ", ".join(j.name for j in bundled)
+            names = sorted(jar.name for jar in bundled)
+            preview = ", ".join(names[:12])
+            remaining = len(names) - 12
+            if remaining > 0:
+                preview += f", and {remaining} more"
             problems.append(
                 f"Nested jar(s) in mods/ subdirectory — invisible to mod manager "
-                f"(must be managed manually): {names}"
+                f"(must be managed manually; {len(bundled)} found): {preview}"
             )
 
         return problems
