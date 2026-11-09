@@ -88,6 +88,23 @@ class _PrismImportWorker(QObject):
             self.finished.emit(None, str(exc))
 
 
+class _ServerValidationWorker(QObject):
+    """Run read-only instance validation outside the dialog's GUI thread."""
+
+    finished = pyqtSignal(object, object)
+
+    def __init__(self, candidate: ServerInstance):
+        super().__init__()
+        self._candidate = candidate
+
+    def run(self) -> None:
+        try:
+            problems = self._candidate.validate()
+        except Exception as exc:  # noqa: BLE001 - filesystem failures cross the worker boundary
+            problems = [f"Validation could not complete: {exc}"]
+        self.finished.emit(self._candidate, problems)
+
+
 class AddInstanceDialog(QDialog):
     """
     Modal dialog that lets the user import or register a server directory.
@@ -104,8 +121,14 @@ class AddInstanceDialog(QDialog):
         self._import_worker: _PrismImportWorker | None = None
         self._import_pending: tuple[str, str] | None = None
         self._import_result: tuple[object, str] | None = None
-        self._pending_import_registration: tuple[str, str, object] | None = None
+        self._pending_import_registration: tuple[str, str, object, list[str]] | None = None
         self._pending_manual_registration = False
+        self._manual_validation_problems: list[str] | None = None
+        self._validation_thread: QThread | None = None
+        self._validation_worker: _ServerValidationWorker | None = None
+        self._validation_result: tuple[ServerInstance, list[str]] | None = None
+        self._validation_origin = ""
+        self._validation_extra_warnings: list[str] = []
         self._destination_parent = Path.home() / "CrucibleServers"
         self.setWindowTitle("Import existing files")
         # Widened from 560 -- at 560px, the register-existing-server form's
@@ -244,6 +267,7 @@ class AddInstanceDialog(QDialog):
         self._path_edit.setPlaceholderText("/path/to/my-server")
         self._path_edit.setMinimumWidth(320)
         self._path_edit.setMinimumHeight(32)
+        self._path_edit.textChanged.connect(self._invalidate_manual_validation)
         self._path_edit.textChanged.connect(self._auto_fill_name)
         self._path_edit.textChanged.connect(self._sync_add_button)
         path_row.addWidget(self._path_edit, stretch=1)
@@ -261,6 +285,7 @@ class AddInstanceDialog(QDialog):
         self._name_edit.setPlaceholderText("My server")
         self._name_edit.setMinimumWidth(320)
         self._name_edit.setMinimumHeight(32)
+        self._name_edit.textChanged.connect(self._invalidate_manual_validation)
         form.addRow("Server name:", self._name_edit)
 
         self._ver_edit = QLineEdit()
@@ -268,6 +293,7 @@ class AddInstanceDialog(QDialog):
         self._ver_edit.setPlaceholderText("Version (optional)")
         self._ver_edit.setMinimumWidth(320)
         self._ver_edit.setMinimumHeight(32)
+        self._ver_edit.textChanged.connect(self._invalidate_manual_validation)
         form.addRow("Version:", self._ver_edit)
 
         self._session_edit = QLineEdit()
@@ -275,6 +301,7 @@ class AddInstanceDialog(QDialog):
         self._session_edit.setPlaceholderText("Leave blank to use the server name")
         self._session_edit.setMinimumWidth(320)
         self._session_edit.setMinimumHeight(32)
+        self._session_edit.textChanged.connect(self._invalidate_manual_validation)
         form.addRow("tmux session (optional):", self._session_edit)
 
         session_hint = QLabel(
@@ -349,7 +376,7 @@ class AddInstanceDialog(QDialog):
             self._pending_import_registration is not None
             or bool(self._path_edit.text().strip())
         )
-        self._add_button.setEnabled(ready_to_add)
+        self._add_button.setEnabled(ready_to_add and not self._validation_running())
 
     # Helpers
 
@@ -359,6 +386,20 @@ class AddInstanceDialog(QDialog):
         )
         if path:
             self._path_edit.setText(path)
+
+    def _invalidate_manual_validation(self, *_args) -> None:
+        """Require a fresh check if the user edits a manually validated candidate."""
+        if not self._pending_manual_registration:
+            return
+        self._pending_manual_registration = False
+        self._manual_validation_problems = None
+        self.result_instance = None
+        self._add_button.setText("Add server")
+        self._warn_label.setText(
+            "Server details changed. Check the folder again before adding it."
+        )
+        self._warn_label.show()
+        self._sync_add_button()
 
     def _auto_fill_name(self, text: str) -> None:
         """If name is empty/auto, fill it with the directory name."""
@@ -420,12 +461,22 @@ class AddInstanceDialog(QDialog):
         self._finish_prism_import(source)
 
     def _finish_prism_import(self, source: str) -> None:
-        if self._import_thread is not None and self._import_thread.isRunning():
+        if self._import_running():
             return
         if self._pending_import_registration is not None:
-            self._warn_label.setText(
-                "An import is already ready. Click Add server to finish it, or Cancel "
+            message = (
+                "The imported server is still being checked. Wait for validation to "
+                "finish before starting another import."
+                if self._validation_running()
+                else "An import is already ready. Click Add server to finish it, or Cancel "
                 "before starting another import. Copied files are left on disk if you cancel."
+            )
+            self._warn_label.setText(message)
+            self._warn_label.show()
+            return
+        if self._validation_running():
+            self._warn_label.setText(
+                "Server validation is still running. Wait for it to finish before starting another import."
             )
             self._warn_label.show()
             return
@@ -496,7 +547,7 @@ class AddInstanceDialog(QDialog):
             loader_version=info.loader_version,
             prism_source=source,
         )
-        self._pending_import_registration = (source, target, info)
+        self._pending_import_registration = (source, target, info, [])
         self._import_folder_btn.setEnabled(False)
         self._import_archive_btn.setEnabled(False)
         self._advanced_toggle.setEnabled(False)
@@ -507,7 +558,121 @@ class AddInstanceDialog(QDialog):
         self.result_instance = candidate
         self._sync_add_button()
 
-        warnings = info.warnings + candidate.validate()
+        self._start_server_validation(
+            candidate, origin="import", extra_warnings=list(info.warnings)
+        )
+
+    def _validation_running(self) -> bool:
+        # Keep the dialog alive through Qt's native thread cleanup callback too.
+        return self._validation_thread is not None
+
+    def _set_validation_controls_enabled(self, enabled: bool) -> None:
+        self._import_folder_btn.setEnabled(enabled)
+        self._import_archive_btn.setEnabled(enabled)
+        self._advanced_toggle.setEnabled(enabled)
+        self._advanced_body.setEnabled(enabled)
+        self._cancel_button.setEnabled(enabled)
+        if enabled:
+            self._sync_add_button()
+        else:
+            self._add_button.setEnabled(False)
+
+    def _start_server_validation(
+        self,
+        candidate: ServerInstance,
+        *,
+        origin: str,
+        extra_warnings: list[str] | None = None,
+    ) -> None:
+        if self._validation_running():
+            return
+        self._validation_origin = origin
+        self._validation_extra_warnings = list(extra_warnings or [])
+        self._validation_result = None
+        self._warn_label.setText("Checking server files and nested mod inventory…")
+        self._warn_label.show()
+        self._add_button.setText("Checking server folder…")
+        self._set_validation_controls_enabled(False)
+
+        thread = QThread()
+        worker = _ServerValidationWorker(candidate)
+        self._validation_thread = thread
+        self._validation_worker = worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_server_validation_result)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        connect_thread_cleanup(thread, self._validation_thread_finished)
+        thread.start()
+
+    @pyqtSlot(object, object)
+    def _on_server_validation_result(self, candidate, problems) -> None:
+        self._validation_result = (candidate, list(problems))
+
+    def _validation_thread_finished(self) -> None:
+        result = self._validation_result
+        origin = self._validation_origin
+        extra_warnings = self._validation_extra_warnings
+        self._validation_thread = None
+        self._validation_worker = None
+        self._validation_result = None
+        self._validation_origin = ""
+        self._validation_extra_warnings = []
+        self._set_validation_controls_enabled(True)
+        if origin == "import" and self._pending_import_registration is not None:
+            # Imported paths/metadata are fixed by the prepared source. Keep the
+            # manual registration fields disabled until the user registers or cancels.
+            self._set_import_controls_enabled(False)
+        if result is not None:
+            candidate, problems = result
+            self._complete_server_validation(
+                candidate, problems, origin=origin, extra_warnings=extra_warnings
+            )
+
+    def _complete_server_validation(
+        self,
+        candidate: ServerInstance,
+        problems: list[str],
+        *,
+        origin: str,
+        extra_warnings: list[str],
+    ) -> None:
+        if origin == "manual":
+            if problems:
+                self.result_instance = candidate
+                self._pending_manual_registration = True
+                self._manual_validation_problems = list(problems)
+                self._add_button.setText("Add anyway")
+                self._warn_label.setText(
+                    "Crucible found these issues:\n• "
+                    + "\n• ".join(problems)
+                    + "\n\nAdd anyway registers the folder without changing its files."
+                )
+                self._warn_label.show()
+                return
+
+            try:
+                inst = self._manager.add_instance(
+                    candidate.path,
+                    candidate.name,
+                    candidate.version,
+                    tmux_session=candidate.tmux_session,
+                    validation_problems=problems,
+                )
+            except ValueError as exc:
+                QMessageBox.warning(self, "Already registered", str(exc))
+                self._add_button.setText("Add server")
+                return
+            self.result_instance = inst
+            self.accept()
+            return
+
+        if self._pending_import_registration is not None:
+            source, target, info, _old_problems = self._pending_import_registration
+            self._pending_import_registration = (source, target, info, list(problems))
+        warnings = extra_warnings + problems
+        target = candidate.path
         destination_note = (
             f"Files copied to:\n{target}\n\n"
             "Click Add server to track this folder. Cancel leaves the copied files on disk.\n\n"
@@ -516,8 +681,10 @@ class AddInstanceDialog(QDialog):
             text = destination_note + "Import ready, with warnings:\n• " + "\n• ".join(warnings)
         else:
             text = destination_note + "Import complete."
+        self._add_button.setText("Add server")
         self._warn_label.setText(text)
         self._warn_label.show()
+        self._sync_add_button()
 
     def _on_import_log(self, message: str) -> None:
         self._import_log.appendPlainText(message)
@@ -567,10 +734,12 @@ class AddInstanceDialog(QDialog):
             self._finish_prism_import(source)
 
     def _on_accept(self) -> None:
+        if self._validation_running():
+            return
         # Imported pack files are already copied; only register them when the
         # user chooses Add server. Cancel leaves those files untouched on disk.
         if self._pending_import_registration is not None:
-            source, target, info = self._pending_import_registration
+            source, target, info, validation_problems = self._pending_import_registration
             try:
                 inst = self._manager.add_instance(
                     target,
@@ -581,6 +750,7 @@ class AddInstanceDialog(QDialog):
                     loader=info.loader,
                     loader_version=info.loader_version,
                     prism_source=source,
+                    validation_problems=validation_problems,
                 )
             except Exception as exc:
                 QMessageBox.warning(self, "Could not add server", str(exc))
@@ -599,13 +769,18 @@ class AddInstanceDialog(QDialog):
             session = self._session_edit.text().strip()
             try:
                 inst = self._manager.add_instance(
-                    path, name, version, tmux_session=session
+                    path,
+                    name,
+                    version,
+                    tmux_session=session,
+                    validation_problems=self._manual_validation_problems or [],
                 )
             except ValueError as exc:
                 QMessageBox.warning(self, "Could not add server", str(exc))
                 return
             self.result_instance = inst
             self._pending_manual_registration = False
+            self._manual_validation_problems = None
             self._add_button.setText("Add server")
             self.accept()
             return
@@ -631,40 +806,26 @@ class AddInstanceDialog(QDialog):
         candidate = ServerInstance(
             path=path, name=name, version=version, tmux_session=session
         )
-        problems = candidate.validate()
-        if problems:
-            self.result_instance = candidate
-            self._pending_manual_registration = True
-            self._add_button.setText("Add anyway")
-            self._warn_label.setText(
-                "Crucible found these issues:\n• "
-                + "\n• ".join(problems)
-                + "\n\nAdd anyway registers the folder without changing its files."
-            )
-            self._warn_label.show()
-            return
-
-        try:
-            inst = self._manager.add_instance(
-                path, name, version, tmux_session=session
-            )
-        except ValueError as exc:
-            QMessageBox.warning(self, "Already registered", str(exc))
-            return
-
-        self.result_instance = inst
-        self.accept()
+        self._start_server_validation(candidate, origin="manual")
 
     def _import_running(self) -> bool:
-        return bool(self._import_thread and self._import_thread.isRunning())
+        # The thread reference remains set until native shutdown is finalized.
+        return self._import_thread is not None
 
     def reject(self) -> None:
+        if self._validation_running():
+            self._warn_label.setText("Server validation is still running — wait for it to finish before closing.")
+            return
         if self._import_running():
             self._warn_label.setText("Import is still copying files — wait for it to finish before closing.")
             return
         super().reject()
 
     def closeEvent(self, event) -> None:
+        if self._validation_running():
+            self._warn_label.setText("Server validation is still running — wait for it to finish before closing.")
+            event.ignore()
+            return
         if self._import_running():
             self._warn_label.setText("Import is still copying files — wait for it to finish before closing.")
             event.ignore()

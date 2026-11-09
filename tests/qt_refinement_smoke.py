@@ -1163,6 +1163,11 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  assert all(Path(item.path) != target for item in m.instances)
  assert not preview._import_folder_btn.isEnabled()
  assert not preview._import_archive_btn.isEnabled()
+ validation_deadline=time.monotonic()+3.0
+ while preview._validation_thread is not None and time.monotonic()<validation_deadline:
+  app.processEvents();QTest.qWait(5)
+ app.processEvents()
+ assert preview._validation_thread is None
  preview._finish_prism_import(str(root/'second-pack.mrpack'))
  assert "already ready" in preview._warn_label.text()
  assert preview._pending_import_registration is not None
