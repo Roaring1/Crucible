@@ -6,7 +6,9 @@ Info tab: read-only summary of the selected server instance.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
+import weakref
+
+from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -21,6 +23,7 @@ from PyQt6.QtWidgets import (
 
 from ...data.instance_model import ServerInstance
 from .. import theme
+from ..thread_lifecycle import connect_thread_cleanup
 from .system_tab import SystemTab
 
 
@@ -37,6 +40,38 @@ def _field(label: str, value: str, value_color: str = theme.TEXT) -> tuple[QLabe
     return lbl, val
 
 
+class _DiagnosticsInventoryWorker(QObject):
+    """Build the read-only Diagnostics snapshot outside the GUI thread."""
+
+    completed = pyqtSignal(int, object)
+
+    def __init__(self, generation: int, instance: ServerInstance):
+        super().__init__()
+        self._generation = generation
+        self._instance = instance
+
+    def run(self) -> None:
+        try:
+            instance = self._instance
+            bundled = instance.get_bundled_jars()
+            payload = {
+                "bundled": bundled,
+                "problems": instance.validate(bundled_jars=bundled),
+                "script": instance.get_startscript(),
+                "log": instance.get_log_path(),
+                "worlds": instance.get_world_names(),
+                "mod_count": instance.get_mod_count(),
+                "error": "",
+            }
+        except Exception as exc:  # noqa: BLE001 - worker boundary reports filesystem errors
+            payload = {"error": str(exc)}
+        self.completed.emit(self._generation, payload)
+        self.thread().quit()
+
+
+_ACTIVE_DIAGNOSTICS_WORKERS: dict[QThread, _DiagnosticsInventoryWorker] = {}
+
+
 class InfoTab(QWidget):
     """Server diagnostics, metadata, and live performance for one instance."""
 
@@ -46,6 +81,16 @@ class InfoTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._instance: ServerInstance | None = None
+        self._status = "stopped"
+        self._generation = 0
+        self._thread: QThread | None = None
+        self._worker: _DiagnosticsInventoryWorker | None = None
+        self._refresh_pending = False
+        self._lifecycle_state = {"destroyed": False}
+        lifecycle_state = self._lifecycle_state
+        self.destroyed.connect(
+            lambda _obj=None, state=lifecycle_state: state.__setitem__("destroyed", True)
+        )
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -157,20 +202,122 @@ class InfoTab(QWidget):
         self._system = SystemTab()
 
     def load(self, instance: ServerInstance, status: str = "stopped") -> None:
-        """Rebuild diagnostics for the given instance."""
+        """Schedule a read-only Diagnostics snapshot for the selected server."""
         self._instance = instance
+        self._status = status
+        self._generation += 1
         self._inspect_logs_btn.setEnabled(True)
         self._fix_loading_btn.setEnabled(True)
-        # Detach (but do NOT delete) the persistent System performance
-        # section before clearing everything else, so it survives this
-        # rebuild and its resource-sampling timer keeps running uninterrupted.
+        self._health_label.setText("Checking registered server folder…")
+        self._system.load(instance)
+        self._show_loading_state()
+        self._refresh_pending = True
+        if self.isVisible():
+            self._start_inventory_worker()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._refresh_pending:
+            self._start_inventory_worker()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        if self._thread is not None:
+            # The result handler intentionally ignores hidden pages. Mark the
+            # snapshot stale so the next show cannot remain on a loading view.
+            self._generation += 1
+            self._refresh_pending = True
+
+    def _clear_dynamic_content(self) -> None:
+        # Detach, but never delete, the persistent System usage widget.
         self._layout.removeWidget(self._system)
-        # Clear existing widgets
         while self._layout.count():
             item = self._layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
+    def _show_loading_state(self) -> None:
+        self._clear_dynamic_content()
+        self._layout.addWidget(self._system)
+        status = QLabel("Checking server files and nested mod inventory…")
+        status.setWordWrap(True)
+        status.setStyleSheet(f"color: {theme.SUBTEXT}; font-size: 12px;")
+        self._layout.addWidget(status)
+        self._layout.addStretch()
+
+    def _start_inventory_worker(self) -> None:
+        if (
+            not self._refresh_pending
+            or not self.isVisible()
+            or self._thread is not None
+            or self._instance is None
+        ):
+            return
+        self._refresh_pending = False
+        generation = self._generation
+        thread = QThread()
+        thread.setObjectName("CrucibleDiagnosticsInventoryThread")
+        worker = _DiagnosticsInventoryWorker(
+            generation, self._instance
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.completed.connect(self._on_inventory_loaded)
+        thread.finished.connect(worker.deleteLater)
+
+        tab_ref = weakref.ref(self)
+        lifecycle_state = self._lifecycle_state
+
+        def _cleanup() -> None:
+            _ACTIVE_DIAGNOSTICS_WORKERS.pop(thread, None)
+            tab = tab_ref()
+            if tab is None:
+                return
+            if tab._thread is thread:
+                tab._thread = None
+                tab._worker = None
+            if lifecycle_state["destroyed"]:
+                return
+            if tab._refresh_pending and tab.isVisible():
+                tab._start_inventory_worker()
+
+        connect_thread_cleanup(thread, _cleanup)
+        self._thread = thread
+        self._worker = worker
+        _ACTIVE_DIAGNOSTICS_WORKERS[thread] = worker
+        thread.start()
+
+    def _on_inventory_loaded(self, generation: int, payload: object) -> None:
+        if (
+            generation != self._generation
+            or not self.isVisible()
+            or not isinstance(payload, dict)
+        ):
+            return
+        error = str(payload.get("error") or "")
+        if error:
+            self._health_label.setText(
+                f"Diagnostics validation unavailable: {error}"
+            )
+            self._clear_dynamic_content()
+            self._layout.addWidget(self._system)
+            message = QLabel(f"Diagnostics could not read this server folder: {error}")
+            message.setWordWrap(True)
+            message.setStyleSheet(f"color: {theme.YELLOW}; font-size: 12px;")
+            self._layout.addWidget(message)
+            self._layout.addStretch()
+            return
+        self._render_loaded(self._instance, self._status, payload)
+
+    def _render_loaded(
+        self,
+        instance: ServerInstance,
+        status: str,
+        payload: dict,
+    ) -> None:
+        self._inspect_logs_btn.setEnabled(True)
+        self._fix_loading_btn.setEnabled(True)
+        self._clear_dynamic_content()
         grid = QGridLayout()
         grid.setColumnMinimumWidth(0, 140)
         grid.setColumnStretch(1, 1)
@@ -192,11 +339,12 @@ class InfoTab(QWidget):
             "unmanaged":    theme.YELLOW,
         }.get(status, theme.YELLOW)
 
-        # Both the validation warning and the Diagnostics count use the
-        # same nested-JAR inventory. Avoid walking mods/ recursively twice
-        # during every Info-tab load.
-        bundled     = instance.get_bundled_jars()
-        problems    = instance.validate(bundled_jars=bundled)
+        bundled = payload["bundled"]
+        problems = payload["problems"]
+        script = payload["script"]
+        log = payload["log"]
+        worlds = payload["worlds"]
+        mod_count = payload["mod_count"]
         state_label = {
             "running": "Running",
             "stopped": "Stopped",
@@ -218,10 +366,6 @@ class InfoTab(QWidget):
             "A status check never starts or stops the server."
         )
         self._health_label.setText(" ".join(health_parts))
-        script      = instance.get_startscript()
-        log         = instance.get_log_path()
-        worlds      = instance.get_world_names()
-        mod_count   = instance.get_mod_count()
 
         # Build a human-readable log label that flags the FML log situation
         if log is None:
