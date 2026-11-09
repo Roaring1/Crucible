@@ -149,7 +149,7 @@ class WatchdogTests(unittest.TestCase):
         self.assertFalse(self.watchdog._watching[self.instance.id])
         failed = QSignalSpy(self.watchdog.restart_failed)
         with (
-            patch.object(self.watchdog._tmux, "is_running", return_value=True),
+            patch.object(self.watchdog._tmux, "probe_running", return_value=True),
             patch.object(
                 watchdog_mod,
                 "inspect_instance_world_start",

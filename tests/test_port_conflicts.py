@@ -112,7 +112,8 @@ class PortConflictGuardTests(unittest.TestCase):
             tm = TmuxManager()
             with (
                 patch.object(tm, "tmux_available", return_value=True),
-                patch.object(tm, "is_running", return_value=False),
+                patch.object(tm, "probe_running", return_value=False),
+                patch.object(tm, "_unmanaged_pids", return_value=[]),
                 patch.object(tm, "_port_conflict_message", return_value="Port 25566 is busy"),
                 patch.object(tm, "_run") as run,
             ):
