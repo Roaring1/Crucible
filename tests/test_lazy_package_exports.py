@@ -35,3 +35,17 @@ def test_public_package_exports_remain_available():
         ]
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_dir_lists_the_existing_public_exports():
+    code = "\n".join(
+        [
+            "import crucible.data, crucible.process, crucible.mods, crucible.importers, crucible.exporters",
+            "assert {'ServerInstance', 'InstanceManager'} <= set(dir(crucible.data))",
+            "assert {'TmuxManager'} <= set(dir(crucible.process))",
+            "assert {'ModManager', 'ModEntry'} <= set(dir(crucible.mods))",
+            "assert {'PrismImportPlan', 'PrismPackInfo', 'detect_prism_source', 'import_prism_source', 'scan_prism_instances'} <= set(dir(crucible.importers))",
+            "assert {'export', 'ExportResult'} <= set(dir(crucible.exporters))",
+        ]
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)

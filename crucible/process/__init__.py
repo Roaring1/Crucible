@@ -14,3 +14,8 @@ def __getattr__(name):
         raise AttributeError(name)
     globals()[name] = value
     return value
+
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
