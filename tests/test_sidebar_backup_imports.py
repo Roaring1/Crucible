@@ -29,3 +29,12 @@ def test_backup_implementation_reexports_the_shared_default_path():
         "assert shared == public"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_main_window_import_defers_crash_recovery_until_startup_check():
+    code = (
+        "import crucible.ui.main_window, sys; "
+        "assert 'crucible.process.crash_recovery' not in sys.modules; "
+        "assert 'crucible.process.watchdog' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)

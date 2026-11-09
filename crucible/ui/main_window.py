@@ -57,7 +57,6 @@ from PyQt6.QtWidgets import (
 
 from ..data.instance_manager import InstanceManager, validate_delete_target
 from ..data.instance_model import ServerInstance
-from ..process.crash_recovery import reconcile as reconcile_crash_recovery
 from ..process.tmux_manager import TmuxManager
 from . import theme
 from .instance_panel import InstancePanel
@@ -543,6 +542,8 @@ class MainWindow(QMainWindow):
     # Watchdog could have witnessed because Crucible itself was not running)
 
     def _run_crash_recovery(self) -> None:
+        from ..process.crash_recovery import reconcile as reconcile_crash_recovery
+
         if not self._tmux.tmux_available():
             return
         try:
