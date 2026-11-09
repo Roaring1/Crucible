@@ -108,6 +108,51 @@ class _WorldStatsWorker(QObject):
         self.done.emit(size)
 
 
+class _WorldArchiveInventoryWorker(QObject):
+    """Build the saved-world ZIP projection without blocking the GUI thread."""
+
+    finished = pyqtSignal(int, str, object)
+    failed = pyqtSignal(int, str, str)
+
+    def __init__(
+        self,
+        generation: int,
+        instance: ServerInstance,
+        manager: BackupManager,
+    ):
+        super().__init__()
+        self._generation = generation
+        self._instance = instance
+        self._manager = manager
+
+    def run(self) -> None:
+        instance_id = str(self._instance.id)
+        try:
+            entries = self._manager.list_backups()
+            external_names = {entry.filename for entry in entries}
+            try:
+                fleet_archives = FleetBackupManager(
+                    [self._instance], TmuxManager()
+                ).list_legacy_world_archives(instance_id)
+            except (FleetBackupError, OSError, ValueError):
+                fleet_archives = []
+            entries.extend(
+                entry for entry in fleet_archives
+                if entry.filename not in external_names
+            )
+            entries.sort(key=lambda entry: entry.created_at, reverse=True)
+            inventory: list[tuple[BackupEntry, str]] = []
+            for entry in entries:
+                try:
+                    world_name = self._manager._backup_level_name(entry)
+                except (OSError, ValueError, zipfile.BadZipFile):
+                    world_name = entry.display_name
+                inventory.append((entry, world_name))
+            self.finished.emit(self._generation, instance_id, inventory)
+        except Exception as exc:  # noqa: BLE001 - report read failures through Qt
+            self.failed.emit(self._generation, instance_id, str(exc))
+
+
 class _FleetWorldActionWorker(QObject):
     """Create complete fleet checkpoints around destructive world operations."""
 
@@ -515,6 +560,10 @@ class WorldTab(QWidget):
         # the GUI thread. Explicit refreshes and archive mutations rebuild it.
         self._archive_inventory_instance_id: str | None = None
         self._archive_inventory_entries: list[tuple[BackupEntry, str]] = []
+        self._archive_thread: QThread | None = None
+        self._archive_worker: _WorldArchiveInventoryWorker | None = None
+        self._archive_generation = 0
+        self._archive_pending = False
         self._build_ui()
 
     # Public API
@@ -1126,6 +1175,14 @@ class WorldTab(QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._archive_status = QLabel("")
+        self._archive_status.setObjectName("WorldArchiveInventoryStatus")
+        self._archive_status.setWordWrap(True)
+        self._archive_status.setStyleSheet(
+            f"color: {theme.SUBTEXT}; font-size: 11px; background: transparent;"
+        )
+        self._archive_status.hide()
+        slots.addWidget(self._archive_status)
         slots.addWidget(self._table)
 
 
@@ -1141,42 +1198,103 @@ class WorldTab(QWidget):
     def _archive_entries_for(
         self, *, refresh: bool = False
     ) -> list[tuple[BackupEntry, str]]:
-        """Return display-ready world archive entries, cached for one instance.
-
-        Parsing each ZIP central directory is required to establish the
-        represented world root. Do it once per explicit refresh/mutation, not
-        again when the asynchronous fleet recovery projection returns.
-        """
+        """Return the latest display projection without scanning on the GUI thread."""
         if self._manager is None or self._instance is None:
             return []
-        instance_id = str(self._instance.id)
-        if (
-            refresh
-            or self._archive_inventory_instance_id != instance_id
+        thread_running = bool(
+            self._archive_thread is not None and self._archive_thread.isRunning()
+        )
+        if refresh or (
+            self._archive_inventory_instance_id != str(self._instance.id)
+            and not thread_running
+            and not self._archive_pending
         ):
-            entries = self._manager.list_backups()
-            external_names = {entry.filename for entry in entries}
-            try:
-                fleet_archives = FleetBackupManager(
-                    [self._instance], TmuxManager()
-                ).list_legacy_world_archives(instance_id)
-            except (FleetBackupError, OSError, ValueError):
-                fleet_archives = []
-            entries.extend(
-                entry for entry in fleet_archives
-                if entry.filename not in external_names
-            )
-            entries.sort(key=lambda entry: entry.created_at, reverse=True)
-            inventory: list[tuple[BackupEntry, str]] = []
-            for entry in entries:
-                try:
-                    world_name = self._manager._backup_level_name(entry)
-                except (OSError, ValueError, zipfile.BadZipFile):
-                    world_name = entry.display_name
-                inventory.append((entry, world_name))
-            self._archive_inventory_entries = inventory
-            self._archive_inventory_instance_id = instance_id
+            self._request_archive_inventory()
+        if self._archive_inventory_instance_id != str(self._instance.id):
+            return []
         return list(self._archive_inventory_entries)
+
+    def _request_archive_inventory(self) -> None:
+        """Start or coalesce one background archive scan for the selected server."""
+        if self._manager is None or self._instance is None:
+            return
+        self._archive_generation += 1
+        if self._archive_thread is not None and self._archive_thread.isRunning():
+            self._archive_pending = True
+            self._archive_status.setText("Refreshing saved-world archives…")
+            self._archive_status.show()
+            self._table.setEnabled(False)
+            return
+
+        generation = self._archive_generation
+        instance = self._instance
+        thread = QThread()
+        thread.setObjectName("CrucibleWorldArchiveInventoryThread")
+        worker = _WorldArchiveInventoryWorker(generation, instance, self._manager)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_archive_inventory_finished)
+        worker.failed.connect(self._on_archive_inventory_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        connect_thread_cleanup(
+            thread, lambda t=thread: self._archive_thread_finished(t)
+        )
+        self._archive_thread = thread
+        self._archive_worker = worker
+        self._archive_status.setText("Loading saved-world archives…")
+        self._archive_status.show()
+        self._table.setEnabled(False)
+        thread.start()
+
+    def _archive_thread_finished(self, thread: QThread) -> None:
+        if self._archive_thread is not thread:
+            return
+        self._archive_thread = None
+        self._archive_worker = None
+        if self._archive_pending:
+            self._archive_pending = False
+            self._request_archive_inventory()
+
+    def _on_archive_inventory_finished(
+        self,
+        generation: int,
+        instance_id: str,
+        inventory: object,
+    ) -> None:
+        if (
+            generation != self._archive_generation
+            or self._instance is None
+            or str(self._instance.id) != instance_id
+            or not isinstance(inventory, list)
+        ):
+            return
+        self._archive_inventory_entries = inventory
+        self._archive_inventory_instance_id = instance_id
+        self._archive_status.clear()
+        self._archive_status.hide()
+        self._table.setEnabled(True)
+        self._refresh(refresh_archives=False)
+
+    def _on_archive_inventory_failed(
+        self,
+        generation: int,
+        instance_id: str,
+        error: str,
+    ) -> None:
+        if (
+            generation != self._archive_generation
+            or self._instance is None
+            or str(self._instance.id) != instance_id
+        ):
+            return
+        self._archive_status.setText(
+            f"Saved-world archives could not be read: {error}"
+        )
+        self._archive_status.show()
+        self._table.setEnabled(True)
 
     def _refresh(self, *, refresh_archives: bool = True) -> None:
         if not self._manager or not self._instance:
