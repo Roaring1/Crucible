@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
 from ..data.instance_manager import InstanceManager
 from ..data.instance_model import ServerInstance
 from . import theme
+from .instance_validation import validate_server_instance
 from .thread_lifecycle import connect_thread_cleanup
 
 _LOADERS = [
@@ -73,7 +74,7 @@ class _CreateWorker(QObject):
     """Runs create_fresh_server off the UI thread."""
 
     log = pyqtSignal(str)
-    finished = pyqtSignal(object)  # FreshServerResult or None
+    finished = pyqtSignal(object, object)  # (FreshServerResult or None, validation warnings)
 
     def __init__(self, target, mc, loader, loader_version, accept_eula, cancel):
         super().__init__()
@@ -82,6 +83,7 @@ class _CreateWorker(QObject):
 
     def run(self) -> None:
         result = None
+        validation_problems: list[str] = []
         try:
             from ..importers import serverloader as sl
             target, mc, loader, lv, eula = self._args
@@ -101,7 +103,11 @@ class _CreateWorker(QObject):
             except Exception:
                 pass
         finally:
-            self.finished.emit(result)
+            if result is not None:
+                target = self._args[0]
+                candidate = ServerInstance(str(target), Path(target).name or "New server")
+                validation_problems = validate_server_instance(candidate)
+            self.finished.emit(result, validation_problems)
 
 
 class NewServerDialog(QDialog):
@@ -517,7 +523,7 @@ class NewServerDialog(QDialog):
         connect_thread_cleanup(self._cthread, self._create_thread_finished)
         self._cthread.start()
 
-    def _on_created(self, result) -> None:
+    def _on_created(self, result, validation_problems=None) -> None:
         if self._cthread is not None:
             self._cthread.quit()
         self._bar.hide()
@@ -543,6 +549,7 @@ class NewServerDialog(QDialog):
                 pack_source=f"new_{loader}",
                 minecraft_version=mc, loader=("" if loader == "vanilla" else loader),
                 loader_version=lver,
+                validation_problems=validation_problems,
             )
             self.result_instance = inst
         except ValueError as exc:

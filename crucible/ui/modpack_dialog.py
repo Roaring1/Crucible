@@ -40,6 +40,7 @@ from ..importers import modpack_auto
 from ..mods import modrinth
 from . import theme
 from .add_mod_dialog import _IconWorker  # reuse the best-effort icon fetcher
+from .instance_validation import validate_server_instance
 from .thread_lifecycle import connect_thread_cleanup
 
 _ICON_PX = 46
@@ -66,7 +67,7 @@ class _PackSearchWorker(QObject):
 
 class _PackInstallWorker(QObject):
     log      = pyqtSignal(str)
-    finished = pyqtSignal(object)   # ModpackInstallResult or None
+    finished = pyqtSignal(object, object)   # (ModpackInstallResult or None, validation warnings)
 
     def __init__(self, project_id, target, accept_eula, cancel):
         super().__init__()
@@ -77,6 +78,7 @@ class _PackInstallWorker(QObject):
 
     def run(self) -> None:
         result = None
+        validation_problems: list[str] = []
         try:
             target = Path(self._target).expanduser()
             # The UI chooses a new, collision-free folder. Recheck immediately
@@ -101,7 +103,12 @@ class _PackInstallWorker(QObject):
             except Exception:
                 pass
         finally:
-            self.finished.emit(result)
+            if result is not None and result.ok:
+                candidate = ServerInstance(
+                    str(result.path), Path(result.path).name or "Installed modpack"
+                )
+                validation_problems = validate_server_instance(candidate)
+            self.finished.emit(result, validation_problems)
 
 
 # ------------------------------ dialog ---------------------------------
@@ -447,7 +454,7 @@ class ModpackDialog(QDialog):
     def _on_log(self, msg):
         self._log.appendPlainText(msg)
 
-    def _on_installed(self, result):
+    def _on_installed(self, result, validation_problems=None):
         self._progress.hide()
         self._busy = False
         self._search.setEnabled(True)
@@ -490,6 +497,7 @@ class ModpackDialog(QDialog):
                 minecraft_version=result.minecraft_version,
                 loader=result.loader,
                 loader_version=result.loader_version,
+                validation_problems=validation_problems,
             )
         except ValueError as exc:
             resolved = Path(result.path).expanduser().resolve()
