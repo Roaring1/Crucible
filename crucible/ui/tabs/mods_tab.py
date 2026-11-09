@@ -92,6 +92,11 @@ class ModsTab(QWidget):
         self._net_worker: _NetWorker | None  = None
         self._inspect_generation = 0
         self._inspect_pending = False
+        self._added_mod_snapshot: dict[str, dict] = {}
+        # Keep direct identity-to-item lookup for asynchronous metadata results.
+        # QTableWidgetItem.row() tracks sorting, avoiding a full table scan for
+        # every inspected JAR while preserving object-identity checks.
+        self._mod_name_items: dict[int, QTableWidgetItem] = {}
 
         self._build_ui()
         self.setAcceptDrops(True)
@@ -398,6 +403,10 @@ class ModsTab(QWidget):
             return
         self._inspect_generation += 1
         self._mods = self._manager.list_mods()
+        # Worker callbacks and selection changes share this request-scoped
+        # identity snapshot. Do not reread added-mods.json once per JAR.
+        from ...mods.modrinth import added_mods
+        self._added_mod_snapshot = added_mods(self._instance.path)
         self._populate_table(self._mods)
         self._apply_filter(self._filter.text())
         self._update_count()
@@ -407,6 +416,7 @@ class ModsTab(QWidget):
 
     def _populate_table(self, mods: list[ModEntry]) -> None:
         self._table.setSortingEnabled(False)
+        self._mod_name_items.clear()
         self._table.setRowCount(0)
         self._table.setRowCount(len(mods))
 
@@ -459,6 +469,7 @@ class ModsTab(QWidget):
             elif not mod.enabled:
                 name_item.setForeground(Qt.GlobalColor.gray)
             self._table.setItem(row, self._COL_NAME, name_item)
+            self._mod_name_items[id(mod)] = name_item
 
             ver_item = QTableWidgetItem(mod.version or "—")
             ver_item.setForeground(Qt.GlobalColor.gray)
@@ -667,13 +678,9 @@ class ModsTab(QWidget):
             "both": "Both sides",
         }.get(mod.side, "Not declared")
         identity = "not linked to an exact online project"
-        try:
-            from ...mods.modrinth import added_mods
-            record = added_mods(self._instance.path).get(mod.filename, {})
-            if record.get("project_id"):
-                identity = f"linked online as {record.get('project_id')}"
-        except (ImportError, OSError, ValueError, TypeError):
-            pass
+        record = self._added_mod_snapshot.get(mod.filename, {})
+        if record.get("project_id"):
+            identity = f"linked online as {record.get('project_id')}"
         self._detail_summary.setText(
             f"Mod ID: {mod.mod_id or 'not declared'}    ·    "
             f"Version: {mod.version or 'not declared'}    ·    "
@@ -933,6 +940,22 @@ class ModsTab(QWidget):
 
     # Background jar inspection
 
+    @staticmethod
+    def _inspection_jobs(mods: list[ModEntry]) -> list[tuple[int, ModEntry]]:
+        """Select manageable entries that still need metadata inspection.
+
+        Bundled nested libraries are informational-only rows managed by their
+        parent pack. Inspecting every nested dependency adds archive I/O and
+        worker signals without enabling any action in Crucible.
+        """
+        return [
+            (row, mod)
+            for row, mod in enumerate(mods)
+            if not getattr(mod, "bundled", False)
+            and not mod.name
+            and not mod.version
+        ]
+
     def _start_inspect_pass(self) -> None:
         """Inspect current rows; stale worker results can never retarget a new table."""
         if self._manager is None or not self._mods:
@@ -940,10 +963,7 @@ class ModsTab(QWidget):
         if self._thread is not None and self._thread.isRunning():
             self._inspect_pending = True
             return
-        jobs = [
-            (i, mod) for i, mod in enumerate(self._mods)
-            if not mod.name and not mod.version
-        ]
+        jobs = self._inspection_jobs(self._mods)
         if not jobs:
             return
         generation = self._inspect_generation
@@ -970,31 +990,32 @@ class ModsTab(QWidget):
     def _on_inspect_result(self, generation: int, row: int, mod: ModEntry) -> None:
         if generation != self._inspect_generation:
             return
-        # Table sorting can move rows during inspection. Locate the actual mod.
-        for current in range(self._table.rowCount()):
-            item = self._table.item(current, self._COL_NAME)
-            entry = item.data(Qt.ItemDataRole.UserRole) if item else None
-            if entry is not mod:
-                continue
-            self._table.setSortingEnabled(False)
-            if mod.name:
-                item.setText(mod.name)
-            from ...mods.modrinth import added_mods
-            meta = added_mods(self._instance.path).get(mod.filename, {})
-            identity = (
-                "Exact online match" if meta.get("project_id")
-                else "Not linked online · use Identify installed mods"
-            )
-            item.setToolTip(
-                f"Filename: {mod.filename}\nMod ID: {mod.mod_id or 'not declared'}"
-                f"\n{mod.description}\n{identity}\n{mod.path}"
-            )
-            version = self._table.item(current, self._COL_VERSION)
-            if version and mod.version:
-                version.setText(mod.version)
-                version.setToolTip(mod.version)
-            self._render_side(current, mod)
-            self._table.setSortingEnabled(True)
-            if self._selected_mod() is mod:
-                self._on_selection_changed()
-            break
+        # The item object remains associated with the mod after sorting, and
+        # its row() reports its current position. Verify identity as a guard
+        # against a stale/replaced item before applying worker output.
+        item = self._mod_name_items.get(id(mod))
+        if item is None or item.data(Qt.ItemDataRole.UserRole) is not mod:
+            return
+        current = item.row()
+        if current < 0:
+            return
+        self._table.setSortingEnabled(False)
+        if mod.name:
+            item.setText(mod.name)
+        meta = self._added_mod_snapshot.get(mod.filename, {})
+        identity = (
+            "Exact online match" if meta.get("project_id")
+            else "Not linked online · use Identify installed mods"
+        )
+        item.setToolTip(
+            f"Filename: {mod.filename}\nMod ID: {mod.mod_id or 'not declared'}"
+            f"\n{mod.description}\n{identity}\n{mod.path}"
+        )
+        version = self._table.item(current, self._COL_VERSION)
+        if version and mod.version:
+            version.setText(mod.version)
+            version.setToolTip(mod.version)
+        self._render_side(current, mod)
+        self._table.setSortingEnabled(True)
+        if self._selected_mod() is mod:
+            self._on_selection_changed()
