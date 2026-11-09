@@ -225,9 +225,15 @@ class ServerInstance:
 
     # Validation
 
-    def validate(self) -> list[str]:
+    def validate(
+        self, *, bundled_jars: list[Path] | None = None
+    ) -> list[str]:
         """
         Return a list of human-readable problems with this instance.
+
+        A caller that already built the nested-JAR inventory may supply it so
+        validation and display can share one recursive mods/ scan. Omitting
+        the argument preserves the existing standalone validation behavior.
         Empty list = all clear.
         """
         problems: list[str] = []
@@ -252,8 +258,13 @@ class ServerInstance:
         if not (p / "eula.txt").exists():
             problems.append("eula.txt missing (server will refuse to start)")
 
-        # Warn about nested jars that the mod manager cannot see
-        bundled = self.get_bundled_jars()
+        # Warn about nested jars that the mod manager cannot see. Reuse a
+        # caller-provided inventory when the same list is also displayed.
+        bundled = (
+            bundled_jars
+            if bundled_jars is not None
+            else self.get_bundled_jars()
+        )
         if bundled:
             names = sorted(jar.name for jar in bundled)
             preview = ", ".join(names[:12])
