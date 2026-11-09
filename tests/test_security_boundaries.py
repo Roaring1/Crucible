@@ -72,7 +72,7 @@ class WatchdogTests(unittest.TestCase):
     def test_repeated_miss_required_before_crash(self):
         with (
             patch.object(watchdog_mod.QTimer, "singleShot"),
-            patch.object(self.watchdog._tmux, "probe_running", return_value=False),
+            patch.object(self.watchdog._tmux, "watchdog_snapshot", return_value={}),
         ):
             self.watchdog.watch(self.instance, auto_restart=False)
             self.watchdog._poll()
@@ -85,7 +85,7 @@ class WatchdogTests(unittest.TestCase):
     def test_uncertain_tmux_probe_never_counts_as_crash(self):
         with (
             patch.object(watchdog_mod.QTimer, "singleShot"),
-            patch.object(self.watchdog._tmux, "probe_running", return_value=None),
+            patch.object(self.watchdog._tmux, "watchdog_snapshot", return_value=None),
         ):
             self.watchdog.watch(self.instance, auto_restart=True)
             for _ in range(watchdog_mod.CRASH_CONFIRM_POLLS + 2):
@@ -103,8 +103,11 @@ class WatchdogTests(unittest.TestCase):
         """
         with (
             patch.object(watchdog_mod.QTimer, "singleShot"),
-            patch.object(self.watchdog._tmux, "probe_running", return_value=True),
-            patch.object(self.watchdog._tmux, "is_java_foreground", return_value=False),
+            patch.object(
+                self.watchdog._tmux,
+                "watchdog_snapshot",
+                return_value={self.instance.tmux_session: "sleep"},
+            ),
         ):
             self.watchdog.watch(self.instance, auto_restart=False)
             self.watchdog._poll()
@@ -117,8 +120,7 @@ class WatchdogTests(unittest.TestCase):
     def test_uncertain_pane_probe_never_counts_as_crash_while_session_alive(self):
         with (
             patch.object(watchdog_mod.QTimer, "singleShot"),
-            patch.object(self.watchdog._tmux, "probe_running", return_value=True),
-            patch.object(self.watchdog._tmux, "is_java_foreground", return_value=None),
+            patch.object(self.watchdog._tmux, "watchdog_snapshot", return_value=None),
         ):
             self.watchdog.watch(self.instance, auto_restart=True)
             for _ in range(watchdog_mod.CRASH_CONFIRM_POLLS + 2):
@@ -135,8 +137,11 @@ class WatchdogTests(unittest.TestCase):
         """
         with (
             patch.object(watchdog_mod.QTimer, "singleShot"),
-            patch.object(self.watchdog._tmux, "probe_running", return_value=True),
-            patch.object(self.watchdog._tmux, "is_java_foreground", return_value=False),
+            patch.object(
+                self.watchdog._tmux,
+                "watchdog_snapshot",
+                return_value={self.instance.tmux_session: "sleep"},
+            ),
         ):
             self.watchdog.watch(self.instance, auto_restart=True)
             self.watchdog._poll()
