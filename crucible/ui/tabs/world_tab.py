@@ -509,6 +509,12 @@ class WorldTab(QWidget):
         self._recovery_scheduler: dict[str, str] = {}
         self._recovery_state_data: dict[str, Any] = {}
         self._timer_enabled = False
+        # The initial refresh can finish rendering before the background
+        # recovery-list worker returns. Keep its ZIP metadata projection so
+        # that the worker's follow-up render does not reopen every archive on
+        # the GUI thread. Explicit refreshes and archive mutations rebuild it.
+        self._archive_inventory_instance_id: str | None = None
+        self._archive_inventory_entries: list[tuple[BackupEntry, str]] = []
         self._build_ui()
 
     # Public API
@@ -531,6 +537,8 @@ class WorldTab(QWidget):
         self._instance = instance
         self._manager = BackupManager(instance)
         self._dims_expanded = False
+        self._archive_inventory_instance_id = None
+        self._archive_inventory_entries = []
         self._refresh()
         self._run_recovery_job("list")
 
@@ -622,7 +630,10 @@ class WorldTab(QWidget):
                 by_server.get(str(self._instance.id), {})
             )
             self._render_recovery_status(self._recovery_state_data)
-            self._refresh()
+            # load() and post-operation refresh have already inventoried local
+            # ZIPs. Re-render with the newly returned fleet restore points
+            # without reopening every ZIP central directory on the GUI thread.
+            self._refresh(refresh_archives=False)
         elif mode == "verify":
             failures = [item for item in result if not item.get("ok")]
             if failures:
@@ -1127,7 +1138,47 @@ class WorldTab(QWidget):
 
     # Refresh
 
-    def _refresh(self) -> None:
+    def _archive_entries_for(
+        self, *, refresh: bool = False
+    ) -> list[tuple[BackupEntry, str]]:
+        """Return display-ready world archive entries, cached for one instance.
+
+        Parsing each ZIP central directory is required to establish the
+        represented world root. Do it once per explicit refresh/mutation, not
+        again when the asynchronous fleet recovery projection returns.
+        """
+        if self._manager is None or self._instance is None:
+            return []
+        instance_id = str(self._instance.id)
+        if (
+            refresh
+            or self._archive_inventory_instance_id != instance_id
+        ):
+            entries = self._manager.list_backups()
+            external_names = {entry.filename for entry in entries}
+            try:
+                fleet_archives = FleetBackupManager(
+                    [self._instance], TmuxManager()
+                ).list_legacy_world_archives(instance_id)
+            except (FleetBackupError, OSError, ValueError):
+                fleet_archives = []
+            entries.extend(
+                entry for entry in fleet_archives
+                if entry.filename not in external_names
+            )
+            entries.sort(key=lambda entry: entry.created_at, reverse=True)
+            inventory: list[tuple[BackupEntry, str]] = []
+            for entry in entries:
+                try:
+                    world_name = self._manager._backup_level_name(entry)
+                except (OSError, ValueError, zipfile.BadZipFile):
+                    world_name = entry.display_name
+                inventory.append((entry, world_name))
+            self._archive_inventory_entries = inventory
+            self._archive_inventory_instance_id = instance_id
+        return list(self._archive_inventory_entries)
+
+    def _refresh(self, *, refresh_archives: bool = True) -> None:
         if not self._manager or not self._instance:
             return
         inst = self._instance
@@ -1149,24 +1200,11 @@ class WorldTab(QWidget):
             )
             self._dims_toggle_btn.hide()
 
-        # Older Crucible world ZIPs are migrated into the retained fleet
-        # generations. Prefer a still-present legacy source while it is being
-        # mirrored into both generations; once that source is retired, the
-        # identical archive remains selectable directly from the latest
-        # immutable fleet generation.
-        entries = self._manager.list_backups()
-        external_names = {entry.filename for entry in entries}
-        try:
-            fleet_archives = FleetBackupManager(
-                [inst], TmuxManager()
-            ).list_legacy_world_archives(inst.id)
-        except (FleetBackupError, OSError, ValueError):
-            fleet_archives = []
-        entries.extend(
-            entry for entry in fleet_archives
-            if entry.filename not in external_names
+        # Reuse the just-built ZIP projection when this render only adds
+        # recovery points returned by the background fleet-list worker.
+        archive_entries = self._archive_entries_for(
+            refresh=refresh_archives
         )
-        entries.sort(key=lambda entry: entry.created_at, reverse=True)
 
         rows: list[dict[str, Any]] = []
         active_points = self._world_recovery_points.get(world_root.name, [])
@@ -1178,11 +1216,7 @@ class WorldTab(QWidget):
                 "points": active_points,
             })
             represented_worlds.add(world_root.name)
-        for entry in entries:
-            try:
-                archive_world_name = self._manager._backup_level_name(entry)
-            except (OSError, ValueError, zipfile.BadZipFile):
-                archive_world_name = entry.display_name
+        for entry, archive_world_name in archive_entries:
             # An archive of the active world's own folder belongs in that
             # row's History, not as a duplicate Saved row.
             if has_active_world and archive_world_name == world_root.name:

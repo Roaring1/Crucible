@@ -1533,3 +1533,158 @@ def test_legacy_world_archive_root_requires_its_own_level_dat(tmp_path):
 
     with pytest.raises(FleetBackupError, match="level.dat at its world root"):
         FleetBackupManager._legacy_archive_world_name(archive_path)
+
+
+def test_request_generation_inventory_verifies_each_candidate_once_and_reuses_manifests(
+    tmp_path,
+):
+    instance = make_server(tmp_path / "server")
+    backups = manager(tmp_path, [instance])
+    first = backups.run_backup()
+    second = backups.run_backup()
+    invalid = backups.generations_dir / "incomplete-generation"
+    invalid.mkdir()
+
+    original_candidates = backups.generation_candidates
+    original_verify = backups.verify_generation
+    original_load_manifest = backups._load_manifest
+
+    from unittest.mock import patch
+
+    with (
+        patch.object(
+            backups, "generation_candidates", wraps=original_candidates
+        ) as candidates,
+        patch.object(backups, "verify_generation", wraps=original_verify) as verify,
+        patch.object(
+            backups, "_load_manifest", wraps=original_load_manifest
+        ) as load_manifest,
+    ):
+        inventory = backups.generation_inventory()
+
+        assert candidates.call_count == 1
+        assert verify.call_count == 3
+        assert load_manifest.call_count == 3
+        assert [item.generation_id for item in inventory.generations] == [
+            second.generation_id,
+            first.generation_id,
+        ]
+        assert [item["path"] for item in inventory.issues] == [invalid]
+        assert set(inventory.manifests) == {first.path, second.path}
+
+        before_projection = (
+            candidates.call_count,
+            verify.call_count,
+            load_manifest.call_count,
+        )
+        points = backups.list_world_recovery_points(
+            instance.id, inventory=inventory
+        )
+        after_projection = (
+            candidates.call_count,
+            verify.call_count,
+            load_manifest.call_count,
+        )
+
+    assert after_projection == before_projection
+    assert len(points["main_world"]) == 2
+    assert {
+        point.generation_id for point in points["main_world"]
+    } == {first.generation_id, second.generation_id}
+
+
+def test_legacy_backup_blockers_filters_a_supplied_inventory_without_rewalking(
+    tmp_path, monkeypatch
+):
+    instance = make_server(tmp_path / "server")
+    backups = manager(tmp_path, [instance])
+    sources = [
+        {"path": "manual/old-server", "kind": "manual_server_snapshot"},
+        {"path": "manual/failed-import", "kind": "failed_import_data"},
+        {"path": "retired-id", "kind": "retired_instance_backup_store"},
+    ]
+    monkeypatch.setattr(
+        backups,
+        "legacy_source_inventory",
+        lambda: (_ for _ in ()).throw(AssertionError("inventory walked twice")),
+    )
+
+    blockers = backups.legacy_backup_blockers(source_inventory=sources)
+
+    assert blockers == [sources[0], sources[2]]
+
+
+def test_multi_server_world_projections_share_one_generation_snapshot(tmp_path):
+    from unittest.mock import patch
+
+    instances = [
+        make_server(tmp_path / "server-a", "Server A", "id-a"),
+        make_server(tmp_path / "server-b", "Server B", "id-b"),
+        make_server(tmp_path / "server-c", "Server C", "id-c"),
+    ]
+    backups = manager(tmp_path, instances)
+    first = backups.run_backup()
+    second = backups.run_backup()
+
+    original_candidates = backups.generation_candidates
+    original_verify = backups.verify_generation
+    original_load_manifest = backups._load_manifest
+    with (
+        patch.object(
+            backups, "generation_candidates", wraps=original_candidates
+        ) as candidates,
+        patch.object(backups, "verify_generation", wraps=original_verify) as verify,
+        patch.object(
+            backups, "_load_manifest", wraps=original_load_manifest
+        ) as load_manifest,
+    ):
+        # Reproduce the previous Backup-tab list sequence: one generation
+        # listing, a separate issues pass, then another generation listing and
+        # manifest reload for every server's world-recovery projection.
+        old_generations = backups.list_generations()
+        old_issues = backups.generation_issues()
+        old_world_manifests = {}
+        for instance in instances:
+            old_world_manifests[instance.id] = [
+                backups._load_manifest(summary.path)
+                for summary in backups.list_generations()
+            ]
+        old_counts = (
+            candidates.call_count,
+            verify.call_count,
+            load_manifest.call_count,
+        )
+        assert old_counts == (5, 10, 16)
+        assert all(
+            all(manifest is not None for manifest in manifests)
+            for manifests in old_world_manifests.values()
+        )
+
+        candidates.reset_mock()
+        verify.reset_mock()
+        load_manifest.reset_mock()
+
+        inventory = backups.generation_inventory()
+        points = {
+            instance.id: backups.list_world_recovery_points(
+                instance.id, inventory=inventory
+            )
+            for instance in instances
+        }
+        new_counts = (
+            candidates.call_count,
+            verify.call_count,
+            load_manifest.call_count,
+        )
+        assert new_counts == (1, 2, 2)
+
+    assert [item.generation_id for item in old_generations] == [
+        second.generation_id,
+        first.generation_id,
+    ]
+    assert old_issues == []
+    for instance in instances:
+        assert len(points[instance.id]["main_world"]) == 2
+        assert {
+            point.generation_id for point in points[instance.id]["main_world"]
+        } == {first.generation_id, second.generation_id}
