@@ -1,13 +1,16 @@
-from .tmux_manager import TmuxManager
+"""Process-layer public exports, loaded only when requested."""
 
 __all__ = ["TmuxManager"]
 
 
 def __getattr__(name):
-    if name == "LogWatcher":
-        from .log_watcher import LogWatcher
-        return LogWatcher
-    if name == "Watchdog":
-        from .watchdog import Watchdog
-        return Watchdog
-    raise AttributeError(name)
+    if name == "TmuxManager":
+        from .tmux_manager import TmuxManager as value
+    elif name == "LogWatcher":
+        from .log_watcher import LogWatcher as value
+    elif name == "Watchdog":
+        from .watchdog import Watchdog as value
+    else:
+        raise AttributeError(name)
+    globals()[name] = value
+    return value
