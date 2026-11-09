@@ -808,9 +808,11 @@ class InstancePanel(QWidget):
         self._set_buttons_enabled(True)
 
         # Sidebar health checks already know the current state. Reuse that
-        # bounded background result instead of spawning a blocking tmux process
-        # on every click. Direct action callers may omit the hint.
-        status = status_hint if status_hint not in (None, "unknown") else self._tmux.get_status(instance)
+        # background result instead of spawning a blocking tmux/procfs probe
+        # on every click. If no result exists yet, show Checking; the persistent
+        # health worker will replace it. Preserve an explicit Unknown result
+        # rather than retrying the same potentially slow/unavailable probe here.
+        status = status_hint if status_hint is not None else "checking"
         self._update_status_display(status)
         self._loaded_tabs.clear()
         self._world_summary_label.setText("World: checking selected folder…")
