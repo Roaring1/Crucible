@@ -1,0 +1,45 @@
+# input<TAB>canonical-key-or-dash<TAB>channel
+2.8.4	2.8.4|3|0	stable
+v2.8.4	2.8.4|3|0	stable
+V2.8.4	2.8.4|3|0	stable
+2.8	2.8.0|3|0	stable
+2.8.0	2.8.0|3|0	stable
+2.9.0-beta-3	2.9.0|1|3	beta
+2.5.0-RC1	2.5.0|2|1	rc
+2.7.0-RC-2	2.7.0|2|2	rc
+2.9.0 beta 3	2.9.0|1|3	beta
+2.8.0-rc-1	2.8.0|2|1	rc
+2.8.4-alpha	2.8.4|0|0	alpha
+2.8.4beta3	2.8.4|1|3	beta
+2.8.4__beta__7	2.8.4|1|7	beta
+2.8.4-rc-	2.8.4|2|0	rc
+2.8.4-RC-03	2.8.4|2|3	rc
+0002.008.0004	2.8.4|3|0	stable
+ 2.8.4  	2.8.4|3|0	stable
+123456789012345678901234567890.2.3	123456789012345678901234567890.2.3|3|0	stable
+2.8.4-rc-999999999999999999999999999999	2.8.4|2|999999999999999999999999999999	rc
+April fools 2025	-	unknown
+	-	unknown
+latest	-	unknown
+nightly-2026-09-07	-	unknown
+2.7.0-client-only	-	unknown
+2.8.4-preview-1	-	unknown
+2.8.4.1	-	unknown
+2.8.4-rc1.2	-	unknown
+2.8.4-beta-x	-	unknown
+2.8.4-	-	unknown
+2.8.4-alpha_1	2.8.4|0|1	alpha
+2.8.4.alpha.1	2.8.4|0|1	alpha
+2.8.4---beta___0005	2.8.4|1|5	beta
+2.8.4beta	2.8.4|1|0	beta
+2.8.4.alpha	2.8.4|0|0	alpha
+2.8.4alpha.	2.8.4|0|0	alpha
+2.8.4_rc.3	2.8.4|2|3	rc
+2.8alpha	2.8.0|0|0	alpha
+2.8rc-1	2.8.0|2|1	rc
+v2.8-rc	2.8.0|2|0	rc
+2.8.4 . rc  2	2.8.4|2|2	rc
+2.8.4-alpha__	2.8.4|0|0	alpha
+2.8.4--	-	unknown
+2.8.4---	-	unknown
+2.8.4+beta1	-	unknown

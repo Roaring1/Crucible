@@ -1,0 +1,67 @@
+name: Rust core
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "rust/crucible-core/**"
+      - "tests/test_rust_pack_version_fixtures.py"
+      - "tests/test_rust_pack_identity_fixtures.py"
+      - "tests/test_benchmark_pack_parsers.py"
+      - "scripts/benchmark_pack_parsers.py"
+      - ".github/workflows/rust-core.yml"
+  pull_request:
+    paths:
+      - "rust/crucible-core/**"
+      - "tests/test_rust_pack_version_fixtures.py"
+      - "tests/test_rust_pack_identity_fixtures.py"
+      - ".github/workflows/rust-core.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-core-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  msrv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+      - name: Set up the declared minimum Rust version
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: "1.85.0"
+          rust-src-dir: rust/crucible-core
+      - name: Build and test at the declared MSRV
+        run: cargo test --manifest-path rust/crucible-core/Cargo.toml --locked
+      - name: Compile benchmark target at the declared MSRV
+        run: cargo bench --manifest-path rust/crucible-core/Cargo.toml --locked --bench parser_micro --no-run
+
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+      - name: Install stable Rust with formatting and lint components
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          rust-src-dir: rust/crucible-core
+      - name: Check formatting
+        run: cargo fmt --manifest-path rust/crucible-core/Cargo.toml -- --check
+      - name: Run Rust unit tests
+        run: cargo test --manifest-path rust/crucible-core/Cargo.toml --locked
+      - name: Run Clippy
+        run: cargo clippy --manifest-path rust/crucible-core/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Set up Python for parser comparison smoke
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Smoke-run Rust/Python parser comparison (not a performance baseline)
+        run: python scripts/benchmark_pack_parsers.py
