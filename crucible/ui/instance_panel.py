@@ -57,7 +57,6 @@ from ..data.world_start_summary import (
 from ..process.log_watcher import LogWatcher
 from ..process.startup_patterns import RE_SERVER_DONE, stale_starting_should_promote
 from ..process.tmux_manager import TmuxManager
-from ..process.watchdog import Watchdog
 from . import theme
 from .tabs import ConsoleTab
 from .thread_lifecycle import connect_thread_cleanup
@@ -165,7 +164,7 @@ class InstancePanel(QWidget):
         self._starting_since: float | None    = None
         self._ip_request_generation: int       = 0
         self._manual_stop_generation: int       = 0
-        self._watchdog:       Watchdog | None = None
+        self._watchdog = None
         self._wd_thread:      QThread | None  = None
         # Expensive tabs are loaded on first view per instance, not all at once
         # during every sidebar selection.
@@ -1001,6 +1000,8 @@ class InstancePanel(QWidget):
     def _ensure_watchdog(self) -> None:
         if self._watchdog is not None:
             return
+        from ..process.watchdog import Watchdog
+
         self._wd_thread = QThread()
         self._watchdog  = Watchdog()
         self._watchdog.moveToThread(self._wd_thread)

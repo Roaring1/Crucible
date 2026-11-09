@@ -37,10 +37,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .instance_model import ServerInstance
-
-DEFAULT_FLEET_BACKUP_DIR = (
-    Path.home() / ".local" / "share" / "crucible-backups" / "fleet"
-)
+from .backup_paths import DEFAULT_FLEET_BACKUP_DIR
 GENERATION_SCHEMA = 1
 DEFAULT_KEEP_GENERATIONS = 2
 

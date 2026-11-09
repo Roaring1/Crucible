@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 
 from crucible import __version__
 
-from ..data.fleet_backup import DEFAULT_FLEET_BACKUP_DIR
+from ..data.backup_paths import DEFAULT_FLEET_BACKUP_DIR
 from ..data.instance_model import ServerInstance
 from . import theme
 
