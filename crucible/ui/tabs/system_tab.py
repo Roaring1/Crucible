@@ -12,16 +12,79 @@ JVM is tagged with -Dcrucible.session=<name> so it is easy to spot there too.
 from __future__ import annotations
 
 import os
+import weakref
 
+from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QFrame, QProgressBar, QGridLayout,
+    QFrame,
+    QGridLayout,
+    QLabel,
+    QProgressBar,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtCore import QTimer
 
-from ...process.resource_monitor import ResourceSampler, system_memory_mb, machine_cpu_percent
+from ...process.resource_monitor import (
+    ResourceSampler,
+    machine_cpu_percent,
+    system_memory_mb,
+)
 from .. import theme
+from ..thread_lifecycle import connect_thread_cleanup
 
 _POLL_MS = 2000
+
+
+class _SystemSnapshotWorker(QObject):
+    """Collect procfs and memory counters without blocking Qt's event loop."""
+
+    completed = pyqtSignal(int, object)
+
+    def __init__(self, generation: int, instance, sampler: ResourceSampler):
+        super().__init__()
+        self._generation = generation
+        self._instance = instance
+        self._sampler = sampler
+
+    def run(self) -> None:
+        try:
+            instance = self._instance
+            inventory = (
+                self._sampler.find_instances_pids(
+                    [instance], owner_uid=os.getuid()
+                )
+                if instance else {}
+            )
+            server_pids = (
+                inventory.get(str(instance.id), [])
+                if inventory is not None and instance else
+                ([] if inventory is not None else None)
+            )
+            gui_pid = self._sampler.gui_pid()
+            stats = self._sampler.sample_pids((server_pids or []) + [gui_pid])
+            used, total = system_memory_mb()
+            payload = {
+                "server_pids": server_pids,
+                "gui_pid": gui_pid,
+                "stats": stats,
+                "used": used,
+                "total": total,
+                "error": "",
+            }
+        except Exception as exc:  # noqa: BLE001 - worker boundary reports sampling failures
+            payload = {
+                "server_pids": None,
+                "gui_pid": os.getpid(),
+                "stats": {},
+                "used": 0.0,
+                "total": 0.0,
+                "error": str(exc),
+            }
+        self.completed.emit(self._generation, payload)
+        self.thread().quit()
+
+
+_ACTIVE_SYSTEM_WORKERS: dict[QThread, _SystemSnapshotWorker] = {}
 
 
 class SystemTab(QWidget):
@@ -29,6 +92,15 @@ class SystemTab(QWidget):
         super().__init__(parent)
         self._instance = None
         self._sampler = ResourceSampler()
+        self._thread: QThread | None = None
+        self._worker: _SystemSnapshotWorker | None = None
+        self._generation = 0
+        self._refresh_pending = False
+        self._lifecycle_state = {"destroyed": False}
+        lifecycle_state = self._lifecycle_state
+        self.destroyed.connect(
+            lambda _obj=None, state=lifecycle_state: state.__setitem__("destroyed", True)
+        )
         self._build_ui()
         self._timer = QTimer(self)
         self._timer.setInterval(_POLL_MS)
@@ -104,30 +176,87 @@ class SystemTab(QWidget):
 
     def load(self, instance) -> None:
         self._instance = instance
-        self._refresh()
+        self._generation += 1
+        if self.isVisible():
+            self._refresh_pending = True
+            self._start_refresh_worker()
 
     def showEvent(self, e):
         super().showEvent(e)
         self._timer.start()
-        self._refresh()
+        self._generation += 1
+        self._refresh_pending = True
+        self._start_refresh_worker()
 
     def hideEvent(self, e):
         super().hideEvent(e)
         self._timer.stop()
+        self._generation += 1
+        self._refresh_pending = False
 
     def _refresh(self) -> None:
-        inst = self._instance
-        inventory = (
-            self._sampler.find_instances_pids([inst], owner_uid=os.getuid())
-            if inst else {}
+        """Timer callback: start one sample only when the prior one has exited."""
+        if not self.isVisible() or self._thread is not None:
+            return
+        self._refresh_pending = True
+        self._start_refresh_worker()
+
+    def _start_refresh_worker(self) -> None:
+        if (
+            not self._refresh_pending
+            or not self.isVisible()
+            or self._thread is not None
+        ):
+            return
+        self._refresh_pending = False
+        generation = self._generation
+        thread = QThread()
+        thread.setObjectName("CrucibleSystemMetricsThread")
+        worker = _SystemSnapshotWorker(
+            generation, self._instance, self._sampler
         )
-        server_pids = (
-            inventory.get(inst.id, []) if inventory is not None and inst else
-            ([] if inventory is not None else None)
-        )
-        gui_pid = self._sampler.gui_pid()
-        stats = self._sampler.sample_pids((server_pids or []) + [gui_pid])
-        used, total = system_memory_mb()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.completed.connect(self._on_snapshot_ready)
+        thread.finished.connect(worker.deleteLater)
+
+        tab_ref = weakref.ref(self)
+        lifecycle_state = self._lifecycle_state
+
+        def _cleanup() -> None:
+            _ACTIVE_SYSTEM_WORKERS.pop(thread, None)
+            tab = tab_ref()
+            if tab is None:
+                return
+            if tab._thread is thread:
+                tab._thread = None
+                tab._worker = None
+            if lifecycle_state["destroyed"]:
+                return
+            if tab._refresh_pending and tab.isVisible():
+                tab._start_refresh_worker()
+
+        connect_thread_cleanup(thread, _cleanup)
+        self._thread = thread
+        self._worker = worker
+        _ACTIVE_SYSTEM_WORKERS[thread] = worker
+        thread.start()
+
+    def _on_snapshot_ready(self, generation: int, payload: object) -> None:
+        if (
+            generation != self._generation
+            or not self.isVisible()
+            or not isinstance(payload, dict)
+        ):
+            return
+        self._apply_snapshot(payload)
+
+    def _apply_snapshot(self, payload: dict) -> None:
+        server_pids = payload.get("server_pids")
+        gui_pid = payload.get("gui_pid", os.getpid())
+        stats = payload.get("stats", {})
+        used = float(payload.get("used", 0.0))
+        total = float(payload.get("total", 0.0))
 
         if server_pids is None:
             self._server_card["cpu"].setText("Unavailable")
@@ -162,6 +291,12 @@ class SystemTab(QWidget):
             self._gui_card["cpu_bar"].setValue(round(machine_cpu_percent(g.cpu_pct)))
             self._gui_card["mem_bar"].setMaximum(max(1, int(total)))
             self._gui_card["mem_bar"].setValue(int(g.rss_mb))
+        else:
+            self._gui_card["cpu"].setText("Unavailable")
+            self._gui_card["mem"].setText("Unavailable")
+            self._gui_card["pid"].setText("Process sample unavailable")
+            self._gui_card["cpu_bar"].setValue(0)
+            self._gui_card["mem_bar"].setValue(0)
 
         if total > 0:
             self._mem_bar.setMaximum(int(total))
