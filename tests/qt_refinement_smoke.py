@@ -1192,7 +1192,12 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
  def record_drop_validation(instance, **kwargs):
   drop_validation_threads.append(threading.get_ident())
   return original_validate(instance, **kwargs)
- with patch.object(ServerInstance,'validate',record_drop_validation):
+ health_refresh_requests=[]
+ with (
+  patch.object(ServerInstance,'validate',record_drop_validation),
+  patch.object(window._tmux,'get_status',side_effect=AssertionError('drop completion must not probe tmux on the GUI thread')),
+  patch.object(window,'_health_check',lambda: health_refresh_requests.append('queued')),
+ ):
   window._import_dropped_path(dropdir)
   assert window._drop_validation_thread is not None
   drop_deadline=time.monotonic()+3.0
@@ -1204,6 +1209,8 @@ with patch.object(MainWindow,'_run_crash_recovery',lambda self:None):
   thread_id != threading.main_thread().ident for thread_id in drop_validation_threads
  )
  assert m.instances[-1].name==dropdir.name
+ assert window._sidebar._items[m.instances[-1].id]._status=='checking'
+ assert health_refresh_requests==['queued']
  # Compact header keeps its action controls inside the panel.
  for btn in (window._panel._btn_start,window._panel._btn_stop):
   assert btn.geometry().right()<=btn.parentWidget().width()

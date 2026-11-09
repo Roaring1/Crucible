@@ -1199,9 +1199,13 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             QMessageBox.warning(self, "Import failed", str(exc))
             return
-        status = self._tmux.get_status(inst)
-        self._sidebar.add_instance(inst, status)
+        # The validation worker has already completed the expensive folder
+        # scan. Let the existing health worker determine whether an imported
+        # server is already running; do not add a synchronous tmux/procfs probe
+        # to the GUI-thread completion callback.
+        self._sidebar.add_instance(inst, "checking")
         self._sidebar.select_by_id(inst.id)
+        self._health_check()
         self._update_status_bar()
         message = (
             f"Added {inst.name}. Review Diagnostics for folder warnings."
